@@ -1,9 +1,27 @@
 {
   "name": "@ncc/cli",
   "version": "0.1.0",
-  "private": true,
-  "description": "ncc.ai Registry 命令行客户端（npm 分发，自动定位/下载 Rust 二进制）",
-  "license": "UNLICENSED",
+  "description": "npm wrapper for the NCC CLI: locates (or downloads) the platform Rust binary and runs it.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fusedmodel/ncc.git",
+    "directory": "packages/ncc-cli"
+  },
+  "homepage": "https://ncc.ai/cli",
+  "bugs": {
+    "url": "https://github.com/fusedmodel/ncc/issues"
+  },
+  "keywords": [
+    "ncc",
+    "registry",
+    "capability",
+    "mcp",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "bin": {
     "ncc": "bin/ncc.js"
   },

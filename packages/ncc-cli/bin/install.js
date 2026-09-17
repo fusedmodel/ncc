@@ -29,7 +29,7 @@ function platformFile() {
   return `ncc-${osn}-${arch}${osn === 'windows' ? '.exe' : ''}`;
 }
 
-const base = process.env.NCC_RELEASE_BASE || 'https://github.com/ncc-ai/ncc/releases/latest/download';
+const base = process.env.NCC_RELEASE_BASE || 'https://github.com/fusedmodel/ncc/releases/latest/download';
 const url = `${base}/${platformFile()}`;
 const r = spawnSync(process.execPath, [path.join(__dirname, 'download.js'), url, dest], { stdio: 'inherit' });
 if (r.status !== 0) {

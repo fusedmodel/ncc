@@ -1,0 +1,18 @@
+# Rust 构建产物
+cli/target/
+target/
+
+# Node 依赖
+node_modules/
+
+# 平台侧（私有）素材：这些文件仅供本机/内部使用，不入公开仓库
+standalone/
+scripts/run.sh
+scripts/smoke.sh
+scripts/demo-skill.sh
+
+# 本地环境与杂项
+.env
+.env.local
+*.log
+.DS_Store

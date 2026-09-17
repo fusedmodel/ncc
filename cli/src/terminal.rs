@@ -152,7 +152,7 @@ pub fn update_check() -> String {
     let mut s = format!("NCC CLI v{cur} · official package {OFFICIAL} v{VERSION}");
     let base = release_base();
     let api = env::var("NCC_UPDATE_URL")
-        .unwrap_or_else(|_| "https://api.github.com/repos/ncc-ai/ncc/releases/latest".into());
+        .unwrap_or_else(|_| "https://api.github.com/repos/fusedmodel/ncc/releases/latest".into());
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(8))
         .build();
@@ -189,7 +189,7 @@ pub fn update_check() -> String {
 
 fn release_base() -> String {
     env::var("NCC_RELEASE_BASE")
-        .unwrap_or_else(|_| "https://github.com/ncc-ai/ncc/releases/latest".into())
+        .unwrap_or_else(|_| "https://github.com/fusedmodel/ncc/releases/latest".into())
 }
 
 /// 挑选 POSIX 命令执行前缀（Windows 经 WSL2，缺省降级 cmd；Unix 用 sh）。

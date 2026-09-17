@@ -2,7 +2,12 @@
 name = "ncc"
 version = "0.1.0"
 edition = "2021"
-description = "ncc.ai Registry 命令行客户端（Rust）—— ncc <command>"
+description = "Official command-line client for NCC Registry — publish, search, install and download capability artifacts (API / Skill / MCP / Harness / Plugin / Scaffold)."
+license = "Apache-2.0"
+repository = "https://github.com/fusedmodel/ncc"
+homepage = "https://ncc.ai"
+keywords = ["ncc", "registry", "capability", "mcp", "cli"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "ncc"

@@ -55,7 +55,7 @@ function download(url, dest) {
 
 let bin = firstBin();
 if (!bin) {
-  const base = process.env.NCC_RELEASE_BASE || 'https://github.com/ncc-ai/ncc/releases/latest/download';
+  const base = process.env.NCC_RELEASE_BASE || 'https://github.com/fusedmodel/ncc/releases/latest/download';
   const url = `${base}/${platformFile()}`;
   console.error('→ 首次使用，正在下载 ncc…');
   console.error('  ' + url);
