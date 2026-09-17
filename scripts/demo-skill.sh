@@ -6,6 +6,8 @@ set -euo pipefail
 BASE="${NCC_BASE:-http://localhost:8181}"
 EMAIL="demo-$(date +%s)@ncc.dev"
 PASS="demo1234"
+# 服务端启用注册门禁时（NCC_INVITE_CODE）需带邀请码；默认与工程默认值一致
+INVITE="${NCC_INVITE_CODE:-NCC-2026-INVITE}"
 
 # 从 stdin 读取 JSON，按点路径取值（支持数组下标 .0）
 jget() {
@@ -28,7 +30,7 @@ echo "════════════════════════�
 echo "① 注册账户（自动创建个人 namespace）"
 echo "══════════════════════════════════════════"
 REG=$(curl -sf -X POST "$BASE/api/auth/register" -H 'Content-Type: application/json' \
-  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\",\"name\":\"Demo\"}")
+  -d "{\"email\":\"$EMAIL\",\"password\":\"$PASS\",\"name\":\"Demo\",\"inviteCode\":\"$INVITE\"}")
 TOKEN=$(echo "$REG" | jget token)
 ME=$(curl -sf "$BASE/api/auth/me" -H "Authorization: Bearer $TOKEN")
 NS=$(echo "$ME" | jget namespaces.0.slug)
@@ -120,8 +122,8 @@ echo
 echo "══════════════════════════════════════════"
 echo "⑧ CLI 等价命令（ncc <command>）"
 echo "══════════════════════════════════════════"
-cat <<'EOF'
-ncc --base http://localhost:8181 register --email you@x.com --password demo1234 --name You
+cat <<EOF
+ncc --base http://localhost:8181 register --email you@x.com --password demo1234 --name You --invite $INVITE
 ncc publish --file ./hotel.SKILL.md --kind skill --name "Hotel Skill" --slug hotel-skill --tags hotel,travel
 ncc publish --file ./ops.SKILL.md --kind skill --name "Internal Ops" --slug internal-ops --visibility private
 ncc search skill

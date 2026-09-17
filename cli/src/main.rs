@@ -30,6 +30,8 @@ enum Cmd {
         #[arg(long)] email: String,
         #[arg(long)] password: String,
         #[arg(long)] name: Option<String>,
+        /// 注册邀请码（服务端启用门禁时必需；也可用环境变量 NCC_INVITE_CODE）
+        #[arg(long)] invite: Option<String>,
     },
     /// 登录
     Login {
@@ -185,7 +187,7 @@ fn main() {
 
 fn run(cfg: &CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
     match cmd {
-        Cmd::Register { email, password, name } => cmd_register(cfg, email, password, name.as_deref()),
+        Cmd::Register { email, password, name, invite } => cmd_register(cfg, email, password, name.as_deref(), invite.as_deref()),
         Cmd::Login { email, password } => cmd_login(cfg, email, password),
         Cmd::Logout => {
             let mut c = cfg.clone();
@@ -244,8 +246,10 @@ fn save_session(cfg: &CliConfig, token: &str, email: &str, name: &str) -> anyhow
     config::save(&c)
 }
 
-fn cmd_register(cfg: &CliConfig, email: &str, password: &str, name: Option<&str>) -> anyhow::Result<()> {
-    let body = json!({ "email": email, "password": password, "name": name });
+fn cmd_register(cfg: &CliConfig, email: &str, password: &str, name: Option<&str>, invite: Option<&str>) -> anyhow::Result<()> {
+    // 邀请码：--invite 优先，其次环境变量 NCC_INVITE_CODE（服务端未启用门禁时可留空）
+    let invite = invite.map(|s| s.to_string()).or_else(|| std::env::var("NCC_INVITE_CODE").ok());
+    let body = json!({ "email": email, "password": password, "name": name, "inviteCode": invite });
     let data = api::post_json(cfg, "/api/auth/register", None, &body)?;
     let token = data["token"].as_str().context("响应缺少 token")?;
     let u = &data["user"];
