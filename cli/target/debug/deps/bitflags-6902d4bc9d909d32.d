@@ -1,0 +1,13 @@
+/Users/a1/workspace/01_websites/ncc-ai/cli/target/debug/deps/bitflags-6902d4bc9d909d32.d: /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/lib.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/iter.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/parser.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/traits.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/public.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/internal.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/external.rs
+
+/Users/a1/workspace/01_websites/ncc-ai/cli/target/debug/deps/libbitflags-6902d4bc9d909d32.rlib: /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/lib.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/iter.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/parser.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/traits.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/public.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/internal.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/external.rs
+
+/Users/a1/workspace/01_websites/ncc-ai/cli/target/debug/deps/libbitflags-6902d4bc9d909d32.rmeta: /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/lib.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/iter.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/parser.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/traits.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/public.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/internal.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/external.rs
+
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/lib.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/iter.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/parser.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/traits.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/public.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/internal.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/bitflags-2.13.1/src/external.rs:

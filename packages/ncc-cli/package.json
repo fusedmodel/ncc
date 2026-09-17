@@ -1,0 +1,16 @@
+{
+  "name": "@ncc/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ncc.ai Registry 命令行客户端（npm 分发，自动定位/下载 Rust 二进制）",
+  "license": "UNLICENSED",
+  "bin": {
+    "ncc": "bin/ncc.js"
+  },
+  "scripts": {
+    "postinstall": "node bin/install.js"
+  },
+  "files": [
+    "bin"
+  ]
+}

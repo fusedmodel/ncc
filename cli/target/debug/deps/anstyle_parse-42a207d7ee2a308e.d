@@ -1,0 +1,11 @@
+/Users/a1/workspace/01_websites/harnessuse/ncc.ai/cli/target/debug/deps/anstyle_parse-42a207d7ee2a308e.d: /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/lib.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/params.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/mod.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/definitions.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/table.rs
+
+/Users/a1/workspace/01_websites/harnessuse/ncc.ai/cli/target/debug/deps/libanstyle_parse-42a207d7ee2a308e.rlib: /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/lib.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/params.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/mod.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/definitions.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/table.rs
+
+/Users/a1/workspace/01_websites/harnessuse/ncc.ai/cli/target/debug/deps/libanstyle_parse-42a207d7ee2a308e.rmeta: /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/lib.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/params.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/mod.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/definitions.rs /Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/table.rs
+
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/lib.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/params.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/mod.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/definitions.rs:
+/Users/a1/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/anstyle-parse-1.0.0/src/state/table.rs:
