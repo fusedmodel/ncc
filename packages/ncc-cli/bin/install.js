@@ -33,7 +33,7 @@ const base = process.env.NCC_RELEASE_BASE || 'https://github.com/fusedmodel/ncc/
 const url = `${base}/${platformFile()}`;
 const r = spawnSync(process.execPath, [path.join(__dirname, 'download.js'), url, dest], { stdio: 'inherit' });
 if (r.status !== 0) {
-  console.error('ℹ ncc 二进制暂未下载（首次运行 npx ncc 时会自动下载）。');
+  console.error('ℹ ncc 二进制暂未下载（首次运行 npx @fusedmodel/ncc-cli 时会自动下载）。');
   process.exit(0);
 }
 try { fs.chmodSync(dest, 0o755); } catch { /* ignore */ }

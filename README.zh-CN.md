@@ -1,0 +1,363 @@
+# NCC CLI
+
+[English](README.md) · [注册中心](https://ncc.ai) · [问题反馈](https://github.com/fusedmodel/ncc/issues)
+
+![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)
+![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
+![Rust](https://img.shields.io/badge/rust-1.98%2B-orange)
+
+**NCC Registry** 的官方命令行客户端。NCC Registry 是一个中立、跨协议的**能力制品（capability artifact）**注册中心，收录 API、Skill（`SKILL.md`）、MCP Server、Harness（含 HUR）、Plugin、Scaffold、Docker 镜像、Benchmark 与活体节点。
+
+`ncc` 是一个单一的 Rust 二进制：不需要 Node / Python 运行时，也不依赖系统 OpenSSL。它覆盖制品的完整生命周期 —— 注册、发布、检索、安装、下载，另含面向 CI 的 API-Key、设备状态上报与 NCC Terminal 能力命令台。
+
+```bash
+ncc publish --file ./hotel.SKILL.md --kind skill --name "Hotel Skill" --slug hotel-skill
+ncc search skill --tag hotel
+ncc install @you/hotel-skill
+```
+
+## 为什么需要它
+
+- **一次发布，处处可解析。** 每个制品都有稳定引用 `@命名空间/slug`，任何 Agent、Hub、CI 任务或同事都能解析，不绑定任何厂商或 Agent 框架。
+- **开放格式，不是私有黑盒。** 制品就是普通文件（例如 `SKILL.md`），另附 manifest 契约与 `sha256` 摘要 —— 可读、可 diff、可镜像。
+- **机器友好。** CLI 全部经由公开 HTTP API（`/api/…`），脚本、CI 流水线及其它客户端可直接对接注册中心，无需 shell 调用 `ncc`。
+- **可自托管。** 用 `--base` 指向任意注册中心实例。
+
+## 当前状态
+
+> **Alpha（`0.1.0`）—— 尚未对外分发。** 注册中心处于邀请制闭测，命令与数据结构仍可能调整。
+>
+> - **目前唯一端到端可用的安装方式是源码构建。** `@fusedmodel/ncc-cli` 未发布到 npm，GitHub 也没有 Release，安装脚本与 npm 启动器都还没有可下载的来源。
+> - **没有公开的托管注册中心。** `ncc.ai` 尚未上线，且客户端内置默认地址指向**本地**实例（`http://localhost:8181`）。现阶段请始终显式传 `--base`。
+> - **面向人的 CLI 输出目前是中文。** 面向程序的接口（退出码、stderr 错误、`ncc info` 的 JSON）稳定且与语言无关；英文输出层在计划中。
+
+## 安装
+
+### 从源码构建（当前推荐）
+
+```bash
+git clone https://github.com/fusedmodel/ncc.git
+cd ncc/cli
+cargo install --path .        # → ~/.cargo/bin/ncc
+```
+
+或只构建不安装：
+
+```bash
+cargo build --release         # → cli/target/release/ncc
+```
+
+需要 Rust 工具链（edition 2021，已在 rustc 1.98 上验证）。TLS 由 `rustls` 提供，无需安装 OpenSSL 开发包。
+
+### 安装脚本（等有可达的注册中心后可用）
+
+注册中心实例会通过 `/install.sh` 提供自己的安装脚本：
+
+```bash
+curl -fsSL https://<your-registry>/install.sh | sh   # → ~/.ncc/bin/ncc
+```
+
+脚本会按操作系统 / 架构挑选二进制，并遵循 `NCC_RELEASE_BASE` 决定下载来源。该路径已实现，但**目前还无法对着任何公网域名使用** —— 见[当前状态](#当前状态)。
+
+### npm 包装（源码就绪，尚未发布）
+
+包装代码位于 [`packages/ncc-cli`](packages/ncc-cli)，源码完整且已入库，但包还没发布到 npm：
+
+```bash
+# 发布后可用：
+npm install -g @fusedmodel/ncc-cli     # 或：npx @fusedmodel/ncc-cli --help
+
+# 想自己从检出目录发布：
+cd packages/ncc-cli && npm publish --access public
+```
+
+包装只是一个薄启动器：定位二进制后转发参数、stdio 与信号。查找顺序：
+
+1. `NCC_BIN`（显式路径）
+2. 随包分发的 `vendor/ncc-<os>-<arch>`
+3. `~/.ncc/bin/ncc`
+4. `cli/target/release/ncc` —— 仓库内构建，供开发使用
+5. 都没有时，下载发布二进制到 `~/.ncc/bin/ncc`
+
+`postinstall` 会尽力执行同样的下载，且失败不会阻塞安装。
+
+> npm 上无作用域的 `ncc` 属于一个无关的包，因此包装发布在 `@fusedmodel` 作用域下：`@fusedmodel/ncc-cli`。
+
+### 校验预编译二进制
+
+预编译二进制及其 SHA-256 已入库，位于 [`release/bin`](release/bin)：
+
+```bash
+cd release/bin && shasum -a 256 -c checksums.txt      # macOS
+cd release/bin && sha256sum -c checksums.txt          # Linux
+```
+
+## 快速开始
+
+由于尚无公开注册中心，以下命令请对着本地或自托管实例执行：
+
+```bash
+# 0) 指向某个实例（会写入配置文件并持久化）
+ncc --base http://localhost:8181 me
+
+# 1) 注册账号（会自动创建个人命名空间）
+#    闭测期需要邀请码。
+ncc register --email you@example.com --password 'a-strong-password' \
+             --name You --invite NCC-2026-INVITE
+ncc me
+
+# 2) 从本地 SKILL.md 发布一个 Skill
+ncc publish --file ./hotel.SKILL.md --kind skill --name "Hotel Skill" \
+            --slug hotel-skill --tags hotel,travel --summary "Booking helper"
+
+# 3) 检索与消费
+ncc search skill --tag hotel
+ncc info     @you/hotel-skill
+ncc download @you/hotel-skill -o hotel.md
+ncc install  @you/hotel-skill          # → ~/.ncc/packages/@you/hotel-skill/
+
+# 4) 在 CI 中自动发布
+ncc key create --label ci              # secret 仅显示一次，请妥善保存
+
+# 5) 可选：设备接入与命令台
+ncc living --name my-mac --capabilities mcp,api
+ncc terminal
+```
+
+## 命令一览
+
+`<target>` 可以是注册中心 id（`R-…`），也可以是引用（`@命名空间/slug`）。
+
+| 命令 | 说明 |
+|---|---|
+| `ncc register` | 注册账号；自动创建个人命名空间 |
+| `ncc login` / `ncc logout` | 登录 / 登出 |
+| `ncc me` | 显示当前用户、套餐与命名空间 |
+| `ncc ns list` | 列出你拥有或加入的命名空间 |
+| `ncc ns create` | 创建命名空间 |
+| `ncc publish` | 通过上传文件或 BYO URL 发布制品 |
+| `ncc search [query]` | 目录检索 |
+| `ncc info <target>` | 以 JSON 打印制品完整记录 |
+| `ncc download <target>` | 下载制品字节 |
+| `ncc install <target>` | 安装到本地包目录 |
+| `ncc key list` / `create` / `revoke` | 管理 API-Key（用于非交互场景） |
+| `ncc living` | 把本机作为设备节点上报到你的命名空间 |
+| `ncc terminal [status\|setup]` | 打开能力命令台 / 查看 POSIX 运行时 |
+| `ncc update` | 检查 CLI 或官方包是否有新版本 |
+| `ncc help <command>` | 查看任意命令的自动生成帮助 |
+
+全局参数：
+
+| 参数 | 说明 |
+|---|---|
+| `--base <URL>` | 注册中心地址。覆盖配置文件，并回写配置文件 |
+| `-h, --help` / `-V, --version` | 帮助 / 版本 |
+
+### `ncc publish`
+
+| 参数 | 说明 |
+|---|---|
+| `--kind <KIND>` | **必填。** `api`、`harness`、`hur`、`skill`、`mcp`、`plugin`、`scaffold`、`docker-image`、`benchmark`、`living` |
+| `--name <NAME>` | **必填。** 展示名称 |
+| `--file <PATH>` | 上传本地文件字节 |
+| `--url <URL>` | 自带存储：发布直链而不上传 |
+| `--slug <SLUG>` | URL 安全 slug；省略时由注册中心依据 `--name` 生成 |
+| `--version <VER>` | 默认 `1.0.0` |
+| `--summary <TEXT>` | 一句话说明 |
+| `--tags <a,b,c>` | 逗号分隔标签 |
+| `--manifest <PATH>` | `--kind harness` 的封装契约 JSON（含 `harness.loader` / `harness.entry`） |
+| `--namespace <SLUG>` | 目标命名空间，必须是你的所属命名空间。默认个人命名空间 |
+| `--visibility <public\|private>` | 默认 `public`。`private` 需要付费套餐 |
+| `--draft` | 以 `draft` 状态创建（默认 `published`） |
+
+`--file` 与 `--url` 必须且只能提供一个。
+
+### `ncc search`
+
+| 参数 | 说明 |
+|---|---|
+| `[query]` | 关键词（可选位置参数） |
+| `--kind <KIND>` | 按制品 kind 过滤 |
+| `--tag <TAG>` | 按标签过滤 |
+| `--namespace <SLUG>` | 限定某个命名空间 |
+| `--mine` | 只看自己的制品（需要登录态） |
+
+### `ncc install` 与 `ncc download`
+
+| 参数 | 说明 |
+|---|---|
+| `-d, --dir <DIR>` | 安装根目录。默认 `~/.ncc/packages`（或 `NCC_PACKAGES_DIR`） |
+| `--force` | 已安装时覆盖 |
+| `-o, --out <PATH>` | `download` 的输出路径 |
+
+`ncc install` 按 `<root>/<命名空间>/<slug>/` 组织目录，并在制品文件旁写入 `package.json`，记录来源引用、kind、版本、`sha256`、大小、安装时间，以及制品声明了封装契约时的 `manifest` / `harness` 块。
+
+### `ncc living`
+
+| 参数 | 说明 |
+|---|---|
+| `--daemon` | 按间隔持续心跳，而非只上报一次 |
+| `--interval <SEC>` | 守护间隔，默认 `15` |
+| `--name <NAME>` | 设备名。默认 `$HOSTNAME`，再退化到 `<os>-<arch>` |
+| `--slug <SLUG>` | 设备 slug；省略时由 name 生成 |
+| `--url <URL>` | 他人可直连本设备的地址 |
+| `--capabilities <a,b>` | 本设备可提供的 kind，逗号分隔 |
+
+`os`、`arch` 与 CLI 版本会自动附带。对外只发布状态与能力可见性 —— NCC 不会代传任何数据。
+
+### `ncc terminal`
+
+`ncc terminal` 打开能力命令台（官方包 `@ncc/terminal`）。在真实 TTY 下渲染全屏 TUI，支持 Tab 补全、历史（`↑`/`↓`）、输出区，`Ctrl+C` 退出；stdin 非 TTY（管道、CI）时自动降级为逐行 REPL。
+
+命令台内可用：
+
+| 输入 | 效果 |
+|---|---|
+| `help` | 内置帮助 |
+| `runtime status` / `runtime setup` | POSIX 运行时状态 / 装配 |
+| `ncc <cmd…>` | 调用预置 `ncc` 子命令（`publish`、`search`、`install`、`living` …） |
+| `! <cmd>` 或其它任意行 | 交给系统 POSIX shell 执行 |
+| `exit` / `quit` | 退出 |
+
+`ncc terminal status` 不进入命令台，直接打印解析出的 base URL、操作系统与 POSIX 运行时。Unix 上运行时即原生；Windows 上会检测 WSL2，缺失时降级 MSYS2，并通过 `ncc terminal setup` 引导装配。
+
+## 核心概念
+
+| 术语 | 含义 |
+|---|---|
+| **制品 Artifact** | 可版本化、可发布的能力单元 —— Skill、MCP Server、API 描述、Harness 等 |
+| **Kind** | 制品类别（`skill`、`mcp`、`harness` …），决定消费方如何解读它 |
+| **命名空间 Namespace** | 发布范围，可为个人（`@you`）或组织（`@your-org`），以 `@slug` 寻址 |
+| **引用 Reference** | `@命名空间/slug` —— 稳定、可移植的制品命名方式 |
+| **可见性 Visibility** | `public` 任何人可解析；`private` 需要付费套餐 |
+| **状态 Status** | `published`（可解析）、`draft`（仅自己可见）或 `archived` |
+| **Manifest** | 制品可选的 JSON 契约。`kind harness` 时承载 `harness.loader` / `harness.entry` |
+
+## 配置
+
+| 路径 | 用途 |
+|---|---|
+| `~/.ncc/config.json` | 注册中心地址，以及登录态 token、email、name。首次登录时创建 |
+| `~/.ncc/bin/ncc` | 安装脚本或 npm 启动器放置的二进制 |
+| `~/.ncc/packages/` | `ncc install` 的默认根目录 |
+
+`--base` 是 CLI 唯一会持久化的参数：传入它会改写配置文件的 `base_url`，之后无需再带该参数。
+
+### 环境变量
+
+| 变量 | 使用者 | 作用 |
+|---|---|---|
+| `NCC_CONFIG` | CLI | 配置文件位置，默认 `~/.ncc/config.json` |
+| `NCC_PACKAGES_DIR` | CLI | `ncc install` 的安装根目录，默认 `~/.ncc/packages` |
+| `NCC_INVITE_CODE` | CLI | 省略 `--invite` 时，`ncc register` 使用的邀请码 |
+| `NCC_BIN` | npm 包装 | 强制指定二进制路径（最先检查） |
+| `NCC_RELEASE_BASE` | 安装脚本、npm 包装、`ncc update` | 下载发布二进制的基址，默认本仓库的 GitHub Releases |
+| `NCC_UPDATE_URL` | `ncc update` | 最新版本查询端点，默认 GitHub releases API |
+
+`HOME`、`HOSTNAME`、`SHELL` 会被读取用于推导默认值（配置位置、设备名、POSIX 摘要），可按常规方式覆盖。
+
+> **配置文件是纯文本且保存着 bearer token。** 写入时未加固文件权限 —— 共享机器上建议 `chmod 600 ~/.ncc/config.json`。在 CI 中更推荐用 `NCC_PACKAGES_DIR` / `NCC_CONFIG` 指向临时文件，而不是把凭据文件提交进仓库。
+
+## 指向自己的注册中心
+
+任何 NCC 兼容实例都可作为后端：
+
+```bash
+ncc --base https://registry.internal.example me
+```
+
+自托管实例还会提供自己的客户端分发，让用户装到的二进制天然知道正确的 base URL：
+
+- `GET /install.sh` —— 安装脚本，基址改写为当前服务主机
+- `GET /downloads/<file>` —— 发布二进制
+
+要通过这两条路径分发自己的构建，把 `NCC_RELEASE_BASE` 设为你控制的镜像即可。
+
+## 脚本与 CI
+
+CLI 被设计为可被其它程序驱动：
+
+- **退出码** —— 成功 `0`，任何失败 `1`。
+- **错误** —— 写到 stderr，形如 `✗ [error_code] message`，其中 code 与 message 直接来自注册中心的 JSON 错误体（`{"error":{"code":…,"message":…}}`）；网络故障另行报告为 `网络错误: …`。
+- **结构化数据** —— `ncc info <target>` 在 stdout 打印制品的 pretty JSON，可直接交给 `jq`。
+- **非交互认证** —— 一次生成 API-Key（`ncc key create --label ci`，仅显示一次），用它替代登录态。
+- **面向人的文本** —— `search`、`publish`、`install` 等打印人类可读的中文输出；需要机器稳定的输出时请直接调用 HTTP API。注意 `ncc terminal` 会检测非 TTY 并降级为 REPL，而不是报错。
+
+客户端网络行为：API 客户端连接超时 10s、整体超时 60s、最多 10 次重定向。制品字节以 60s 预算拉取，并在写盘前整体缓存在内存中，因此 `download` / `install` 目前不适合超大制品。
+
+## 开发
+
+```bash
+cd cli
+
+cargo check                   # 快速类型检查
+cargo build --release         # → target/release/ncc
+cargo fmt && cargo clippy     # 若已安装对应 rustup 组件
+```
+
+想在不安装的情况下对着运行中的注册中心试跑：
+
+```bash
+NCC_CONFIG=/tmp/ncc-dev.json ./target/release/ncc --base http://localhost:8181 me
+```
+
+目前还没有自动化测试 —— 一个对着真实注册中心驱动 CLI 的冒烟测试，是这里最有价值的贡献。
+
+源码结构：
+
+| 文件 | 职责 |
+|---|---|
+| `src/main.rs` | 参数解析（clap）与所有命令实现 |
+| `src/api.rs` | 基于 `ureq` 的轻量 HTTP 客户端：JSON 请求、raw 上传、错误解码 |
+| `src/config.rs` | `~/.ncc/config.json` 读写与登录态处理 |
+| `src/terminal.rs` | 能力命令台、POSIX 运行时探测、更新检查 |
+| `src/tui.rs` | 全屏 ratatui TUI（stdin 为真实 TTY 时启用） |
+
+值得保持的设计约束：依赖列表保持精简；所有操作都走公开 HTTP API，不另造私有协议；客户端永不成为机器之间的数据中转。
+
+## 发版
+
+```bash
+bash scripts/build-release.sh          # 当前平台 → release/bin/ncc-<os>-<arch>
+bash scripts/build-release.sh --all    # 交叉编译全部目标（需 `rustup target add …`）
+```
+
+脚本会写出 `release/bin/ncc-<os>-<arch>[.exe]` 并重新生成 `checksums.txt`。
+
+完整发版流程：
+
+1. 更新 `cli/Cargo.toml`（并刷新 `cli/Cargo.lock`）与 `packages/ncc-cli/package.json` 的版本号。
+2. 运行 `scripts/build-release.sh --all`。
+3. 打 tag 并发布 GitHub Release，附上这些二进制 —— 安装脚本、npm 包装与 `ncc update` 都以此为准。
+4. 在 `packages/ncc-cli` 目录执行 `npm publish --access public`。
+5. 回来更新[当前状态](#当前状态)：一旦有了 Release，上面的安装脚本与 npm 路径就正式可用。
+
+预编译目标：`darwin`（x86_64、arm64）、`linux`（x86_64、arm64）、`windows`（x86_64）。目前 `release/bin` 只入库了 `darwin-arm64`，其余由 `--all` 生成。
+
+## 仓库结构
+
+```
+cli/                 Rust crate（bin: ncc）
+packages/ncc-cli/    npm 包装（@fusedmodel/ncc-cli）—— 启动器 + 二进制下载
+release/bin/         入库的预编译二进制 + checksums.txt
+scripts/             build-release.sh（交叉编译 + 校验和）
+```
+
+## 参与贡献
+
+欢迎贡献 —— 尤其是缺陷报告、文档修正与平台支持。
+
+- 动手做较大的改动前，请先开 issue 对齐方案。
+- PR 保持聚焦；沿用现有风格，优先使用标准库与当前依赖，而非引入新 crate。
+- 注意 CLI 是注册中心 API 的*客户端*。改动线上格式需要服务端同步改动，请在 issue 中一并说明。
+- CLI 输出字符串目前是中文，且尚未为翻译集中管理。若想做本地化，请先开 issue —— 这是已知缺口，不是疏忽。
+
+## 安全
+
+发现漏洞请**不要**开公开 issue。请通过本仓库的 [GitHub Security Advisories](https://github.com/fusedmodel/ncc/security/advisories/new) 私下报告，并附上复现步骤与受影响版本。
+
+请注意 `~/.ncc/config.json` 以纯文本保存 bearer token，且 `ncc key create` 生成的 API-Key 只显示一次 —— 两者都请按密钥对待。
+
+## 许可
+
+Apache License 2.0 —— 见 [LICENSE](LICENSE)。
