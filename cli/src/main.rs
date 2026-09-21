@@ -1,5 +1,8 @@
 mod api;
 mod config;
+mod mcp;
+mod nodes;
+mod profile;
 mod terminal;
 mod tui;
 
@@ -84,6 +87,77 @@ enum Cmd {
     Key(KeyCmd),
     /// 设备接入（Living）：上报本设备心跳到你的命名空间（--daemon 周期守护）
     Living(LivingArgs),
+    /// NCC Profile：查看 / 设置名片（定位角色 + 作品集 + 已发布能力）
+    Profile(ProfileArgs),
+    /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
+    Nodes(NodesArgs),
+    /// 制品/分享授权：ncc grant set --user @someone --kind artifact | list | rm <id>
+    #[command(subcommand)]
+    Grant(GrantCmd),
+    /// 以 MCP server 方式暴露 NCC（stdio），供 Claude Desktop / Cursor / VS Code / 任意 Agent 接入
+    Mcp,
+}
+
+/// ncc nodes 的子命令。不跟子命令 = 列我的节点与连接。
+#[derive(clap::Args)]
+struct NodesArgs {
+    #[command(subcommand)]
+    action: Option<NodesCmd>,
+}
+
+/// 按节点模型组织：节点声明自己是什么，连接是我这边的清单。
+#[derive(Subcommand)]
+enum NodesCmd {
+    /// 我的节点 + 我连接的节点（--kind / --q 过滤）
+    List(nodes::ListArgs),
+    /// 节点类型目录（上报时用 `ncc living --kind` 声明）
+    Kinds,
+    /// 发现本 NCC 实例上可连接的节点（--kind / --region / --q）
+    Discover(nodes::DiscoverArgs),
+    /// 连接节点：ncc nodes link @命名空间/节点slug --label "我给它的名字"
+    Link(nodes::LinkArgs),
+    /// 改 Name 标签 / 备注
+    Label(nodes::LabelArgs),
+    /// 断开连接（只删我这边的连接表条目）
+    Unlink { id: String },
+    /// 区域覆盖：我的节点按归属者所在地聚合（Agent 面）
+    Region,
+    /// 按区域推荐可连接的节点（Agent 面，同区域优先）
+    Recommend(nodes::RecommendArgs),
+}
+
+#[derive(Subcommand)]
+enum GrantCmd {
+    /// 我的授权（--out 我给出的 / --in 别人给我的）
+    List(nodes::GrantListArgs),
+    /// 授权：--user <id|@handle> --kind share|artifact [--ns @slug] [--note …]
+    Set(nodes::GrantSetArgs),
+    /// 撤销授权
+    Rm { id: String },
+}
+
+#[derive(clap::Args)]
+struct ProfileArgs {
+    #[command(subcommand)]
+    action: Option<ProfileCmd>,
+}
+
+#[derive(Subcommand)]
+enum ProfileCmd {
+    /// 查看名片（缺省看自己；可指定用户名）
+    Show { username: Option<String> },
+    /// 列出工作角色目录（--roles 的取值来源）
+    Roles {
+        #[arg(long)]
+        group: Option<String>,
+    },
+    /// 设置名片字段（先读后写，只覆盖显式给出的字段）
+    Set(profile::SetArgs),
+    /// 改用户名（短链与发布命名空间同步变更）
+    Username { name: String },
+    /// 作品集：list | add | rm
+    #[command(subcommand)]
+    Work(profile::WorkCmd),
 }
 
 #[derive(Subcommand)]
@@ -97,9 +171,36 @@ enum NsCmd {
 
 #[derive(Subcommand)]
 enum KeyCmd {
+    /// 列出所有 key（含类型 / 作用域 / 命名空间 / 过期时间）
     List,
-    Create { #[arg(long)] label: Option<String> },
+    /// 创建 key：ncc key create --label ci [--kind distribution --ns @you --scopes registry:read,registry:download] [--expires 30]
+    Create(KeyCreateArgs),
+    /// 吊销 key
     Revoke { id: String },
+    /// 列出可用作用域
+    Scopes,
+}
+
+#[derive(clap::Args)]
+struct KeyCreateArgs {
+    /// 备注名（如 ci / 给某客户的分发）
+    #[arg(long)]
+    label: Option<String>,
+    /// 类型：user（通用）| distribution（只用于分发制品给他人）
+    #[arg(long, default_value = "user", value_parser = ["user", "distribution"])]
+    kind: String,
+    /// 作用域，逗号分隔（缺省按 kind 取默认值；见 `ncc key scopes`）
+    #[arg(long)]
+    scopes: Option<String>,
+    /// 限定可访问的命名空间，可重复：--ns @you --ns @team（缺省=不限）
+    #[arg(long = "ns", value_name = "@slug")]
+    namespaces: Vec<String>,
+    /// 备忘（给谁用、做什么）
+    #[arg(long)]
+    note: Option<String>,
+    /// 有效天数（缺省=长期有效）
+    #[arg(long)]
+    expires: Option<u32>,
 }
 
 #[derive(clap::Args)]
@@ -113,6 +214,9 @@ struct LivingArgs {
     /// 设备名（默认：HOSTNAME 或 os-arch）
     #[arg(long)]
     name: Option<String>,
+    /// 节点声明类型：service（服务）| agent（为人服务的 Agent）| assigned（被分配的 Agent）
+    #[arg(long, default_value = "service", value_parser = ["service", "agent", "assigned"])]
+    kind: String,
     /// 设备 slug（默认由 name 生成）
     #[arg(long)]
     slug: Option<String>,
@@ -234,6 +338,31 @@ fn run(cfg: &CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         },
         Cmd::Key(k) => cmd_key(cfg, k),
         Cmd::Living(a) => cmd_living(cfg, a),
+        Cmd::Profile(p) => match &p.action {
+            None | Some(ProfileCmd::Show { username: None }) => profile::show(cfg, None),
+            Some(ProfileCmd::Show { username: Some(u) }) => profile::show(cfg, Some(u.as_str())),
+            Some(ProfileCmd::Roles { group }) => profile::roles(cfg, group.as_deref()),
+            Some(ProfileCmd::Set(a)) => profile::set(cfg, a),
+            Some(ProfileCmd::Username { name }) => profile::set_username(cfg, name),
+            Some(ProfileCmd::Work(cmd)) => profile::work(cfg, cmd),
+        },
+        Cmd::Nodes(n) => match &n.action {
+            None => nodes::list(cfg, &nodes::ListArgs { kind: None, q: None }),
+            Some(NodesCmd::List(a)) => nodes::list(cfg, a),
+            Some(NodesCmd::Kinds) => nodes::kinds(cfg),
+            Some(NodesCmd::Discover(a)) => nodes::discover(cfg, a),
+            Some(NodesCmd::Link(a)) => nodes::link(cfg, a),
+            Some(NodesCmd::Label(a)) => nodes::label(cfg, a),
+            Some(NodesCmd::Unlink { id }) => nodes::unlink(cfg, id),
+            Some(NodesCmd::Region) => nodes::region(cfg),
+            Some(NodesCmd::Recommend(a)) => nodes::recommend(cfg, a),
+        },
+        Cmd::Grant(g) => match g {
+            GrantCmd::List(a) => nodes::grant_list(cfg, a),
+            GrantCmd::Set(a) => nodes::grant_set(cfg, a),
+            GrantCmd::Rm { id } => nodes::grant_rm(cfg, id),
+        },
+        Cmd::Mcp => mcp::serve(cfg),
     }
 }
 
@@ -558,25 +687,96 @@ fn cmd_key(cfg: &CliConfig, k: &KeyCmd) -> anyhow::Result<()> {
     match k {
         KeyCmd::List => {
             let data = api::get(cfg, "/api/auth/keys", Some(&token))?;
-            if let Some(keys) = data["keys"].as_array() {
-                for x in keys {
-                    let scopes = x["scopes"].as_array()
-                        .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
-                        .unwrap_or_default();
-                    println!("{}\t{}\tscopes={}\tlast={}",
-                        x["id"].as_str().unwrap_or(""),
-                        x["label"].as_str().unwrap_or(""),
-                        scopes,
-                        x["lastUsedAt"].as_str().unwrap_or("-"));
+            let keys = data["keys"].as_array().cloned().unwrap_or_default();
+            if keys.is_empty() {
+                println!("还没有 API-Key。用 `ncc key create --label ci` 创建。");
+                return Ok(());
+            }
+            println!("{:<26} {:<16} {:<12} {:<10} {}", "ID", "备注", "类型", "命名空间", "过期");
+            for x in &keys {
+                let ns = x["namespaces"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
+                    .unwrap_or_default();
+                let exp = match x["expiresAt"].as_str() {
+                    Some(e) => nodes::human_time(e),
+                    None => "长期".to_string(),
+                };
+                println!("{:<26} {:<16} {:<12} {:<10} {}",
+                    x["id"].as_str().unwrap_or(""),
+                    x["label"].as_str().unwrap_or("-"),
+                    if x["kind"].as_str().unwrap_or("user") == "distribution" { "分发" } else { "通用" },
+                    if ns.is_empty() { "不限".to_string() } else { ns },
+                    exp);
+                let scopes = x["scopes"].as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" "))
+                    .unwrap_or_default();
+                println!("    scopes: {}", scopes);
+                if let Some(note) = x["note"].as_str().filter(|s| !s.is_empty()) {
+                    println!("    备注: {note}");
                 }
             }
             Ok(())
         }
-        KeyCmd::Create { label } => {
-            let body = json!({ "label": label });
+        KeyCmd::Scopes => {
+            println!("可用作用域（--scopes）");
+            for (s, d) in [
+                ("registry:read", "检索条目"),
+                ("registry:download", "下载条目字节"),
+                ("registry:publish", "发布/修改/删除条目（含上传字节）"),
+                ("profile:read", "读名片"),
+                ("profile:write", "改自己的名片"),
+                ("nodes:read", "读我的节点与可连接节点（含区域聚合与推荐）"),
+                ("nodes:write", "连 / 断节点、改 Name 标签、上报节点心跳"),
+                ("grants:read", "查看授权关系"),
+                ("grants:write", "授予 / 撤销授权"),
+                ("living:write", "上报设备心跳（Living）"),
+                ("keys:write", "签发 / 吊销 API-Key（默认不发给 key）"),
+            ] {
+                println!("  {s:<22} {d}");
+            }
+            println!("\n蕴含关系：publish ⇒ download ⇒ read；nodes:write ⇒ nodes:read；");
+            println!("          grants:write ⇒ grants:read；profile:write ⇒ profile:read；* = 全部。");
+            println!("\n提示：给 Agent/CI 的 key 一般只需 registry:read,registry:download；");
+            println!("      要让它发布制品再加 registry:publish；要让它读节点与连接再加 nodes:read。");
+            Ok(())
+        }
+        KeyCmd::Create(a) => {
+            let kind = a.kind.as_str();
+            let scopes: Option<Vec<String>> = a.scopes.as_deref().map(|s| {
+                s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+            });
+            if kind == "distribution" && scopes.as_ref().is_some_and(|s| s.iter().any(|x| x.ends_with(":publish") || x.ends_with(":write") || x == "*")) {
+                println!("⚠️  分发 key 建议只给只读作用域（registry:read,registry:download）。");
+            }
+            let body = json!({
+                "label": a.label,
+                "kind": kind,
+                "scopes": scopes,
+                "namespaces": a.namespaces,
+                "note": a.note,
+                "expiresInDays": a.expires,
+            });
             let data = api::post_json(cfg, "/api/auth/keys", Some(&token), &body)?;
-            println!("✅ API-Key 创建：{}", data["secret"].as_str().unwrap_or(""));
-            println!("   （secret 仅显示一次；用于 CI/机器发布）");
+            // 响应是扁平的：{id,label,kind,scopes,namespaces,note,expiresAt,secret}
+            // （宁可兼容一下嵌套写法，也不要因为它改坏输出）
+            let key = if data.get("key").is_some_and(|v| v.is_object()) { data["key"].clone() } else { data.clone() };
+            println!("✅ API-Key 已创建");
+            println!("   secret  {}", data["secret"].as_str().unwrap_or(""));
+            println!("   id      {}", key["id"].as_str().unwrap_or(""));
+            println!("   kind    {}", key["kind"].as_str().unwrap_or(kind));
+            let scopes_got = key["scopes"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            println!("   scopes  {}", if scopes_got.is_empty() { key["scopes"].as_str().unwrap_or("-").to_string() } else { scopes_got });
+            let ns = key["namespaces"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
+                .unwrap_or_default();
+            println!("   范围    {}", if ns.is_empty() { "不限命名空间".to_string() } else { ns });
+            if let Some(exp) = key["expiresAt"].as_str() {
+                println!("   过期    {}", nodes::human_time(exp));
+            }
+            println!("\n   ⚠️  secret 仅显示这一次，请立即保存到密钥管理里。");
+            println!("   给 Agent 用：export NCC_TOKEN={}", data["secret"].as_str().unwrap_or("<secret>"));
             Ok(())
         }
         KeyCmd::Revoke { id } => {
@@ -605,6 +805,7 @@ fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
     let body = json!({
         "name": name,
         "slug": a.slug.clone().unwrap_or_default(),
+        "kind": a.kind,
         "url": a.url.clone().unwrap_or_default(),
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,

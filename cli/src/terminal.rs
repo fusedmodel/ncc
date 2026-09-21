@@ -23,7 +23,7 @@ pub const BUILTINS: &[&str] = &[
 ];
 pub const NCC_SUBS: &[&str] = &[
     "register", "login", "logout", "me", "ns", "publish", "search", "info",
-    "install", "download", "key", "terminal", "update",
+    "install", "download", "key", "terminal", "update", "profile", "nodes", "grant", "living", "mcp",
 ];
 
 /// POSIX 运行时一句话摘要。

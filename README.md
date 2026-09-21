@@ -119,8 +119,12 @@ ncc install  @you/hotel-skill          # → ~/.ncc/packages/@you/hotel-skill/
 # 4) Automate publishing from CI
 ncc key create --label ci              # secret is printed once — store it securely
 
-# 5) Optional: presence and console
-ncc living --name my-mac --capabilities mcp,api
+# 5) Optional: your profile card and this machine as a device node
+ncc profile set --headline "Turning vague needs into shipped AI systems" \
+                --roles fde,agent-engineer --availability open
+ncc profile                            # your card + short link
+ncc living --name my-agent --kind agent --capabilities mcp,api   # register a node
+ncc nodes                              # my nodes + linked nodes
 ncc terminal
 ```
 
@@ -140,10 +144,20 @@ ncc terminal
 | `ncc info <target>` | Print an artifact's full record as JSON |
 | `ncc download <target>` | Download the artifact bytes |
 | `ncc install <target>` | Install into the local package directory |
-| `ncc key list` / `create` / `revoke` | Manage API keys for non-interactive use |
-| `ncc living` | Report this machine as a device node in your namespace |
+| `ncc key list` / `create` / `revoke` / `scopes` | Manage capability tokens (kind, scopes, namespace limits, expiry) |
+| `ncc living --name X --kind service\|agent\|assigned` | Register a node (= heartbeat report); the node declares what it is |
+| `ncc profile [show <username>]` | View your profile card, or someone else's |
+| `ncc profile roles` | List the work-role catalog |
+| `ncc profile set` | Update profile fields (reads first; only overwrites what you pass) |
+| `ncc profile username <name>` | Change your username |
+| `ncc profile work list` / `add` / `rm` | Manage the portfolio |
+| `ncc nodes` / `kinds` / `discover` | My nodes, the kind catalog, connectable nodes on this instance |
+| `ncc nodes link` / `label` / `unlink` | Link a node and give it a name label |
+| `ncc nodes region` / `recommend` | Region coverage and recommendations (agent-facing) |
+| `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `share`) |
 | `ncc terminal [status\|setup]` | Open the capability console / inspect the POSIX runtime |
 | `ncc update` | Check for a newer CLI or official package |
+| `ncc mcp` | Start as an **MCP server** over stdio, so any agent can drive NCC |
 | `ncc help <command>` | Show generated help for any command |
 
 Global flags:
@@ -192,18 +206,149 @@ Exactly one of `--file` or `--url` is required.
 
 `ncc install` lays artifacts out as `<root>/<namespace>/<slug>/` and writes a `package.json` alongside the artifact file recording the source reference, kind, version, `sha256`, size, install time — and the wrapper `manifest` / `harness` block when the artifact declares one.
 
-### `ncc living`
+### `ncc living` — registering a node
+
+Declaring **is** registering: the report both creates/updates the node and keeps its lease alive.
 
 | Option | Description |
 |---|---|
-| `--daemon` | Keep heartbeating on an interval instead of reporting once |
-| `--interval <SEC>` | Daemon interval. Defaults to `15` |
-| `--name <NAME>` | Device name. Defaults to `$HOSTNAME`, falling back to `<os>-<arch>` |
-| `--slug <SLUG>` | Device slug; derived from the name when omitted |
-| `--url <URL>` | Address others can reach this device at |
-| `--capabilities <a,b>` | Kinds this device can serve, comma-separated |
+| `--kind <service\|agent\|assigned>` | What this node is. Defaults to `service` |
+| `--name <NAME>` | Node name. Defaults to `$HOSTNAME`, falling back to `<os>-<arch>` |
+| `--slug <SLUG>` | Node slug; derived from the name when omitted |
+| `--url <URL>` | Address others can reach this node at |
+| `--capabilities <a,b>` | Kinds this node can serve, comma-separated |
+| `--daemon` / `--interval <SEC>` | Keep heartbeating instead of reporting once (default interval `15`) |
 
-`os`, `arch` and the CLI version are attached automatically. Only state and capability visibility are published — NCC never relays data on your behalf.
+`os`, `arch` and the CLI version are attached automatically. Only state and capability visibility are
+published — NCC never relays data on your behalf. A `visibility=public` node is discoverable by
+other users on the same NCC instance and can be linked with `ncc nodes link`.
+
+### `ncc profile`
+
+Your profile card: positioning roles, a portfolio, and the capabilities you have published. It is served at the root of the registry, so your username *is* your address:
+
+```
+ncc.ai/aya          → your card      ncc profile
+ncc.ai/ns/@aya      → your artifacts ncc profile roles
+ncc install @aya/x  → your artifacts
+```
+
+| Command | Description |
+|---|---|
+| `ncc profile [show [<username>]]` | Print a card (defaults to your own) |
+| `ncc profile roles [--group <id>]` | List the 20 work roles in 6 groups — these are the values for `--roles` |
+| `ncc profile set` | Update fields (see below) |
+| `ncc profile username <name>` | Change your username |
+| `ncc profile work list` | List portfolio entries with their ids |
+| `ncc profile work add --title …` | Add an entry |
+| `ncc profile work rm <id>` | Delete an entry |
+
+`ncc profile set` options:
+
+| Option | Description |
+|---|---|
+| `--username <NAME>` | Username: 3–30 lowercase letters, digits and hyphens; reserved words rejected |
+| `--name <TEXT>` | Display name |
+| `--headline <TEXT>` | One-line positioning |
+| `--bio <TEXT>` | Longer description |
+| `--location <TEXT>` | Location |
+| `--roles <a,b>` | Positioning roles; up to 5, first one is primary |
+| `--skills <a,b>` | Free-form skill tags; up to 12 |
+| `--availability <open\|collab\|hiring\|busy>` | Are you open to work / collaboration? |
+| `--visibility <public\|unlisted>` | `public` is listed in the people directory; `unlisted` is link-only |
+| `--email <ADDR>` | Contact email (publicly visible) |
+| `--link <key=value>` | Social link, repeatable — e.g. `--link github=https://github.com/you`. Pass `key=` to clear |
+
+`ncc profile work add` accepts `--title`, `--summary`, `--role`, `--tags`, `--year`, and one of `--url` (external link), `--share <S-…>` (an NCC Share page) or `--item <R-…>` (a registry artifact) — so a portfolio entry can point straight at work you published on NCC.
+
+> **`set` never wipes fields you did not mention.** The API replaces the whole card in one `PUT`, so the CLI reads the current values first and only overwrites what you passed. Changing your username also moves your personal namespace (`@old` → `@new`), which invalidates references written as `@old/…` — the CLI warns you when that happens.
+
+### `ncc nodes`, `ncc grant`
+
+NCC is **not an address book** — it exists so that different agent nodes can connect. Two
+independent layers, and mixing them up is the classic mistake:
+
+- a **link** means *reachable*;
+- a **grant** means *authorised*.
+
+```
+# register a node — declaring IS registering (heartbeat renews the lease)
+ncc living --name my-agent --kind agent --capabilities mcp,api
+ncc living --name delivery-svc --kind service --url https://svc.internal
+ncc living --name client-a-bot --kind assigned --slug client-a
+
+ncc nodes kinds                   # the kind catalog
+ncc nodes                         # my nodes + the nodes I have linked
+ncc nodes discover                # connectable nodes on this NCC instance
+ncc nodes link @aya/my-agent --label "delivery helper" --note "drafts for client requests"
+ncc nodes label NL-xxxx --label "delivery helper v2"
+ncc nodes unlink NL-xxxx
+
+ncc grant set --user @someone --kind artifact --ns @you   # may download my private artifacts
+ncc grant set --user @someone --kind share                # may view my private share pages
+ncc grant list --in                                       # what others granted me
+```
+
+| Concept | Question it answers | Grants data access? |
+|---|---|---|
+| Node | What this agent/service is, where it is, whether it can be reached | ❌ Identity and address only |
+| Link (`ncc nodes link`) | Which nodes my agent should connect to, under the name label I give them | ❌ Reachability only |
+| Grants (`artifact` / `share`) | Who may download my private artifacts / view my private share pages | ✅ Yes, per kind |
+| API keys | As what identity, with what powers, may a program act | ✅ Yes, by scope + namespace |
+
+**Node kinds.** A node declares what it is at registration: `service` (API / MCP server / gateway /
+data source), `agent` (serves a person) or `assigned` (assigned to a task, team or client — not its
+owner's private agent). The declaration belongs to the node, not to whoever links to it.
+
+**Linking needs no approval.** The same NCC instance is the same trust domain, so public nodes are
+mutually linkable; a link is *your* table entry, where you give the node a **name label** plus a
+purpose note so your agent knows whom to connect to and why. Private nodes never show up in
+discovery — that belongs to grants. Unlinking removes only your entry.
+
+**Region coverage and recommendations are agent-facing** (`ncc nodes region` /
+`ncc nodes recommend`, MCP: `ncc_region_profile` / `ncc_recommend_nodes`). A node's region comes
+from its owner's profile location. `recommend` is sorted server-side by how many nodes you already
+have in that region, so CLI, MCP and the web share one ordering instead of each inventing its own.
+Neither is shown on the website.
+
+### `ncc key`
+
+API keys are **capability tokens**: two independent constraints — `scopes` (what it may do) and
+`namespaces` (whose artifacts it may pull).
+
+```bash
+# read-only credential to hand to a customer or an agent
+ncc key create --label "client-A agent" --kind distribution --ns @you --expires 30
+
+ncc key list      # kind, scopes, namespaces, expiry, last use
+ncc key scopes    # the full scope vocabulary
+ncc key revoke <id>
+```
+
+| Option | Description |
+|---|---|
+| `--label <TEXT>` | Human-readable label |
+| `--kind <user\|distribution>` | `user` acts as you; `distribution` is read-only for handing out |
+| `--scopes <a,b,…>` | Explicit scopes; omit for the defaults of that kind |
+| `--ns <@slug>` | Limit to a namespace; repeatable. Omit for unrestricted |
+| `--note <TEXT>` | Who is it for, and what for |
+| `--expires <DAYS>` | Expiry in days; omit for a non-expiring token |
+
+The scope vocabulary is `registry:read`, `registry:download`, `registry:publish`, `profile:read`,
+`profile:write`, `contacts:read`, `contacts:write`, `grants:read`, `grants:write`, `living:write`
+and `keys:write`, with implications so older tokens keep working:
+`registry:publish ⇒ registry:download ⇒ registry:read`, `contacts:write ⇒ contacts:read`,
+`grants:write ⇒ grants:read`, `profile:write ⇒ profile:read`.
+
+Two properties worth relying on:
+
+- **No privilege escalation** — `keys:write` is never granted to a key, so a leaked token cannot mint
+  more tokens (`POST /api/auth/keys` with a key returns 403).
+- **Expiry is enforced** — with `--expires 30` the token stops working at the expiry instant.
+
+Hand a token to an agent by setting `NCC_TOKEN`, or write it into `~/.ncc/config.json`.
+A distribution key limited to `registry:read` + `registry:download` can search and download inside
+its namespace, and gets `403` for anything else — including publishing.
 
 ### `ncc terminal`
 
@@ -310,6 +455,9 @@ Source layout:
 | `src/main.rs` | Argument parsing (clap) and every command implementation |
 | `src/api.rs` | Thin HTTP client over `ureq`: JSON requests, raw uploads, error decoding |
 | `src/config.rs` | `~/.ncc/config.json` load/save and session handling |
+| `src/profile.rs` | Profile card, portfolio, role catalog |
+| `src/social.rs` | Contacts, friend requests, grants, region profile |
+| `src/mcp.rs` | MCP server over stdio (tool schemas + dispatch) |
 | `src/terminal.rs` | Command console, POSIX runtime detection, update check |
 | `src/tui.rs` | Full-screen ratatui TUI (used when stdin is a real TTY) |
 
@@ -339,9 +487,46 @@ Prebuilt targets: `darwin` (x86_64, arm64), `linux` (x86_64, arm64), `windows` (
 ```
 cli/                 Rust crate (bin: ncc)
 packages/ncc-cli/    npm wrapper (@fusedmodel/ncc-cli) — launcher + binary downloader
+agent/               Agent integration pack (MCP config, SKILL.md, harness manifest)
 release/bin/         Checked-in prebuilt binaries + checksums.txt
 scripts/             build-release.sh (cross-compile + checksums)
 ```
+
+## Use it from an agent
+
+`ncc mcp` runs NCC as an **MCP server** over stdio, so any MCP-capable agent can search the catalog,
+fetch artifacts, publish results and look up people — no extra service to run:
+
+```jsonc
+{ "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp"] } } }
+```
+
+| Tool | Purpose |
+|---|---|
+| `ncc_list_kinds` | What kinds exist and how many |
+| `ncc_search_catalog` | Search by keyword / kind / tag / namespace |
+| `ncc_get_artifact` | Full metadata for one artifact |
+| `ncc_fetch_artifact` | Fetch the artifact body (a SKILL.md can go straight into context) |
+| `ncc_publish_artifact` | Publish an artifact (needs credentials) |
+| `ncc_whoami` | Current account and namespaces |
+| `ncc_list_roles` | Work-role catalog |
+| `ncc_find_people` | Find people by role / skill |
+| `ncc_get_profile` | Someone's card: roles + portfolio + published capabilities |
+| `ncc_list_contacts` | Your address book, with effective regions |
+| `ncc_region_profile` | Where your network clusters, and in which roles |
+| `ncc_recommend_contacts` | Candidates by region / role, same-region-first |
+| `ncc_list_grants` | Grant relationships (outgoing / incoming) |
+| `ncc_list_friend_requests` | Friend requests (pending by default) |
+
+The people-related tools are **read-only on purpose**. Anything that changes what another party
+can obtain — adding contacts, granting access, accepting requests — stays in the CLI, where the
+user performs it deliberately.
+
+Search, fetch and the people directory need **no login**; only publishing does. `ncc mcp` writes only
+protocol messages to stdout and all logs to stderr — required by MCP's stdio transport.
+
+[`agent/`](agent) holds the distributable integration pack: the MCP setup, a `SKILL.md` for agents
+without MCP, and a `kind=harness` manifest (`mcp/stdio` loader) so any runtime can load it.
 
 ## Contributing
 

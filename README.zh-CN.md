@@ -119,8 +119,12 @@ ncc install  @you/hotel-skill          # → ~/.ncc/packages/@you/hotel-skill/
 # 4) 在 CI 中自动发布
 ncc key create --label ci              # secret 仅显示一次，请妥善保存
 
-# 5) 可选：设备接入与命令台
-ncc living --name my-mac --capabilities mcp,api
+# 5) 可选：名片与节点
+ncc profile set --headline "把模糊需求落成能上线的 AI 系统" \
+                --roles fde,agent-engineer --availability open
+ncc profile                            # 查看名片与短链
+ncc living --name my-agent --kind agent --capabilities mcp,api   # 注册一个节点
+ncc nodes                              # 我的节点 + 连接的节点
 ncc terminal
 ```
 
@@ -140,10 +144,20 @@ ncc terminal
 | `ncc info <target>` | 以 JSON 打印制品完整记录 |
 | `ncc download <target>` | 下载制品字节 |
 | `ncc install <target>` | 安装到本地包目录 |
-| `ncc key list` / `create` / `revoke` | 管理 API-Key（用于非交互场景） |
+| `ncc key list` / `create` / `revoke` / `scopes` | 管理能力令牌（类型 / 作用域 / 命名空间限定 / 过期） |
 | `ncc living` | 把本机作为设备节点上报到你的命名空间 |
+| `ncc profile [show <用户名>]` | 查看名片（默认自己，可看别人） |
+| `ncc profile roles` | 列出工作角色目录 |
+| `ncc profile set` | 设置名片字段（先读后写，只覆盖显式给出的字段） |
+| `ncc profile username <名>` | 改用户名 |
+| `ncc profile work list` / `add` / `rm` | 管理作品集 |
+| `ncc nodes` / `kinds` / `discover` | 我的节点、类型目录、本实例上可连接的节点 |
+| `ncc nodes link` / `label` / `unlink` | 连接节点并给 Name 标签 |
+| `ncc nodes region` / `recommend` | 区域覆盖与推荐（Agent 面） |
+| `ncc grant list` / `set` / `rm` | 按人授权（`artifact` / `share`） |
 | `ncc terminal [status\|setup]` | 打开能力命令台 / 查看 POSIX 运行时 |
 | `ncc update` | 检查 CLI 或官方包是否有新版本 |
+| `ncc mcp` | 以 **MCP server**（stdio）启动，让任意 Agent 驱动 NCC |
 | `ncc help <command>` | 查看任意命令的自动生成帮助 |
 
 全局参数：
@@ -204,6 +218,129 @@ ncc terminal
 | `--capabilities <a,b>` | 本设备可提供的 kind，逗号分隔 |
 
 `os`、`arch` 与 CLI 版本会自动附带。对外只发布状态与能力可见性 —— NCC 不会代传任何数据。
+
+### `ncc profile`
+
+你的公开名片：定位角色 + 作品集 + 已发布能力。它挂在注册中心的**顶层路径**上，所以用户名就是你的地址：
+
+```
+ncc.ai/aya          → 你的名片     ncc profile
+ncc.ai/ns/@aya      → 你的能力条目  ncc profile roles
+ncc install @aya/x  → 你的能力条目
+```
+
+| 命令 | 说明 |
+|---|---|
+| `ncc profile [show [<用户名>]]` | 打印名片（缺省是自己的） |
+| `ncc profile roles [--group <id>]` | 列出 6 组 20 个角色 —— 即 `--roles` 的取值 |
+| `ncc profile set` | 更新字段（见下） |
+| `ncc profile username <名>` | 改用户名 |
+| `ncc profile work list` | 列出作品及 id |
+| `ncc profile work add --title …` | 添加作品 |
+| `ncc profile work rm <id>` | 删除作品 |
+
+`ncc profile set` 参数：
+
+| 参数 | 说明 |
+|---|---|
+| `--username <NAME>` | 用户名：3–30 位小写字母/数字/连字符；保留字会被拒绝 |
+| `--name <TEXT>` | 显示名 |
+| `--headline <TEXT>` | 一句话定位 |
+| `--bio <TEXT>` | 个人简介 |
+| `--location <TEXT>` | 所在地 |
+| `--roles <a,b>` | 定位角色；最多 5 个，首个为主角色 |
+| `--skills <a,b>` | 自由技能标签；最多 12 个 |
+| `--availability <open\|collab\|hiring\|busy>` | 接洽状态 |
+| `--visibility <public\|unlisted>` | `public` 进人才目录；`unlisted` 仅直链可见 |
+| `--email <ADDR>` | 联系邮箱（公开展示） |
+| `--link <key=value>` | 外链，可重复 —— 如 `--link github=https://github.com/you`；传 `key=` 则清除 |
+
+`ncc profile work add` 支持 `--title`、`--summary`、`--role`、`--tags`、`--year`，以及三选一的 `--url`（外链）/ `--share <S-…>`（NCC Share 页）/ `--item <R-…>`（Registry 条目）—— 作品可以直接指回你在 NCC 上发布的成果。
+
+> **`set` 不会抹掉你没提到的字段。** 接口的 `PUT` 是整体替换，所以 CLI 先读现状、只覆盖你显式传入的字段。改用户名会连带改动个人命名空间（`@旧` → `@新`），使写成 `@旧/…` 的引用失效 —— 发生时会给出警告。
+
+### `ncc nodes` / `ncc grant`
+
+NCC **不做通讯录** —— 存在的意义是让不同的 Agent 节点能连起来。两层互相独立，
+混淆这两者是经典错误：
+
+- **连接** 代表「找得到」；
+- **授权** 代表「拿得到」。
+
+```
+# 注册节点 —— 声明即注册（心跳自动续租）
+ncc living --name my-agent --kind agent --capabilities mcp,api
+ncc living --name delivery-svc --kind service --url https://svc.internal
+ncc living --name client-a-bot --kind assigned --slug client-a
+
+ncc nodes kinds                   # 类型目录
+ncc nodes                         # 我的节点 + 我连接的节点
+ncc nodes discover                # 本 NCC 实例上可连接的节点
+ncc nodes link @aya/my-agent --label "交付助手" --note "接客户需求做初稿"
+ncc nodes label NL-xxxx --label "交付助手 v2"
+ncc nodes unlink NL-xxxx
+
+ncc grant set --user @某人 --kind artifact --ns @you   # 可下载我的私有制品
+ncc grant set --user @某人 --kind share                # 可看我的私有分享页
+ncc grant list --in                                    # 别人给我的授权
+```
+
+| 概念 | 回答的问题 | 是否放行数据 |
+|---|---|---|
+| 节点 Node | 这个 Agent/服务是什么、在哪、能不能连 | ❌ 只是身份与地址 |
+| 连接 Link | 我的 Agent 该连谁（含我给它起的 Name 标签） | ❌ 只代表「找得到」 |
+| 授权 Grant | 谁能下载我的私有制品 / 看我的私有分享页 | ✅ 按类型放行 |
+| API-Key | 某个程序以什么身份、能做什么 | ✅ 按作用域与命名空间放行 |
+
+**节点类型**：节点在注册时声明自己是什么 —— `service`（API / MCP server / 网关 / 数据源）、
+`agent`（为人服务的 Agent）、`assigned`（被指派给任务/团队/客户的 Agent）。
+声明属于节点本身，不是连接方说了算。
+
+**连接不需要对方审批**：同一个 NCC 实例就是同一个信任域，其上的公开节点彼此可连接。
+连接是**你自己这边的条目** —— 给它一个 **Name 标签**和用途备注，好让 Agent 知道该连谁、
+连过去干什么。别人的私有节点不会出现在 discover 里（那属于授权范畴）。断开只删你自己的条目。
+
+**区域覆盖与推荐是 Agent 面能力**（`ncc nodes region` / `ncc nodes recommend`，
+MCP 对应 `ncc_region_profile` / `ncc_recommend_nodes`）。节点的区域来自**归属者名片的所在地**；
+`recommend` 的排序在服务端完成（按「你已在该区域有几个节点」降序），
+CLI / MCP / 前端共用同一顺序。两者都不在网页上展示。
+
+### `ncc key`
+
+API-Key 是**能力令牌**，有两个独立约束：`scopes`（能做什么）与 `namespaces`（能拉谁的东西）。
+
+```bash
+# 发给客户或 Agent 的只读凭据
+ncc key create --label "客户A-Agent" --kind distribution --ns @you --expires 30
+
+ncc key list      # 类型 / 作用域 / 命名空间 / 过期 / 最近使用
+ncc key scopes    # 全部作用域词表
+ncc key revoke <id>
+```
+
+| 选项 | 说明 |
+|---|---|
+| `--label <TEXT>` | 备注名 |
+| `--kind <user\|distribution>` | `user` 代表你自己；`distribution` 只读，用于对外分发 |
+| `--scopes <a,b,…>` | 显式作用域；不传则取该类型的默认集 |
+| `--ns <@slug>` | 限定命名空间，可重复；不传 = 不限 |
+| `--note <TEXT>` | 用途备忘（给谁用、做什么） |
+| `--expires <DAYS>` | 有效天数；不传 = 长期有效 |
+
+作用域词表：`registry:read`、`registry:download`、`registry:publish`、`profile:read`、
+`profile:write`、`contacts:read`、`contacts:write`、`grants:read`、`grants:write`、`living:write`、
+`keys:write`；并带蕴含关系（避免旧令牌突然失效）：`registry:publish ⇒ registry:download ⇒ registry:read`、
+`contacts:write ⇒ contacts:read`、`grants:write ⇒ grants:read`、`profile:write ⇒ profile:read`。
+
+两个可以依赖的性质：
+
+- **不能自我提权** —— `keys:write` 从不发给 key，所以泄露的令牌签不出更多令牌
+  （用 key 调 `POST /api/auth/keys` 返回 403）。
+- **过期即失效** —— `--expires 30` 后，到期时刻起立刻不可用。
+
+把令牌交给 Agent：写进环境变量 `NCC_TOKEN`，或写进 `~/.ncc/config.json`。
+一个只有 `registry:read` + `registry:download` 的分发 key 能在限定空间内检索与下载，
+其它一律 403 —— 包括发布。
 
 ### `ncc terminal`
 
@@ -309,8 +446,9 @@ NCC_CONFIG=/tmp/ncc-dev.json ./target/release/ncc --base http://localhost:8181 m
 |---|---|
 | `src/main.rs` | 参数解析（clap）与所有命令实现 |
 | `src/api.rs` | 基于 `ureq` 的轻量 HTTP 客户端：JSON 请求、raw 上传、错误解码 |
-| `src/config.rs` | `~/.ncc/config.json` 读写与登录态处理 |
-| `src/terminal.rs` | 能力命令台、POSIX 运行时探测、更新检查 |
+| `src/config.rs` | `~/.ncc/config.json` 读写与登录态处理 || `src/profile.rs` | 名片、作品集、角色目录 |
+| `src/social.rs` | 通讯录、好友请求、授权、区域 profile |
+| `src/mcp.rs` | MCP server（stdio）：工具 schema 与分发 || `src/terminal.rs` | 能力命令台、POSIX 运行时探测、更新检查 |
 | `src/tui.rs` | 全屏 ratatui TUI（stdin 为真实 TTY 时启用） |
 
 值得保持的设计约束：依赖列表保持精简；所有操作都走公开 HTTP API，不另造私有协议；客户端永不成为机器之间的数据中转。
@@ -339,9 +477,45 @@ bash scripts/build-release.sh --all    # 交叉编译全部目标（需 `rustup 
 ```
 cli/                 Rust crate（bin: ncc）
 packages/ncc-cli/    npm 包装（@fusedmodel/ncc-cli）—— 启动器 + 二进制下载
+agent/               Agent 接入包（MCP 配置、SKILL.md、harness 契约）
 release/bin/         入库的预编译二进制 + checksums.txt
 scripts/             build-release.sh（交叉编译 + 校验和）
 ```
+
+## 让 Agent 使用
+
+`ncc mcp` 以 **MCP server** 方式（stdio）跑起 NCC，任何支持 MCP 的 Agent 都能检索目录、取回制品、
+发布成果、查找同行 —— 不需要额外服务：
+
+```jsonc
+{ "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp"] } } }
+```
+
+| 工具 | 用途 |
+|---|---|
+| `ncc_list_kinds` | 目录里有哪些类型、各多少条 |
+| `ncc_search_catalog` | 按关键词 / kind / tag / 命名空间检索 |
+| `ncc_get_artifact` | 单个制品的完整元数据 |
+| `ncc_fetch_artifact` | 取回制品正文（SKILL.md 可直接读进上下文） |
+| `ncc_publish_artifact` | 发布制品（需凭据） |
+| `ncc_whoami` | 当前账号与命名空间 |
+| `ncc_list_roles` | 工作角色目录 |
+| `ncc_find_people` | 按角色 / 技能找人 |
+| `ncc_get_profile` | 某人的名片：角色 + 作品集 + 已发布能力 |
+| `ncc_list_contacts` | 通讯录（含有效区域） |
+| `ncc_region_profile` | 人脉在哪些区域/职能更厚 |
+| `ncc_recommend_contacts` | 按区域 / 角色推荐，同区域优先 |
+| `ncc_list_grants` | 授权关系（给出的 / 收到的） |
+| `ncc_list_friend_requests` | 好友请求（默认只看待处理） |
+
+与人脉相关的工具**故意做成只读**。任何会改变「别人能拿到什么」的动作 —— 加人、授权、
+同意好友 —— 都留在 CLI 里，由用户明确执行。
+
+检索、取回与人才目录**无需登录**；只有发布需要凭据。`ncc mcp` 的 stdout 只输出协议消息、
+日志全部走 stderr —— 这是 MCP stdio 的硬要求。
+
+[`agent/`](agent) 是可分发的接入包：MCP 配置、给不支持 MCP 的 Agent 用的 `SKILL.md`，
+以及 `kind=harness` 契约（`mcp/stdio` loader），任何实现该 loader 的 runtime 都能加载。
 
 ## 参与贡献
 

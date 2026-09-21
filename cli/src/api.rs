@@ -86,6 +86,20 @@ pub fn request(
 pub fn get(cfg: &CliConfig, path: &str, token: Option<&str>) -> anyhow::Result<Value> {
     request(cfg, "GET", path, token, None, None, &[])
 }
+
+/// 查询参数转义（中文区域名必须转义，否则服务端解析 URL 失败）。
+pub fn urlenc(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'@' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
 pub fn post_json(cfg: &CliConfig, path: &str, token: Option<&str>, body: &Value) -> anyhow::Result<Value> {
     request(cfg, "POST", path, token, Some(body), None, &[])
 }

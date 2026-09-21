@@ -64,3 +64,8 @@ pub fn require_token(cfg: &CliConfig) -> anyhow::Result<String> {
         .filter(|t| !t.is_empty())
         .ok_or_else(|| anyhow::anyhow!("尚未登录，请先运行: ncc login"))
 }
+
+/// 已登录则返回 token（可选鉴权：公开资源带上登录态可看到更多，如自己的 unlisted 名片）。
+pub fn token_opt(cfg: &CliConfig) -> Option<String> {
+    cfg.token.clone().filter(|t| !t.is_empty())
+}

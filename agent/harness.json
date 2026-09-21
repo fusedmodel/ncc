@@ -1,0 +1,34 @@
+{
+  "kind": "harness",
+  "harness": {
+    "loader": "mcp/stdio",
+    "entry": "run.sh",
+    "runtime": {
+      "sandbox": "local",
+      "transport": "stdio",
+      "requires": ["ncc"]
+    },
+    "protocols": ["mcp"],
+    "description": "把 NCC Registry 作为 MCP server 暴露给任意 Agent：检索、取回、发布能力制品，并按角色检索人才目录。",
+    "tools": [
+      "ncc_list_kinds",
+      "ncc_search_catalog",
+      "ncc_get_artifact",
+      "ncc_fetch_artifact",
+      "ncc_publish_artifact",
+      "ncc_whoami",
+      "ncc_list_roles",
+      "ncc_find_people",
+      "ncc_get_profile"
+    ],
+    "inputs": [
+      { "name": "target", "type": "string", "description": "制品引用 @namespace/slug 或 R-… id" },
+      { "name": "query", "type": "string", "description": "检索关键词" },
+      { "name": "kind", "type": "string", "description": "制品类型过滤" }
+    ],
+    "outputs": [
+      { "name": "content", "type": "text", "description": "文本结果（检索列表 / 元数据 JSON / 制品正文）" }
+    ],
+    "living": false
+  }
+}
