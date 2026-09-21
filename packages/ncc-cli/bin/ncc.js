@@ -13,7 +13,25 @@ const path = require('path');
 const PKG_ROOT = path.join(__dirname, '..');
 const REPO_ROOT = path.join(PKG_ROOT, '..', '..');
 const HOME = process.env.HOME || os.homedir();
-const NCC_BIN = path.join(HOME, '.ncc', 'bin', 'ncc');
+
+// ⚠️ Windows 下**必须**带 .exe 后缀。
+//
+// 注意这是**本地落盘名**，与下载 URL 里的资产名是两回事 —— 后者由
+// platformFile() 生成（ncc-windows-x86_64.exe），本来就是对的；这里错的是
+// 存到 ~/.ncc/bin/ 之后叫什么。
+//
+// 实测（Windows 11 + Node 22，扩展名 × 目录 的 2×2 隔离）：
+//     ~/.ncc/bin/ncc       → spawn ENOENT
+//     ~/.ncc/bin/ncc.exe   → 正常执行
+//   目录不影响，**扩展名是唯一变量**。PE 文件没有 .exe 后缀时 Node 的
+//   CreateProcess 直接找不到它。
+//
+// 后果是每个 Windows 用户第一次 `npx @fusedmodel/ncc-cli` 必然失败：
+// 下载成功、文件正确、就是执行不了，报
+//   ✗ 执行 ncc 失败：spawn C:\Users\...\.ncc\bin\ncc ENOENT
+// 兄弟工程 rsi3d 的 launcher.js 用 exeName() 加后缀，所以没这个问题。
+const EXE = process.platform === 'win32' ? '.exe' : '';
+const NCC_BIN = path.join(HOME, '.ncc', 'bin', 'ncc' + EXE);
 
 function platformFile() {
   const p = os.platform();
@@ -28,7 +46,7 @@ function candidates() {
   if (process.env.NCC_BIN) list.push(process.env.NCC_BIN);
   list.push(path.join(PKG_ROOT, 'vendor', platformFile()));
   list.push(NCC_BIN);
-  list.push(path.join(REPO_ROOT, 'cli', 'target', 'release', 'ncc'));
+  list.push(path.join(REPO_ROOT, 'cli', 'target', 'release', 'ncc' + EXE));
   return list;
 }
 

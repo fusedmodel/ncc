@@ -1,6 +1,6 @@
 {
   "name": "@fusedmodel/ncc-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "npm wrapper for the NCC CLI: locates (or downloads) the platform Rust binary and runs it.",
   "license": "Apache-2.0",
   "repository": {
@@ -29,6 +29,11 @@
     "postinstall": "node bin/install.js"
   },
   "files": [
-    "bin"
-  ]
+    "bin",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
 }
