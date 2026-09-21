@@ -1,0 +1,267 @@
+name: Release
+
+# Tag 驱动的发布：push 一个 `v*` tag，就在原生 runner 上构建各平台二进制，
+# 生成 checksums.txt，创建 GitHub Release 并上传全部产物。
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# 【重跑】不要用 Run 页面上的 "Re-run all jobs" —— 它沿用该 run 当时的提交里的
+# 工作流，也就是 tag 指向的那个旧版本；工作流本身写错时重跑等于白跑。
+# 正确做法是 Actions → Release → Run workflow，分支选 main，tag 填 v0.1.0。
+#
+# ============================================================================
+# 【命名契约 —— 改这里必须同步改另外两处】
+#   packages/ncc-cli/bin/ncc.js 的 platformFile()   —— npm 包装按这个拼下载 URL
+#   scripts/build-release.sh                        —— 本地构建走同一套命名
+# 产物名：ncc-<os>-<arch>[.exe]
+#   os   ∈ {darwin, linux, windows}
+#   arch ∈ {x86_64, arm64}
+# ⚠️ 注意 os 用的是 **windows**（不是 Node 的 process.platform 原值 win32），
+#    arch 用的是 **x86_64**（不是 x64）。兄弟工程 rsi3d 的约定恰好相反
+#    （那边直接用 win32/x64），两边不要互相"统一" —— 各自配各自的包装脚本。
+# ============================================================================
+#
+# 发布后 npm 包装即可按 https://github.com/fusedmodel/ncc/releases/latest/download
+# 拉到二进制（这是 packages/ncc-cli/bin/install.js 的默认基址）。
+#
+# 用原生 runner 而不是交叉编译：与 RATSA 同一套结论 —— 交叉编译容易踩平台相关
+# 汇编/链接器的坑，而 GitHub 的 runner 已预装 Rust，无需第三方 toolchain action。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag，例如 v0.1.0（注意：上方 'Use workflow from' 必须保持 main，不能选这个 tag）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # 先把「发布哪个 tag / 哪个版本」定下来，并做一致性校验。
+  # 产物名里嵌了 version，如果 tag 和 Cargo.toml 对不上，用户按 tag 拼出来的
+  # URL 会和实际资产名错位 —— 宁可在构建前就失败。
+  prepare:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 手动触发时发布指定 tag 的内容；tag push 时就用该 tag 自身。
+          ref: ${{ inputs.tag || github.ref }}
+
+      - id: resolve
+        shell: bash
+        env:
+          # 经 env 传入而不是直接插进脚本，避免把外部输入拼进 shell。
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            # "Use workflow from" 下拉框必须是 main。若选了 tag，GitHub 加载的是
+            # 那个 tag 里当时的工作流文件 —— main 上的修复一律不生效，而且会
+            # 静默地按旧矩阵构建。
+            if [ "${GITHUB_REF_TYPE}" != "branch" ]; then
+              echo "::error::'Use workflow from' 必须选 main，当前是 ${GITHUB_REF_TYPE}:${GITHUB_REF_NAME} —— 选 tag 会用该 tag 里的旧工作流" >&2
+              exit 1
+            fi
+            tag="$INPUT_TAG"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag 必须以 v 开头，收到 '${tag}'" >&2; exit 1 ;;
+          esac
+
+          # CLI 是**独立 crate**（自带 Cargo.lock），版本号在 cli/Cargo.toml 里，
+          # 不在仓库根 —— 根目录没有 Cargo.toml。
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' cli/Cargo.toml | head -1)
+          if [ -z "$version" ]; then
+            echo "::error::无法从 cli/Cargo.toml 读出 version" >&2
+            exit 1
+          fi
+
+          if [ "v${version}" != "${tag}" ]; then
+            echo "::error::tag ${tag} 与 cli/Cargo.toml 的 version ${version} 不一致" >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "将发布 ${tag}（version ${version}）"
+
+  build:
+    needs: prepare
+    # 一个平台挂了不要连坐，其余平台仍然产出，方便只重跑失败的那个。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14 # Apple Silicon
+            os: darwin
+            arch: arm64
+          # 故意不用 macos-13（Intel）：该 runner 已被 GitHub 弃用，实测排 10 分钟
+          # 也拿不到机器，会一直卡在 queued。改成在 arm64 的 macos-14 上交叉编译
+          # —— Apple 工具链本就能同时出 x86_64。
+          - runner: macos-14
+            os: darwin
+            arch: x86_64
+            target: x86_64-apple-darwin
+          # 用 22.04 而不是 ubuntu-latest：glibc 基线更低，老发行版上跑得起来。
+          - runner: ubuntu-22.04
+            os: linux
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            os: linux
+            arch: arm64
+          - runner: windows-latest
+            os: windows
+            arch: x86_64
+          - runner: windows-11-arm
+            os: windows
+            arch: arm64
+
+    runs-on: ${{ matrix.runner }}
+    # 排队时间也算在 timeout 内：万一某个 runner label 失效，作业会在 30 分钟后
+    # 明确失败，而不是无限期卡在 queued 把整个 release 拖住。
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - name: 准备交叉编译目标
+        if: matrix.target != ''
+        shell: bash
+        run: rustup target add ${{ matrix.target }}
+
+      # 不用 scripts/build-release.sh：那个脚本的 --all 分支靠 rustup target add
+      # 静默跳过不可用的 target（"✗ 跳过"），CI 里会变成"成功但少几个平台"；
+      # 而默认分支只构建当前平台、且用 uname 判平台（Windows 上给的是 unknown）。
+      # CI 要的是「要么全出，要么明确失败」。
+      - name: 构建
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          if [ -n "$TARGET" ]; then
+            cargo build --manifest-path cli/Cargo.toml --release --locked --target "$TARGET"
+          else
+            cargo build --manifest-path cli/Cargo.toml --release --locked
+          fi
+
+      - name: 按约定命名
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          OS: ${{ matrix.os }}
+          ARCH: ${{ matrix.arch }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          ext=""
+          if [ "$OS" = "windows" ]; then ext=".exe"; fi
+
+          # 指定 --target 时产物落在 cli/target/<triple>/release/，
+          # 否则在 cli/target/release/
+          if [ -n "$TARGET" ]; then
+            src="cli/target/${TARGET}/release/ncc${ext}"
+          else
+            src="cli/target/release/ncc${ext}"
+          fi
+
+          if [ ! -f "$src" ]; then
+            echo "::error::找不到构建产物 $src" >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$src" "dist/ncc-${OS}-${ARCH}${ext}"
+          cp "$src" "dist/ncc-latest-${OS}-${ARCH}${ext}"
+          chmod +x dist/* 2>/dev/null || true
+
+          # 拦「构建悄悄产出空文件/脚本占位」这一类：真实二进制是 MB 量级，
+          # 而 npm 包装的下载侧也有一条同样的下限检查（<1024 字节即拒绝安装）。
+          size=$(wc -c < "dist/ncc-${OS}-${ARCH}${ext}" | tr -d ' ')
+          echo "产物大小：${size} 字节"
+          if [ "$size" -lt 102400 ]; then
+            echo "::error::产物只有 ${size} 字节，不像一个真实的二进制" >&2
+            exit 1
+          fi
+
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ncc-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  # checksums.txt 在这里统一生成：针对「即将上传的那批文件」算，而不是各平台各算一份再合并。
+  release:
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: 生成 checksums.txt
+        shell: bash
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          # 用裸文件名（不要 ./*），否则 checksums.txt 里的路径会带 ./ 前缀，
+          # 而 npm 包装是按 basename 去查的。
+          sha256sum * > checksums.txt
+          echo "--- checksums.txt ---"
+          cat checksums.txt
+
+          # 平台数量是最容易静默出错的维度：矩阵里某个 runner label 失效时，
+          # fail-fast: false 会让作业整体成功、只是少一个平台。
+          # 期望 6 平台 × 2 份（带版本 + latest 别名）= 12 个文件。
+          n=$(ls -1 | grep -c '^ncc-' || true)
+          echo "产物文件数：$n（期望 12）"
+          if [ "$n" -ne 12 ]; then
+            echo "::error::产物数量不对（$n ≠ 12），可能是某个平台的 runner 没拿到机器 —— 检查 build 矩阵的每个作业是否都成功" >&2
+            exit 1
+          fi
+
+      - name: 创建或更新 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          # 可重入：手动重跑时 release 已存在，走覆盖上传而不是报错退出。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，覆盖上传"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "NCC CLI ${TAG}" \
+              --generate-notes
+          fi
+
+          echo "=== 已发布资产 ==="
+          gh release view "$TAG" --json assets --jq '.assets[].name'

@@ -29,6 +29,11 @@
     "postinstall": "node bin/install.js"
   },
   "files": [
-    "bin"
-  ]
+    "bin",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  }
 }
