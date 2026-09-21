@@ -1,12 +1,18 @@
 #!/usr/bin/env node
-// postinstall：尽力下载对应平台二进制到 ~/.ncc/bin/ncc（失败不阻塞安装）。
+// postinstall：尽力下载对应平台二进制到 ~/.ncc/bin/ncc[.exe]（失败不阻塞安装）。
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
 const HOME = process.env.HOME || os.homedir();
-const dest = path.join(HOME, '.ncc', 'bin', 'ncc');
+
+// ⚠️ Windows 下必须带 .exe 后缀 —— 与 bin/ncc.js 里的 EXE 保持同一条约定。
+//    没有后缀的 PE 文件在 Windows 上 spawn 会直接 ENOENT（实测 2×2 隔离确认：
+//    目录无关、扩展名是唯一变量）。两处必须同时改，否则 postinstall 存成
+//    ncc.exe、启动器却去找 ncc（或反过来），表现是"刚装完就要重新下载"。
+const EXE = process.platform === 'win32' ? '.exe' : '';
+const dest = path.join(HOME, '.ncc', 'bin', 'ncc' + EXE);
 
 // 已存在则不重复下载
 try {
@@ -16,7 +22,7 @@ try {
 
 // 仓库本地已有 Rust 构建则无需下载
 try {
-  const dev = path.join(__dirname, '..', '..', '..', 'cli', 'target', 'release', 'ncc');
+  const dev = path.join(__dirname, '..', '..', '..', 'cli', 'target', 'release', 'ncc' + EXE);
   fs.accessSync(dev, fs.constants.X_OK);
   process.exit(0);
 } catch { /* 继续 */ }
