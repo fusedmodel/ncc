@@ -156,7 +156,7 @@ ncc terminal
 | `ncc nodes region` / `recommend` | 区域覆盖与推荐（Agent 面） |
 | `ncc grant list` / `set` / `rm` | 按人授权（`artifact` / `share`） |
 | `ncc terminal [status\|setup]` | 打开能力命令台 / 查看 POSIX 运行时 |
-| `ncc update` | 检查 CLI 或官方包是否有新版本 |
+| `ncc upgrade` | 把 CLI 二进制就地升级到最新发布版（`--check` 只检查不下载，`--force` 强制重装）|
 | `ncc mcp` | 以 **MCP server**（stdio）启动，让任意 Agent 驱动 NCC |
 | `ncc help <command>` | 查看任意命令的自动生成帮助 |
 
@@ -388,8 +388,9 @@ ncc key revoke <id>
 | `NCC_PACKAGES_DIR` | CLI | `ncc install` 的安装根目录，默认 `~/.ncc/packages` |
 | `NCC_INVITE_CODE` | CLI | 省略 `--invite` 时，`ncc register` 使用的邀请码 |
 | `NCC_BIN` | npm 包装 | 强制指定二进制路径（最先检查） |
-| `NCC_RELEASE_BASE` | 安装脚本、npm 包装、`ncc update` | 下载发布二进制的基址，默认本仓库的 GitHub Releases |
-| `NCC_UPDATE_URL` | `ncc update` | 最新版本查询端点，默认 GitHub releases API |
+| `NCC_RELEASE_BASE` | 安装脚本、npm 包装、`ncc upgrade` | 下载发布二进制的基址，默认本仓库的 GitHub Releases |
+| `NCC_UPDATE_URL` | `ncc upgrade` | 最新版本查询端点，默认 GitHub releases API |
+| `NCC_HOME` | 安装脚本、npm 包装、`ncc upgrade` | 覆盖用来定位 `~/.ncc/bin/ncc` 的用户目录。测试时用，必须与包装脚本看到的同一个值 |
 
 `HOME`、`HOSTNAME`、`SHELL` 会被读取用于推导默认值（配置位置、设备名、POSIX 摘要），可按常规方式覆盖。
 
@@ -466,7 +467,7 @@ bash scripts/build-release.sh --all    # 交叉编译全部目标（需 `rustup 
 
 1. 更新 `cli/Cargo.toml`（并刷新 `cli/Cargo.lock`）与 `packages/ncc-cli/package.json` 的版本号。
 2. 运行 `scripts/build-release.sh --all`。
-3. 打 tag 并发布 GitHub Release，附上这些二进制 —— 安装脚本、npm 包装与 `ncc update` 都以此为准。
+3. 打 tag 并发布 GitHub Release，附上这些二进制 —— 安装脚本、npm 包装与 `ncc upgrade` 都以此为准。
 4. 在 `packages/ncc-cli` 目录执行 `npm publish --access public`。
 5. 回来更新[当前状态](#当前状态)：一旦有了 Release，上面的安装脚本与 npm 路径就正式可用。
 

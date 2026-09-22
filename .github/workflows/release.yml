@@ -10,9 +10,12 @@ name: Release
 # 正确做法是 Actions → Release → Run workflow，分支选 main，tag 填 v0.1.0。
 #
 # ============================================================================
-# 【命名契约 —— 改这里必须同步改另外两处】
-#   packages/ncc-cli/bin/ncc.js 的 platformFile()   —— npm 包装按这个拼下载 URL
-#   scripts/build-release.sh                        —— 本地构建走同一套命名
+# 【命名契约 —— 改这里必须同步改另外四处】
+#   packages/ncc-cli/bin/ncc.js 的 platformFile()      —— npm 启动器按这个拼下载 URL
+#   packages/ncc-cli/bin/install.js 的 platformFile()  —— postinstall 里是**另一份拷贝**
+#                                                        （原先这条注释漏了它，只写了「两处」）
+#   cli/src/upgrade.rs 的 asset_name()                 —— `ncc upgrade` 按这个拼下载 URL
+#   scripts/build-release.sh                           —— 本地构建走同一套命名
 # 产物名：ncc-<os>-<arch>[.exe]
 #   os   ∈ {darwin, linux, windows}
 #   arch ∈ {x86_64, arm64}

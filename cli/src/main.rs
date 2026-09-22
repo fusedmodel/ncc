@@ -5,6 +5,7 @@ mod nodes;
 mod profile;
 mod terminal;
 mod tui;
+mod upgrade;
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand};
@@ -80,8 +81,11 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<TermAction>,
     },
-    /// 检查 NCC CLI / 官方包 @ncc/terminal 更新
-    Update,
+    /// 自更新：把 CLI 二进制升级到发布通道里的最新版本（--check 只检查、不下载）
+    ///
+    /// `update` 是隐藏别名，老文档与脚本里的 `ncc update` 仍可用（但不再出现在 help 里）。
+    #[command(alias = "update")]
+    Upgrade(upgrade::UpgradeArgs),
     /// API-Key：ncc key create --label ci | ncc key list | ncc key revoke <id>
     #[command(subcommand)]
     Key(KeyCmd),
@@ -332,10 +336,7 @@ fn run(cfg: &CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
                 }
             }
         },
-        Cmd::Update => {
-            println!("{}", terminal::update_check());
-            Ok(())
-        },
+        Cmd::Upgrade(a) => upgrade::run(a),
         Cmd::Key(k) => cmd_key(cfg, k),
         Cmd::Living(a) => cmd_living(cfg, a),
         Cmd::Profile(p) => match &p.action {
@@ -584,8 +585,9 @@ fn packages_dir() -> PathBuf {
     if let Ok(p) = std::env::var("NCC_PACKAGES_DIR") {
         return PathBuf::from(p);
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".ncc").join("packages")
+    // 走 config::home_dir() 而不是直接读 $HOME —— 后者在原生 Windows shell 上是空的，
+    // 会算成相对路径 ./.ncc/packages（见 config::home_dir 的说明）。
+    config::ncc_dir().join("packages")
 }
 
 /// 从存储 URL 推断文件扩展名（如 .md / .json），无则返回空串

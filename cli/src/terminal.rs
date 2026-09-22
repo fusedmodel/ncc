@@ -146,7 +146,7 @@ pub fn shell_capture(line: &str) -> Result<String> {
     Ok(combine_output(&out))
 }
 
-/// 检查官方包 / CLI 新版本（`ncc update`）。
+/// 检查官方包 / CLI 新版本。给 `ncc upgrade --check` 用，Terminal 命令台的 `update` 也调它。
 pub fn update_check() -> String {
     let cur = env!("CARGO_PKG_VERSION");
     let mut s = format!("NCC CLI v{cur} · official package {OFFICIAL} v{VERSION}");
@@ -187,7 +187,8 @@ pub fn update_check() -> String {
     s
 }
 
-fn release_base() -> String {
+/// 发布基址（`ncc upgrade` 也从这里拼资产 URL，故 pub）。
+pub fn release_base() -> String {
     env::var("NCC_RELEASE_BASE")
         .unwrap_or_else(|_| "https://github.com/fusedmodel/ncc/releases/latest".into())
 }

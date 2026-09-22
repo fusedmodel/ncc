@@ -156,7 +156,7 @@ ncc terminal
 | `ncc nodes region` / `recommend` | Region coverage and recommendations (agent-facing) |
 | `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `share`) |
 | `ncc terminal [status\|setup]` | Open the capability console / inspect the POSIX runtime |
-| `ncc update` | Check for a newer CLI or official package |
+| `ncc upgrade` | Upgrade the CLI binary in place (`--check` only reports, `--force` reinstalls) |
 | `ncc mcp` | Start as an **MCP server** over stdio, so any agent can drive NCC |
 | `ncc help <command>` | Show generated help for any command |
 
@@ -396,8 +396,9 @@ Inside the console:
 | `NCC_PACKAGES_DIR` | CLI | Install root for `ncc install`. Defaults to `~/.ncc/packages` |
 | `NCC_INVITE_CODE` | CLI | Invite code for `ncc register` when `--invite` is omitted |
 | `NCC_BIN` | npm wrapper | Force a specific binary path (checked first) |
-| `NCC_RELEASE_BASE` | install script, npm wrapper, `ncc update` | Base URL for downloading release binaries. Defaults to this repo's GitHub Releases |
-| `NCC_UPDATE_URL` | `ncc update` | Endpoint used for the latest-release lookup. Defaults to the GitHub releases API |
+| `NCC_RELEASE_BASE` | install script, npm wrapper, `ncc upgrade` | Base URL for downloading release binaries. Defaults to this repo's GitHub Releases |
+| `NCC_UPDATE_URL` | `ncc upgrade` | Endpoint used for the latest-release lookup. Defaults to the GitHub releases API |
+| `NCC_HOME` | install script, npm wrapper, `ncc upgrade` | Overrides the user home used to locate `~/.ncc/bin/ncc`. Handy for tests; must be the same value the wrappers see |
 
 `HOME`, `HOSTNAME` and `SHELL` are read for defaults (config location, device name, POSIX summary) and can be overridden as usual.
 
@@ -476,7 +477,7 @@ To cut a release:
 
 1. Bump the version in `cli/Cargo.toml` (and refresh `cli/Cargo.lock`) and `packages/ncc-cli/package.json`.
 2. Run `scripts/build-release.sh --all`.
-3. Tag and publish a GitHub Release with those binaries attached — this is what the install script, the npm wrapper and `ncc update` all resolve against.
+3. Tag and publish a GitHub Release with those binaries attached — this is what the install script, the npm wrapper and `ncc upgrade` all resolve against.
 4. `npm publish --access public` from `packages/ncc-cli`.
 5. Update the [Status](#status) section: once a release exists, the install script and npm paths above become live.
 
