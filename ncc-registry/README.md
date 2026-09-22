@@ -73,6 +73,9 @@ NCCR_ROLE=worker NCCR_PORT=8283 NCCR_DATA_DIR=./data/worker-a \
 worker 启动即 `join`，之后每 `NCCR_HEARTBEAT` 心跳一次，把本地目录一并报上去。
 master 侧 30s 清理一次失联 worker（`4 × NCCR_NODE_TTL`）及其目录。
 
+> 字节放独立盘 / NAS：加 `NCCR_BLOB_DIR=/mnt/nas/ncc-blobs`（库存哪儿用 `NCCR_DB_PATH`），
+> 见 [目录与存储](#目录与存储)。
+
 ### ③ CLI 接进来（Agent 插件视角）
 
 ```bash
@@ -185,14 +188,47 @@ ncc registry rm @alice/x --yes                                         # 下架 
   （心跳有延迟，刚分发完就下架得能收干净）；全部回收成功才清账；
 - 回收只删副本，worker 自己发布的条目不受影响（`revoke` 只动 `origin=replica` 的行）。
 
+## 目录与存储
+
+节点只用本地磁盘，**放哪里都能配**（内网部署最常见的诉求：字节放 NAS / 独立盘，库存本地 SSD）：
+
+| 目录 | env | 默认 | 装什么 |
+|---|---|---|---|
+| 数据根 | `NCCR_DATA_DIR` | `./data` | `node-id`、`jwt-secret`，以及下面两项的默认落脚点 |
+| 制品字节 | `NCCR_BLOB_DIR` | `<data>/blobs` | **上传写这里、下载从这里读**（经 `/blobs/*` 公开） |
+| 库文件 | `NCCR_DB_PATH` | `<data>/ncc-registry.db` | SQLite 库（含 `-wal` / `-shm`） |
+
+- **相对路径按数据根解析**，不是按当前工作目录 —— 换个目录启动不会忽地换地方；
+  解析完成后统一转成**绝对路径**，启动日志与 `GET /api/meta` 里报出的就是真正生效的路径：
+
+  ```console
+  $ NCCR_DATA_DIR=/srv/ncc NCCR_BLOB_DIR=/mnt/nas/ncc-blobs NCCR_DB_PATH=/srv/ssd/ncc.sqlite ./ncc-registry
+    数据根   /srv/ncc
+    制品字节 /mnt/nas/ncc-blobs   （上传写这里，下载从这里读）
+    库文件   /srv/ssd/ncc.sqlite
+  ```
+
+- 服务启动时会自动建目录（含库文件的父目录）；目录不可写时直接报错退出，不会静默回退。
+- 字节目录里就是普通文件（文件名随机化），**可以直接拿系统工具看、拷、备份**：
+
+  ```bash
+  ls /mnt/nas/ncc-blobs                      # 每个制品一个文件
+  ```
+
+- **备份**：库 + 字节目录（可能在不同盘上），或整包 `NCCR_DATA_DIR`（默认布局下二者都在里面）。
+  身份与密钥在数据根下，**丢了两样都会换身份**：`node-id` 变了在集群里就是个新节点。
+- **共享/只读目录**：`NCCR_BLOB_DIR` 指向挂载的共享目录时，多个节点可以共看同一批字节，
+  但“写入”仍各自都在自己那份（本服务不做多写者协调）。
+
 ## 配置（`NCCR_*`）
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `NCCR_ROLE` | `master` | `master`（权威节点）\| `worker`（边缘托管点） |
 | `NCCR_PORT` | `8282` | 监听端口（刻意与平台的 8181 错开，两者可同机共存） |
-| `NCCR_DATA_DIR` | `./data` | 数据目录：`ncc-registry.db` + `blobs/` + `node-id` + `jwt-secret` |
-| `NCCR_BLOB_DIR` | `<data>/blobs` | 制品字节目录（经 `/blobs/*` 公开） |
+| `NCCR_DATA_DIR` | `./data` | 数据根（自动创建）：`node-id` + `jwt-secret`，以及下面两项的默认落脚点 |
+| `NCCR_BLOB_DIR` | `<data>/blobs` | **制品字节目录**：上传写这里、下载从这里读（经 `/blobs/*` 公开）；相对路径按数据根解析 |
+| `NCCR_DB_PATH` | `<data>/ncc-registry.db` | SQLite 库文件（可与数据根分开，比如库存本地 SSD、字节放 NAS） |
 | `NCCR_PUBLIC_URL` | `http://localhost:<port>` | 别人怎么访问本节点（下载 URL、控制台、集群上报都用它） |
 | `NCCR_NODE_NAME` | 主机名 | 节点名 |
 | `NCCR_NODE_REGION` | 空 | 节点区域（如 `上海-内网`；发现与区域聚合按它分类） |
@@ -296,8 +332,9 @@ bash scripts/smoke.sh      # 自带启停：master + worker 两节点，端口 1
 聚合目录（`via=worker`）、能力路由、**master 代理 worker 字节且 `sha256` 一致**、
 **接入票据（短链形态 / 令牌最小权限 / 错 secret 与次数用尽被拒）**、
 **授权（私有制品与私有节点：未授权不可见 → 授权后可见可取 → 撤销后立即失效）**、
-**集群写（发布即分发 → worker 副本 sha256 一致且不可本地改 → 下架回收副本）**。
-当前 54 项检查全绿。
+**集群写（发布即分发 → worker 副本 sha256 一致且不可本地改 → 下架回收副本）**、
+**存储目录可配置（字节/库/数据根各指一处，且默认布局不变）**。
+当前 61 项检查全绿。
 
 ## 与其它组件的关系
 

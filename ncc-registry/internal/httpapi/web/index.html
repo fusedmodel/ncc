@@ -144,6 +144,9 @@ async function loadSelf() {
     ['制品（公开已发布）', m.counts?.artifacts ?? 0],
     ['托管节点', m.counts?.hostedNodes ?? 0],
     ['账号', m.counts?.users ?? 0],
+    ['制品字节目录', m.storage?.blobDir],
+    ['库文件', m.storage?.dbPath],
+    ['数据根目录', m.storage?.dataDir],
   ]);
   $('foot').textContent = m.about || '';
   $('cliBox').innerHTML = [

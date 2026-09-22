@@ -31,7 +31,8 @@ type Config struct {
 	Port      int
 	Addr      string
 	DataDir   string
-	BlobDir   string
+	BlobDir   string // 制品字节（上传落盘 / 下载读取）的本地目录
+	DBPath    string // SQLite 库文件（可与 DataDir 分开，比如库存本地 SSD、字节放 NAS）
 	PublicURL string // 别人怎么访问本节点（集群路由与下载 URL 都用它）
 	Console   bool   // 是否托管内置 Web 控制台
 
@@ -97,21 +98,36 @@ func envBool(key string, def bool) bool {
 	return def
 }
 
-// Load 读取配置。会确保 DataDir 存在，并落盘 node-id / jwt-secret，
+// Load 读取配置。会确保各目录存在，并落盘 node-id / jwt-secret，
 // 这样节点重启后身份与登录态都还在。
+//
+// 目录全都能单独指定（内网部署常见诉求：字节放 NAS/独立盘，库存本地 SSD）：
+//
+//	NCCR_DATA_DIR  数据根（默认 ./data）—— 身份/密钥/库/字节的默认落脚点
+//	NCCR_DB_PATH   SQLite 库文件（默认 <data>/ncc-registry.db）
+//	NCCR_BLOB_DIR  制品字节目录（默认 <data>/blobs）—— 上传写这里，下载从这里读
+//
+// 相对路径一律按数据根解析（不是按当前工作目录），这样换个目录启动也不会忽地换地方。
 func Load() (*Config, error) {
 	role := strings.ToLower(envOr("NCCR_ROLE", RoleMaster))
 	if !ValidRole(role) {
 		return nil, fmt.Errorf("NCCR_ROLE 必须是 master 或 worker，收到 %q", role)
 	}
 	port := envInt("NCCR_PORT", 8282)
-	dataDir := envOr("NCCR_DATA_DIR", "./data")
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	dataDir, err := resolveDir("", envOr("NCCR_DATA_DIR", "./data"))
+	if err != nil {
 		return nil, fmt.Errorf("创建数据目录失败: %w", err)
 	}
-	blobDir := envOr("NCCR_BLOB_DIR", filepath.Join(dataDir, "blobs"))
-	if err := os.MkdirAll(blobDir, 0o755); err != nil {
-		return nil, fmt.Errorf("创建制品目录失败: %w", err)
+	blobDir, err := resolveDir(dataDir, envOr("NCCR_BLOB_DIR", "blobs"))
+	if err != nil {
+		return nil, fmt.Errorf("创建制品字节目录失败: %w", err)
+	}
+	dbPath, err := resolvePath(dataDir, envOr("NCCR_DB_PATH", "ncc-registry.db"))
+	if err != nil {
+		return nil, fmt.Errorf("解析库文件路径失败: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return nil, fmt.Errorf("创建库文件目录失败: %w", err)
 	}
 
 	name := envOr("NCCR_NODE_NAME", "")
@@ -129,6 +145,7 @@ func Load() (*Config, error) {
 		Addr:      fmt.Sprintf(":%d", port),
 		DataDir:   dataDir,
 		BlobDir:   blobDir,
+		DBPath:    dbPath,
 		PublicURL: strings.TrimRight(envOr("NCCR_PUBLIC_URL", fmt.Sprintf("http://localhost:%d", port)), "/"),
 		Console:   envBool("NCCR_CONSOLE", true),
 
@@ -174,6 +191,35 @@ func (c *Config) InviteAllows(code string) bool {
 		}
 	}
 	return false
+}
+
+// resolvePath 把可能是相对的路径按 base 解析成绝对路径（base 为空则按当前工作目录）。
+// 解析后统一转成绝对路径，启动日志里打的就是真正生效的路径。
+func resolvePath(base, p string) (string, error) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", fmt.Errorf("路径不能为空")
+	}
+	if !filepath.IsAbs(p) && base != "" {
+		p = filepath.Join(base, p)
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
+}
+
+// resolveDir 同 resolvePath，但顺带把目录建出来（数据根、字节目录都要能直接用）。
+func resolveDir(base, p string) (string, error) {
+	dir, err := resolvePath(base, p)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 // persistentSecret 沿用传入值；为空则读文件；文件也没有就生成并写入。

@@ -24,10 +24,14 @@ services:
       NCCR_CLUSTER_TOKEN: ${NCCR_CLUSTER_TOKEN:-}
       # 留空 = 内网开放注册；要门禁就设邀请码
       NCCR_INVITE_CODE: ${NCCR_INVITE_CODE:-}
+      # 字节/库想放别处就显式指（默认都在 /data 下）：
+      #   NCCR_BLOB_DIR: /blobs        # 再把宿主机目录/NAS 挂到 /blobs
+      #   NCCR_DB_PATH: /ssd/ncc.sqlite
     ports:
       - "8282:8282"
     volumes:
       - master-data:/data
+      # - /mnt/nas/ncc-blobs:/blobs   # 字节落 NAS 的写法
     restart: unless-stopped
 
   worker-a:

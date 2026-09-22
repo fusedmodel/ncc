@@ -177,6 +177,14 @@ func (s *Server) meta(c *gin.Context) {
 		"counts": gin.H{
 			"artifacts": artifacts, "hostedNodes": nodes, "users": users,
 		},
+		// 存储目录：部署时最常被问的就是「字节到底落在哪」，直接报出来。
+		"storage": gin.H{
+			"driver":    "local",
+			"dataDir":   s.Cfg.DataDir,
+			"blobDir":   s.Cfg.BlobDir,
+			"dbPath":    s.Cfg.DBPath,
+			"blobsBase": s.Cfg.PublicURL + "/blobs/",
+		},
 		"features": []string{
 			"registry: artifact hosting & distribution",
 			"nodes: hosted agent/service discovery & linking",

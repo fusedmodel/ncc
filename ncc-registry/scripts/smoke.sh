@@ -79,9 +79,12 @@ say "0. 构建 + 启动两节点（master:${PORT_M} · worker:${PORT_W}）"
 ( cd "${ROOT}" && go build -o "${TMP}/ncc-registry" ./cmd/ncc-registry )
 
 NCCR_PORT="${PORT_M}" NCCR_DATA_DIR="${TMP}/m" NCCR_NODE_NAME="smoke-master" \
-  NCCR_NODE_REGION="测试-内网" "${TMP}/ncc-registry" >"${TMP}/master.log" 2>&1 &
+  NCCR_NODE_REGION="测试-内网" \
+  NCCR_BLOB_DIR="${TMP}/blobs-master" NCCR_DB_PATH="${TMP}/db/master.sqlite" \
+  "${TMP}/ncc-registry" >"${TMP}/master.log" 2>&1 &
 PID_M=$!
 
+# worker 不配目录：跑默认布局（<data>/blobs），顺便验证默认值没变。
 NCCR_ROLE=worker NCCR_PORT="${PORT_W}" NCCR_DATA_DIR="${TMP}/w" NCCR_NODE_NAME="smoke-worker" \
   NCCR_NODE_REGION="测试-内网" NCCR_MASTER_URL="${MASTER}" NCCR_HEARTBEAT=2s \
   "${TMP}/ncc-registry" >"${TMP}/worker.log" 2>&1 &
@@ -308,5 +311,24 @@ check "下架已广播到 worker" "True" "$(printf '%s' "${DEL}" | jval revoked.
 check "worker 上的副本已回收" "True" "$(printf '%s' "${DEL}" | jval revoked.0.removed)"
 check_code "回收后 worker 查不到该制品" 404 "${WORKER}/api/registry/@${NS_M}/fanout-skill"
 
+say "9. 存储目录可配置（字节 / 库 / 数据根各指一处）"
+META_DIRS="$(curl -sS "${MASTER}/api/meta")"
+check "meta 报出的字节目录 = 配置值" "${TMP}/blobs-master" "$(printf '%s' "${META_DIRS}" | jval storage.blobDir)"
+check "meta 报出的库文件 = 配置值" "${TMP}/db/master.sqlite" "$(printf '%s' "${META_DIRS}" | jval storage.dbPath)"
+check "meta 报出的数据根 = 配置值" "${TMP}/m" "$(printf '%s' "${META_DIRS}" | jval storage.dataDir)"
+BLOB_M="$(find "${TMP}/blobs-master" -type f | head -1)"
+if [[ -n "${BLOB_M}" ]]; then good "上传的字节确实落在 NCCR_BLOB_DIR（$(basename "${BLOB_M}")）"; else bad "NCCR_BLOB_DIR 里没有字节"; fi
+if [[ -f "${TMP}/db/master.sqlite" ]]; then good "库文件确实落在 NCCR_DB_PATH"; else bad "NCCR_DB_PATH 没有库文件"; fi
+if [[ -f "${TMP}/m/node-id" ]]; then good "身份/密钥仍在数据根下（node-id / jwt-secret）"; else bad "数据根下没有 node-id"; fi
+# 默认布局：worker 没配目录，副本字节应落在 <data>/blobs
+W_BLOB="$(find "${TMP}/w/blobs" -type f 2>/dev/null | head -1)"
+if [[ -n "${W_BLOB}" ]]; then good "未配置时默认布局不变（<data>/blobs 收到副本字节）"; else bad "worker 的默认字节目录里没有字节"; fi
+
 printf '\n\033[1m结果：%d 项通过，%d 项失败\033[0m\n' "${PASS}" "${FAIL}"
-[[ "${FAIL}" -eq 0 ]] || { echo "---- master.log ----"; tail -20 "${TMP}/master.log"; echo "---- worker.log ----"; tail -20 "${TMP}/worker.log"; exit 1; }
+[[ "${FAIL}" -eq 0 ]] || {
+  echo "---- master.log ----"
+  tail -20 "${TMP}/master.log"
+  echo "---- worker.log ----"
+  tail -20 "${TMP}/worker.log"
+  exit 1
+}
