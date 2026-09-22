@@ -324,6 +324,253 @@ if [[ -f "${TMP}/m/node-id" ]]; then good "身份/密钥仍在数据根下（nod
 W_BLOB="$(find "${TMP}/w/blobs" -type f 2>/dev/null | head -1)"
 if [[ -n "${W_BLOB}" ]]; then good "未配置时默认布局不变（<data>/blobs 收到副本字节）"; else bad "worker 的默认字节目录里没有字节"; fi
 
+say "10. 配置托管（团队网络 / 基础设施配置 + 版本 + 加密 + 授权 + 票据）"
+# 10.1 类型目录
+CFG_KINDS="$(curl -sS "${MASTER}/api/configs/kinds")"
+check "配置类型目录含 network" "network" "$(printf '%s' "${CFG_KINDS}" | jval kinds.0.kind)"
+check "配置类型目录含 secret 上限信息" "128" "$(printf '%s' "${CFG_KINDS}" | jval limits.bytes | awk '{print int($1/1024)}')"
+
+# 10.2 创建（默认私有）+ 打码读取
+cat >"${WORK}/network.yaml" <<'YAML'
+subnet: 10.20.0.0/16
+gateway: 10.20.0.1
+dns: [10.20.0.53, 10.20.0.54]
+YAML
+cjson() { python3 -c 'import json,sys; print(json.dumps({"namespace":sys.argv[1],"slug":sys.argv[2],"name":sys.argv[3],"kind":sys.argv[4],"environment":sys.argv[5],"format":sys.argv[6],"content":open(sys.argv[7]).read(),"note":"冒烟"}))' "$@"; }
+NEW_CFG="$(curlv -X POST "${MASTER}/api/configs" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' \
+  -d "$(cjson "${NS_M}" network 网络配置 network prod yaml "${WORK}/network.yaml")")"
+check "创建配置" "@${NS_M}/network" "$(printf '%s' "${NEW_CFG}" | jval config.ref)"
+check "默认私有" "private" "$(printf '%s' "${NEW_CFG}" | jval config.visibility)"
+check "写回执直接带内容（写的人刚给的）" "subnet: 10.20.0.0/16" "$(printf '%s' "${NEW_CFG}" | jval config.content | head -1)"
+MASKED="$(curl -sS "${MASTER}/api/configs/@${NS_M}/network" -H "Authorization: Bearer ${TOK_M}")"
+check "读默认打码" "True" "$(printf '%s' "${MASKED}" | jval config.masked)"
+check "打码时仍给 64 位 checksum" "64" "$(printf '%s' "${MASKED}" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["config"]["checksum"]))')"
+check "匿名读私有配置 404" "404" "$(curl -sS -o /dev/null -w '%{http_code}' "${MASTER}/api/configs/@${NS_M}/network")"
+REVEALED="$(curl -sS "${MASTER}/api/configs/@${NS_M}/network?reveal=1" -H "Authorization: Bearer ${TOK_M}")"
+check "reveal 拿到明文" "gateway: 10.20.0.1" "$(printf '%s' "${REVEALED}" | jval config.content | sed -n 2p)"
+
+# 10.3 版本与回滚
+printf 'subnet: 10.20.0.0/16\nmtu: 9000\n' >"${WORK}/network.v2.yaml"
+V2="$(curlv -X PATCH "${MASTER}/api/configs/@${NS_M}/network" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' \
+  -d "$(python3 -c 'import json,sys;print(json.dumps({"content":open(sys.argv[1]).read(),"note":"加 MTU"}))' "${WORK}/network.v2.yaml")")"
+check "改内容 → v2" "2" "$(printf '%s' "${V2}" | jval config.revision)"
+check "改内容标出新版本" "True" "$(printf '%s' "${V2}" | jval revisionAdded)"
+META_ONLY="$(curlv -X PATCH "${MASTER}/api/configs/@${NS_M}/network" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"summary":"只改说明"}')"
+check "只改元数据不加版本" "False" "$(printf '%s' "${META_ONLY}" | jval revisionAdded)"
+REVS="$(curl -sS "${MASTER}/api/configs/@${NS_M}/network/revisions" -H "Authorization: Bearer ${TOK_M}")"
+check "历史有 2 版且当前是 v2" "2" "$(printf '%s' "${REVS}" | jval revisions.0.revision)"
+ROLL="$(curlv -X POST "${MASTER}/api/configs/@${NS_M}/network/rollback" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"revision":1}')"
+check "回滚 → v3" "3" "$(printf '%s' "${ROLL}" | jval config.revision)"
+check "回滚后内容 = v1" "gateway: 10.20.0.1" "$(printf '%s' "${ROLL}" | jval config.content | sed -n 2p)"
+
+# 10.4 敏感配置：静态加密
+printf 'wifi_psk=SuperSecret-12345\n' >"${WORK}/psk.env"
+SEC="$(curlv -X POST "${MASTER}/api/configs" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' \
+  -d "$(python3 -c 'import json,sys;print(json.dumps({"namespace":sys.argv[1],"slug":"wifi-psk","name":"WiFi","kind":"security","format":"env","secret":True,"content":"wifi_psk=SuperSecret-12345\n"}))' "${NS_M}")")"
+check "创建敏感配置" "True" "$(printf '%s' "${SEC}" | jval config.secret)"
+STORED="$(python3 - "${TMP}/db/master.sqlite" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+row = db.execute("select content from config_entries where slug='wifi-psk'").fetchone()
+print("sealed" if row and row[0].startswith("enc:v1:") and "SuperSecret" not in row[0] else "plain")
+PY
+)"
+check "库里存的是密文（拿到库也读不出明文）" "sealed" "${STORED}"
+check_code "敏感配置不允许公开" 400 -X POST "${MASTER}/api/configs" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"namespace\":\"${NS_M}\",\"slug\":\"psk-pub\",\"name\":\"x\",\"kind\":\"security\",\"secret\":true,\"visibility\":\"public\",\"content\":\"x\"}"
+
+# 10.5 bundle：按环境成组拉取（含 any，默认跳过 secret）
+curlv -X POST "${MASTER}/api/configs" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"namespace\":\"${NS_M}\",\"slug\":\"dns-any\",\"name\":\"通用 DNS\",\"kind\":\"network\",\"environment\":\"any\",\"format\":\"text\",\"content\":\"nameserver 10.20.0.53\n\",\"visibility\":\"public\"}" >/dev/null
+BUNDLE="$(curl -sS "${MASTER}/api/configs/bundle?namespace=${NS_M}&env=prod" -H "Authorization: Bearer ${TOK_M}")"
+check "bundle 含 prod 与 any" "2" "$(printf '%s' "${BUNDLE}" | jval count)"
+check "bundle 默认跳过敏感配置" "0" "$(printf '%s' "${BUNDLE}" | python3 -c 'import json,sys; print(sum(1 for c in json.load(sys.stdin)["configs"] if c["secret"]))')"
+check "bundle 带建议文件名（含环境后缀）" "1" "$(printf '%s' "${BUNDLE}" | python3 -c 'import json,sys; print(sum(1 for c in json.load(sys.stdin)["configs"] if c["filename"]=="alice-network.prod.yaml"))')"
+check_code "匿名 bundle 被拒" 403 "${MASTER}/api/configs/bundle?namespace=${NS_M}&env=prod"
+
+# 10.6 授权：carol 拿到 config 授权后可读、仍不可写
+check_code "未授权读私有配置 404" 404 "${MASTER}/api/configs/@${NS_M}/network?reveal=1" -H "Authorization: Bearer ${TOK_C}"
+G_CFG="$(curlv -X POST "${MASTER}/api/grants" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"ref":"@carol","kind":"config","note":"看网络配置"}')"
+check "授予 config 授权" "config" "$(printf '%s' "${G_CFG}" | jval grant.kind)"
+CFG_C="$(curl -sS "${MASTER}/api/configs/@${NS_M}/network?reveal=1" -H "Authorization: Bearer ${TOK_C}")"
+check "被授权者可读非公开配置" "subnet: 10.20.0.0/16" "$(printf '%s' "${CFG_C}" | jval config.content | head -1)"
+check_code "被授权者不可写配置" 403 -X PATCH "${MASTER}/api/configs/@${NS_M}/network" \
+  -H "Authorization: Bearer ${TOK_C}" -H 'Content-Type: application/json' -d '{"content":"hack"}'
+
+# 10.7 凭证作用域：只读 key 不能写；票据可以按需给 Agent 配置权
+KEY_RO="$(curlv -X POST "${MASTER}/api/auth/keys" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"label":"cfg-ro","scopes":["config:read"]}')"
+SECRET_RO="$(printf '%s' "${KEY_RO}" | jval secret)"
+check "config:read key 能读私有配置" "True" \
+  "$(curl -sS "${MASTER}/api/configs/@${NS_M}/network" -H "Authorization: Bearer ${SECRET_RO}" | jval config.canRead)"
+check_code "config:read key 不能写" 403 -X POST "${MASTER}/api/configs" -H "Authorization: Bearer ${SECRET_RO}" \
+  -H 'Content-Type: application/json' -d "{\"namespace\":\"${NS_M}\",\"slug\":\"via-key\",\"name\":\"x\",\"kind\":\"other\",\"content\":\"x\"}"
+
+TICKET_CFG="$(curlv -X POST "${MASTER}/api/access/tickets" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"label":"agent-conf","scopes":["config:read","config:write"]}')"
+TKEY="$(printf '%s' "${TICKET_CFG}" | jval ticket.key)"
+TSEC="$(printf '%s' "${TICKET_CFG}" | jval secret)"
+REDEEM="$(curlv -X POST "${MASTER}/api/access/redeem" -H 'Content-Type: application/json' \
+  -d "{\"key\":\"${TKEY}\",\"secret\":\"${TSEC}\"}")"
+NTOK="$(printf '%s' "${REDEEM}" | jval token)"
+AGENT_CFG="$(curlv -X POST "${MASTER}/api/configs" -H "Authorization: Bearer ${NTOK}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"namespace\":\"${NS_M}\",\"slug\":\"agent-managed\",\"name\":\"Agent 管的配置\",\"kind\":\"agent\",\"format\":\"json\",\"content\":\"{\\\"model\\\":\\\"qwen3\\\"}\"}")"
+check "票据兑换的节点令牌可创建配置（代表签发者）" "@${NS_M}/agent-managed" "$(printf '%s' "${AGENT_CFG}" | jval config.ref)"
+PLAIN_TICKET="$(curlv -X POST "${MASTER}/api/access/tickets" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"label":"plain","scopes":["nodes:write"]}')"
+PLAIN_REDEEM="$(curlv -X POST "${MASTER}/api/access/redeem" -H 'Content-Type: application/json' \
+  -d "{\"key\":\"$(printf '%s' "${PLAIN_TICKET}" | jval ticket.key)\",\"secret\":\"$(printf '%s' "${PLAIN_TICKET}" | jval secret)\"}")"
+check_code "无 config:write 的令牌建配置被拒" 403 -X POST "${MASTER}/api/configs" \
+  -H "Authorization: Bearer $(printf '%s' "${PLAIN_REDEEM}" | jval token)" \
+  -H 'Content-Type: application/json' -d "{\"namespace\":\"${NS_M}\",\"slug\":\"nope\",\"name\":\"x\",\"kind\":\"other\",\"content\":\"x\"}"
+
+# 10.8 归档与删除
+curlv -X PATCH "${MASTER}/api/configs/@${NS_M}/dns-any" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"status":"archived"}' >/dev/null
+check "归档后从公开目录消失" "0" "$(curl -sS "${MASTER}/api/configs" | jval total)"
+check "归档后不再进 bundle" "2" "$(curl -sS "${MASTER}/api/configs/bundle?namespace=${NS_M}&env=prod" -H "Authorization: Bearer ${TOK_M}" | jval count)"
+check_code "删除配置（含历史）" 200 -X DELETE "${MASTER}/api/configs/@${NS_M}/agent-managed" -H "Authorization: Bearer ${TOK_M}"
+check_code "删除后取不到" 404 "${MASTER}/api/configs/@${NS_M}/agent-managed" -H "Authorization: Bearer ${TOK_M}"
+ORPHAN="$(python3 - "${TMP}/db/master.sqlite" <<'PY'
+import sqlite3, sys
+db = sqlite3.connect(sys.argv[1])
+print(db.execute("select count(*) from config_revisions where config_id not in (select id from config_entries)").fetchone()[0])
+PY
+)"
+check "版本历史随条目一起清理" "0" "${ORPHAN}"
+
+say "11. 节点治理：用户 / 节点 / 服务（管理员 + admin key/secret + 审计）"
+
+# 11.1 引导：master 的第一个注册用户自动成为管理员，并自动签发一份机器凭据
+AK="$(jval admin.key <"${TMP}/reg-m.json")"
+ASEC="$(jval admin.secret <"${TMP}/reg-m.json")"
+check "首个注册用户自动获得 admin key（AK-…）" "AK-" "${AK:0:3}"
+check_code "管理员会话可进管理面" 200 "${MASTER}/api/admin/overview" -H "Authorization: Bearer ${TOK_M}"
+check_code "普通用户会话进管理面被拒" 403 "${MASTER}/api/admin/overview" -H "Authorization: Bearer ${TOK_C}"
+check_code "匿名进管理面被拒" 403 "${MASTER}/api/admin/overview"
+check_code "admin key/secret 可进管理面" 200 "${MASTER}/api/admin/overview" -H "X-NCC-Admin-Key: ${AK}" -H "X-NCC-Admin-Secret: ${ASEC}"
+check_code "admin secret 错误被拒" 401 "${MASTER}/api/admin/overview" -H "X-NCC-Admin-Key: ${AK}" -H "X-NCC-Admin-Secret: deadbeef"
+check_code "只给 key 不给 secret 被拒" 400 "${MASTER}/api/admin/overview" -H "X-NCC-Admin-Key: ${AK}"
+check "凭据列表里有 bootstrap" "1" "$(curl -sS "${MASTER}/api/admin/keys" -H "X-NCC-Admin-Key: ${AK}" -H "X-NCC-Admin-Secret: ${ASEC}" | jval total)"
+
+# 11.2 造一条「服务」数据：制品侧 kind=api + 节点侧 kind=service
+printf '# Hotel API\n\n服务接口（冒烟测试）。\n' >"${WORK}/hotel.api.md"
+UP_S="$(curl -sS -X POST "${MASTER}/api/registry/uploads" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'X-Filename: hotel.api.md' --data-binary @"${WORK}/hotel.api.md")"
+SZ_S="$(wc -c <"${WORK}/hotel.api.md" | tr -d ' ')"
+curl -sS -X POST "${MASTER}/api/registry" -H "Authorization: Bearer ${TOK_M}" -H 'Content-Type: application/json' \
+  -d "{\"kind\":\"api\",\"name\":\"Hotel API\",\"slug\":\"hotel-api\",\"summary\":\"服务接口\",
+  \"status\":\"published\",\"visibility\":\"private\",
+  \"storage\":{\"url\":\"$(printf '%s' "${UP_S}" | jval storageUrl)\",\"sha256\":\"$(printf '%s' "${UP_S}" | jval sha256)\",\"size\":${SZ_S}}}" >/dev/null
+curl -sS -X POST "${MASTER}/api/nodes/heartbeat" -H "Authorization: Bearer ${TOK_M}" -H 'Content-Type: application/json' \
+  -d '{"name":"booking-svc","slug":"booking-svc","kind":"service","region":"上海-内网"}' >"${TMP}/svc-node.json"
+SVC_NODE="$(jval node.id <"${TMP}/svc-node.json")"
+check "托管了一个 kind=service 节点" "service" "$(jval node.kind <"${TMP}/svc-node.json")"
+
+OV="$(curl -sS "${MASTER}/api/admin/overview" -H "X-NCC-Admin-Key: ${AK}" -H "X-NCC-Admin-Secret: ${ASEC}")"
+check "概览：管理员至少 1" "1" "$(printf '%s' "${OV}" | jval counts.admins)"
+# 前面几节已经建过节点（默认 kind=service），所以这里比「至少 1」而不是相等。
+SVC_TOTAL="$(printf '%s' "${OV}" | jval counts.services.hostedNodes)"
+[[ "${SVC_TOTAL}" -ge 1 ]] && good "概览：服务节点至少 1（${SVC_TOTAL}）" || bad "概览：服务节点应 ≥1，实际 ${SVC_TOTAL}"
+check "概览：服务条目 1" "1" "$(printf '%s' "${OV}" | jval counts.services.artifacts)"
+check "凭据类型是 admin_key" "admin_key" "$(printf '%s' "${OV}" | jval credential.kind)"
+
+check "管理面节点列表看得到私有/离线节点" "1" \
+  "$(curl -sS "${MASTER}/api/admin/nodes?q=booking-svc" -H "Authorization: Bearer ${TOK_M}" | jval total)"
+SVCS="$(curl -sS "${MASTER}/api/admin/services?q=booking-svc" -H "Authorization: Bearer ${TOK_M}")"
+check "服务列表：节点侧命中 1" "1" "$(printf '%s' "${SVCS}" | jval total.nodeServices)"
+
+# 11.3 用户治理：禁用 → 旧令牌立即失效、登录被拒 → 重置密码 → 启用
+CAROL_ID="$(curl -sS "${MASTER}/api/admin/users?q=carol" -H "Authorization: Bearer ${TOK_M}" | jval users.0.id)"
+ALICE_ID="$(curl -sS "${MASTER}/api/auth/me" -H "Authorization: Bearer ${TOK_M}" | jval user.id)"
+check_code "禁用 carol（带原因）" 200 -X PATCH "${MASTER}/api/admin/users/${CAROL_ID}" \
+  -H "Authorization: Bearer ${TOK_M}" -H 'Content-Type: application/json' \
+  -d '{"disabled":true,"adminNote":"冒烟测试"}'
+check_code "被禁用后旧令牌立即失效" 401 "${MASTER}/api/auth/me" -H "Authorization: Bearer ${TOK_C}"
+check_code "被禁用后登录被拒（带原因）" 403 -X POST "${MASTER}/api/auth/login" \
+  -H 'Content-Type: application/json' -d '{"email":"carol@corp.com","password":"smoke1234"}'
+check "禁用原因会带回给本人" "1" \
+  "$(curl -sS -X POST "${MASTER}/api/auth/login" -H 'Content-Type: application/json' \
+     -d '{"email":"carol@corp.com","password":"smoke1234"}' | grep -c '冒烟测试' || true)"
+NEWPW="$(curl -sS -X POST "${MASTER}/api/admin/users/${CAROL_ID}/password" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{}' | jval password)"
+check "重置密码返回新密码（服务端生成 12 位）" "12" "${#NEWPW}"
+check_code "启用 carol" 200 -X PATCH "${MASTER}/api/admin/users/${CAROL_ID}" \
+  -H "Authorization: Bearer ${TOK_M}" -H 'Content-Type: application/json' -d '{"disabled":false}'
+check_code "新密码可登录" 200 -X POST "${MASTER}/api/auth/login" \
+  -H 'Content-Type: application/json' -d "{\"email\":\"carol@corp.com\",\"password\":\"${NEWPW}\"}"
+check_code "不能用 admin 凭据禁用最后一个管理员" 400 -X PATCH "${MASTER}/api/admin/users/${ALICE_ID}" \
+  -H "X-NCC-Admin-Key: ${AK}" -H "X-NCC-Admin-Secret: ${ASEC}" -H 'Content-Type: application/json' -d '{"disabled":true}'
+
+# 11.4 服务处理：节点侧摘除 / 制品侧归档（归档不删字节）
+check_code "摘除服务节点（ND-…）" 200 -X DELETE "${MASTER}/api/admin/services/${SVC_NODE}" -H "Authorization: Bearer ${TOK_M}"
+check "节点已摘除（按名字查不到了）" "0" "$(curl -sS "${MASTER}/api/admin/nodes?q=booking-svc" -H "Authorization: Bearer ${TOK_M}" | jval total)"
+check_code "归档服务条目（@ns/slug）" 200 -X DELETE "${MASTER}/api/admin/services/@${NS_M}/hotel-api" -H "Authorization: Bearer ${TOK_M}"
+check "条目状态变为 archived" "archived" "$(curl -sS "${MASTER}/api/registry/@${NS_M}/hotel-api" -H "Authorization: Bearer ${TOK_M}" | jval item.status)"
+check "归档只改状态，字节仍在" "${SZ_S}" "$(curl -sS "${MASTER}/api/registry/@${NS_M}/hotel-api" -H "Authorization: Bearer ${TOK_M}" | jval item.storage.size)"
+
+# 11.5 审计：每个治理动作都留痕
+AUD="$(curl -sS "${MASTER}/api/admin/audit?limit=50" -H "Authorization: Bearer ${TOK_M}")"
+for want in user.disable user.password.reset user.enable service.delete service.archive; do
+  check "审计含 ${want}" "1" "$(printf '%s' "${AUD}" | grep -c "\"${want}\"" || true)"
+done
+check "审计记录操作者类型" "1" "$(printf '%s' "${AUD}" | grep -c '"actor"' || true)"
+
+# 11.6 凭据轮换：新 secret 生效、旧 secret 立即失效
+ROT="$(curl -sS -X POST "${MASTER}/api/admin/keys/rotate?label=ops" -H "Authorization: Bearer ${TOK_M}")"
+AK2="$(printf '%s' "${ROT}" | jval key.key)"
+ASEC2="$(printf '%s' "${ROT}" | jval secret)"
+check "轮换撤销旧凭据 1 份" "1" "$(printf '%s' "${ROT}" | jval revoked)"
+check_code "旧 admin 凭据立即失效" 401 "${MASTER}/api/admin/overview" -H "X-NCC-Admin-Key: ${AK}" -H "X-NCC-Admin-Secret: ${ASEC}"
+check_code "新 admin 凭据可用" 200 "${MASTER}/api/admin/overview" -H "X-NCC-Admin-Key: ${AK2}" -H "X-NCC-Admin-Secret: ${ASEC2}"
+
+say "12. 分享链接：临时下载地址（对方不用登录）"
+
+# 12.1 创建：只有「本来能读这条制品」的人才能分享
+SHARE="$(curl -sS -X POST "${MASTER}/api/shares" -H "Authorization: Bearer ${TOK_M}" -H 'Content-Type: application/json' \
+  -d "{\"ref\":\"@${NS_M}/hotel-api\",\"label\":\"冒烟\",\"uses\":1,\"expiresInDays\":7}")"
+TOKEN="$(printf '%s' "${SHARE}" | jval token)"
+SHID="$(printf '%s' "${SHARE}" | jval share.id)"
+check "创建分享返回 32 位 token" "32" "${#TOKEN}"
+check "链接指向 /s/<token>" "1" "$(printf '%s' "${SHARE}" | jval link | grep -c "/s/${TOKEN}$" || true)"
+check_code "无读权限的人不能分享（不是提权通道）" 403 -X POST "${MASTER}/api/shares" \
+  -H "Authorization: Bearer ${TOK_C}" -H 'Content-Type: application/json' -d '{"ref":"@'"${NS_M}"'/hotel-api"}'
+
+# 12.2 匿名领取：说明页可打开、?meta=1 不计数、raw 计数
+check_code "匿名打开说明页" 200 "${MASTER}/s/${TOKEN}"
+check_code "匿名取元数据（?meta=1）" 200 "${MASTER}/s/${TOKEN}/raw?meta=1"
+check "meta 不消耗次数" "0" "$(curl -sS "${MASTER}/s/${TOKEN}/raw?meta=1" | jval share.uses.used)"
+curl -sS -o "${TMP}/shared.md" "${MASTER}/s/${TOKEN}/raw"
+check "匿名取到字节且内容一致" "0" "$(cmp -s "${WORK}/hotel.api.md" "${TMP}/shared.md" && echo 0 || echo 1)"
+check "已用次数记为 1" "1" "$(curl -sS "${MASTER}/api/shares/info/${TOKEN}" | jval share.uses.used)"
+check "限次用尽即失效" "False" "$(curl -sS "${MASTER}/api/shares/info/${TOKEN}" | jval usable)"
+check_code "次数用尽后再取（410）" 410 "${MASTER}/s/${TOKEN}/raw"
+
+# 12.3 列表 / 撤销 / 管理员视角
+check_code "我的分享列表" 200 "${MASTER}/api/shares?mine=1" -H "Authorization: Bearer ${TOK_M}"
+check_code "非管理员看全部分享被拒" 403 "${MASTER}/api/shares?all=1" -H "Authorization: Bearer ${TOK_C}"
+check "管理员带 admin 凭据可看全部" "1" \
+  "$(curl -sS "${MASTER}/api/shares?all=1" -H "X-NCC-Admin-Key: ${AK2}" -H "X-NCC-Admin-Secret: ${ASEC2}" | jval total)"
+check_code "撤销分享" 200 -X DELETE "${MASTER}/api/shares/${SHID}" -H "Authorization: Bearer ${TOK_M}"
+check_code "撤销后立即失效（410）" 410 "${MASTER}/s/${TOKEN}/raw"
+check_code "别人不能撤我的分享" 403 -X DELETE "${MASTER}/api/shares/${SHID}" -H "Authorization: Bearer ${TOK_C}"
+
+# 12.4 /api/meta 暴露治理面计数与能力
+META="$(curl -sS "${MASTER}/api/meta")"
+check "meta：admins" "1" "$(printf '%s' "${META}" | jval counts.admins)"
+check "meta：有可用 admin 凭据" "True" "$(printf '%s' "${META}" | jval auth.adminKey)"
+check "meta：features 含 admin" "1" "$(printf '%s' "${META}" | jval features | grep -c 'admin:' || true)"
+check "meta：features 含 share" "1" "$(printf '%s' "${META}" | jval features | grep -c 'share:' || true)"
+
 printf '\n\033[1m结果：%d 项通过，%d 项失败\033[0m\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]] || {
   echo "---- master.log ----"

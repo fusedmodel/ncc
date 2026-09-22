@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/fusedmodel/ncc/ncc-registry/internal/config"
+	"github.com/fusedmodel/ncc/ncc-registry/internal/model"
+	"github.com/fusedmodel/ncc/ncc-registry/internal/secretbox"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/storage"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/store"
 )
@@ -28,6 +30,13 @@ func NewRouter(cfg *config.Config, st *store.Store, blob storage.Storage) *gin.E
 	s := &Server{Cfg: cfg, St: st, Blob: blob}
 	s.hub = newClusterHub(cfg, st)
 	s.hub.start()
+	// 配置内容的静态加密（secret=true 的配置）。密钥由节点密钥派生；
+	// 构造失败只影响「存敏感配置」，其余功能照常 —— 不因一个可选能力把服务启动卡死。
+	if box, err := secretbox.New(cfg.JWTSecret); err == nil {
+		s.Box = box
+	} else {
+		logf("配置加密不可用（secret 配置将不可写）: %v", err)
+	}
 
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
@@ -103,6 +112,28 @@ func NewRouter(cfg *config.Config, st *store.Store, blob storage.Storage) *gin.E
 	api.POST("/grants", requireScope("grants:write"), s.createGrant)
 	api.DELETE("/grants/:id", requireScope("grants:write"), s.deleteGrant)
 
+	// NCC Config：团队的网络 / 基础设施 / Agent 配置托管。
+	// 读接口不挂作用域中间件（公开配置匿名可读），非公开配置在 handler 里判
+	// config:read —— 因为「该不该给这个人看」与「这份配置是不是公开」必须一起判。
+	cfgAPI := api.Group("/configs")
+	cfgAPI.GET("/kinds", s.configKindCatalog)
+	cfgAPI.GET("/bundle", s.configBundle)
+	cfgAPI.GET("", s.listConfigs)
+	cfgAPI.GET("/", s.listConfigs)
+	cfgAPI.POST("", requireScope("config:write"), s.createConfig)
+	cfgAPI.POST("/", requireScope("config:write"), s.createConfig)
+	// 引用有两种形态：C-…（单段）与 @ns/slug（两段），与制品同一套写法。
+	cfgAPI.GET("/:id/revisions", s.configRevisions)
+	cfgAPI.GET("/:id/:slug/revisions", s.configRevisions)
+	cfgAPI.POST("/:id/rollback", requireScope("config:write"), s.rollbackConfig)
+	cfgAPI.POST("/:id/:slug/rollback", requireScope("config:write"), s.rollbackConfig)
+	cfgAPI.PATCH("/:id", requireScope("config:write"), s.updateConfig)
+	cfgAPI.PATCH("/:id/:slug", requireScope("config:write"), s.updateConfig)
+	cfgAPI.DELETE("/:id", requireScope("config:write"), s.deleteConfig)
+	cfgAPI.DELETE("/:id/:slug", requireScope("config:write"), s.deleteConfig)
+	cfgAPI.GET("/:id/:slug", s.getConfig)
+	cfgAPI.GET("/:id", s.getConfig)
+
 	// 接入票据：把「一个内网 registry」加进 Agent —— key/secret 或接入短链。
 	acc := api.Group("/access")
 	acc.POST("/redeem", s.redeem)
@@ -113,6 +144,39 @@ func NewRouter(cfg *config.Config, st *store.Store, blob storage.Storage) *gin.E
 
 	// 接入短链落地页（secret 在 URL fragment，服务端看不到）。
 	r.GET("/j/:key", s.joinPage)
+
+	// 制品分享链接：/api/shares 管自己的；/s/:token 是**公开**的领取入口（不用登录）。
+	// 与接入短链刻意同形：/j/<key> 换一个节点身份，/s/<token> 换一次读取权。
+	sh := api.Group("/shares")
+	// 列表与撤销不挂 requireAuth：它们要同时接受「普通用户（自己的分享）」与
+	// 「管理员凭据（全部）」，两套身份在 handler 里判一次就好，挂中间件反而会把
+	// admin key 挡在 401（它本来就没有 Bearer 令牌）。
+	sh.GET("", s.listShares)
+	sh.GET("/", s.listShares)
+	sh.POST("", requireAuth(), s.createShare)
+	sh.POST("/", requireAuth(), s.createShare)
+	sh.GET("/info/:token", s.shareInfo)
+	sh.DELETE("/:id", s.deleteShare)
+	r.GET("/s/:token", s.sharePage)
+	r.GET("/s/:token/raw", s.shareRaw)
+
+	// 节点治理面：用户 / 节点 / 服务 的查看与处理（管理员或 admin key/secret）。
+	// 单独一道门（requireAdmin），不挂在普通作用域体系上 —— 治理权与资产权是两回事。
+	adm := api.Group("/admin")
+	adm.Use(s.requireAdmin())
+	adm.GET("/overview", s.adminOverview)
+	adm.GET("/users", s.adminListUsers)
+	adm.PATCH("/users/:id", s.adminPatchUser)
+	adm.POST("/users/:id/password", s.adminResetPassword)
+	adm.GET("/nodes", s.adminListNodes)
+	adm.DELETE("/nodes/:id", s.adminDeleteNode)
+	adm.GET("/services", s.adminListServices)
+	// 服务引用两种形态：ND-…（单段）与 @命名空间/slug（两段）。
+	adm.DELETE("/services/:ref", s.adminArchiveService)
+	adm.DELETE("/services/:ref/:slug", s.adminArchiveService)
+	adm.GET("/audit", s.adminListAudit)
+	adm.GET("/keys", s.adminListKeys)
+	adm.POST("/keys/rotate", s.adminRotateKey)
 
 	cl := api.Group("/cluster")
 	cl.POST("/join", s.clusterJoin)
@@ -170,12 +234,29 @@ func NewRouter(cfg *config.Config, st *store.Store, blob storage.Storage) *gin.E
 // meta GET /api/meta —— 本节点自述（CLI `ncc registry status` 的第一跳）。
 func (s *Server) meta(c *gin.Context) {
 	artifacts, nodes, users := s.Counts()
+	configs, _ := s.St.CountConfigs()
+	publicConfigs, _ := s.St.CountPublicConfigs()
+	shares, _ := s.St.CountActiveShares()
+	admins, _ := s.St.CountAdmins()
+	nodeKinds, _ := s.St.NodeKindCounts()
+	services, _ := s.St.CountServiceArtifacts("", "")
+	hasAdminKey, _ := s.St.HasActiveAdminKey()
 	out := gin.H{
 		"product": "ncc-registry",
-		"about":   "内网托管节点 · 制品托管 · Agent 发现与互联",
+		"kind":    "node",
+		"about":   "内网托管节点 · 制品托管 · 配置托管 · 分享 · Agent 发现与互联",
 		"node":    s.selfNodeJSON(artifacts, nodes, users),
+		// capabilities 是**声明**（命令面按它放行），features 是给人读的一句话。
+		// 本地节点将来声明 services / profile 时，CLI 的同名命令会直接生效，不用改客户端。
+		"capabilities": []string{
+			"registry", "config", "share", "nodes", "grants", "access", "cluster", "admin",
+		},
 		"counts": gin.H{
 			"artifacts": artifacts, "hostedNodes": nodes, "users": users,
+			"configs": configs, "publicConfigs": publicConfigs,
+			// 治理面：管理员数、服务数（节点侧 kind=service + 制品侧 kind=api）、有效分享数。
+			"admins": admins, "services": services,
+			"serviceNodes": nodeKinds[model.NodeService], "shares": shares,
 		},
 		// 存储目录：部署时最常被问的就是「字节到底落在哪」，直接报出来。
 		"storage": gin.H{
@@ -187,6 +268,9 @@ func (s *Server) meta(c *gin.Context) {
 		},
 		"features": []string{
 			"registry: artifact hosting & distribution",
+			"config: team/infra config hosting (versioned, encrypted secrets, grant-scoped)",
+			"share: expiring artifact links (no login for the receiver)",
+			"admin: node governance (users / nodes / services) with audit log",
 			"nodes: hosted agent/service discovery & linking",
 			"grants: explicit access grants (connect != authorize)",
 			"access: join by key/secret or one-click intranet link",
@@ -196,6 +280,7 @@ func (s *Server) meta(c *gin.Context) {
 		"auth": gin.H{
 			"inviteRequired": s.Cfg.InviteRequired(),
 			"clusterToken":   s.Cfg.ClusterToken != "",
+			"adminKey":       hasAdminKey,
 		},
 	}
 	if s.Cfg.Role == config.RoleWorker {

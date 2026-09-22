@@ -65,12 +65,19 @@ const (
 )
 
 // User 账户。
+//
+// IsAdmin 是本节点的治理权（首个注册用户自动获得，见 model/admin.go）；
+// Disabled 一旦为真，**旧令牌立即失效**（authMiddleware 每次都回查一次库）。
 type User struct {
 	ID          string     `gorm:"primaryKey"`
 	Email       string     `gorm:"uniqueIndex;not null"`
 	Name        string     `gorm:"not null"`
 	PassHash    string     `gorm:"not null"`
 	Plan        string     `gorm:"not null;default:free"`
+	IsAdmin     bool       `gorm:"not null;default:false;index"`
+	Disabled    bool       `gorm:"not null;default:false;index"`
+	DisabledAt  *time.Time `gorm:"default:null"`
+	AdminNote   string     `gorm:"not null;default:''"`
 	LastLoginAt *time.Time `gorm:"default:null"`
 	CreatedAt   time.Time  `gorm:"autoCreateTime"`
 }
@@ -226,10 +233,11 @@ func (NodeLink) TableName() string { return "node_links" }
 const (
 	GrantArtifact = "artifact" // 可拉取我命名空间下的私有 / 草稿制品
 	GrantNode     = "node"     // 可看到并连接我的私有托管节点
+	GrantConfig   = "config"   // 可读取我的非公开配置（配置托管）
 )
 
 // GrantKinds 允许的授权种类（CLI 侧 `ncc grant set --kind` 的取值来源）。
-var GrantKinds = []string{GrantArtifact, GrantNode}
+var GrantKinds = []string{GrantArtifact, GrantNode, GrantConfig}
 
 // ValidGrantKind 校验授权种类。
 func ValidGrantKind(k string) bool {

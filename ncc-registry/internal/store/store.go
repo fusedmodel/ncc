@@ -90,6 +90,10 @@ func Open(path string) (*Store, error) {
 		&model.Artifact{}, &model.HostedNode{}, &model.NodeLink{},
 		&model.ClusterWorker{}, &model.ArtifactAdvert{}, &model.ReplicaTarget{},
 		&model.Grant{}, &model.AccessTicket{},
+		// NCC Config：托管配置（条目 + 版本历史）
+		&model.ConfigEntry{}, &model.ConfigRevision{},
+		// 节点治理：机器管理凭据 / 审计 / 制品分享链接
+		&model.AdminKey{}, &model.AuditLog{}, &model.ArtifactShare{},
 	); err != nil {
 		return nil, fmt.Errorf("迁移表结构失败: %w", err)
 	}
@@ -98,8 +102,18 @@ func Open(path string) (*Store, error) {
 
 /* ---------------- 用户 / 命名空间 ---------------- */
 
+// CreateUser 建账号。
+//
+// **本节点的第一个用户自动成为管理员**：内网托管节点的部署形态是「谁先装谁是主人」，
+// 不该再引入一套外部账号系统去决定谁管这台机器。之后想给机器一把管理凭据，用
+// CreateAdminKey（管理员注册时会自动签发一份）。
 func (s *Store) CreateUser(name, email, passHash string) (*model.User, error) {
 	u := &model.User{ID: NewID("U"), Name: name, Email: strings.ToLower(email), PassHash: passHash, Plan: model.PlanFree}
+	var existing int64
+	if err := s.DB.Model(&model.User{}).Count(&existing).Error; err != nil {
+		return nil, err
+	}
+	u.IsAdmin = existing == 0
 	if err := s.DB.Create(u).Error; err != nil {
 		return nil, err
 	}
@@ -603,6 +617,7 @@ type NodeRow struct {
 	NsName      string `gorm:"column:ns_name"`
 	OwnerID     string `gorm:"column:owner_id"`
 	OwnerName   string `gorm:"column:owner_name"`
+	OwnerEmail  string `gorm:"column:owner_email"`
 	OwnerRegion string `gorm:"column:owner_region"`
 	LinkID      string `gorm:"column:link_id"`
 	LinkLabel   string `gorm:"column:link_label"`
@@ -611,7 +626,8 @@ type NodeRow struct {
 func (s *Store) nodeQuery(ownerID string) *gorm.DB {
 	return s.DB.Table("hosted_nodes").
 		Select(`hosted_nodes.*, namespaces.slug AS ns_slug, namespaces.name AS ns_name,
-			users.id AS owner_id, users.name AS owner_name, hosted_nodes.region AS owner_region,
+			users.id AS owner_id, users.name AS owner_name, users.email AS owner_email,
+			hosted_nodes.region AS owner_region,
 			node_links.id AS link_id, node_links.label AS link_label`).
 		Joins("LEFT JOIN namespaces ON namespaces.id = hosted_nodes.namespace_id").
 		Joins("LEFT JOIN users ON users.id = namespaces.owner_id").

@@ -1,17 +1,19 @@
 # ncc-registry · 内网托管节点
 
-一个**单二进制**的内网 Registry 服务：把「**制品托管**」「**节点托管**」「**Agent 发现与互联**」
-三件事收在一个进程里，并支持**多节点**（一个 `master` + 若干 `worker`）横向铺开。
+一个**单二进制**的内网 Registry 服务：把「**制品托管**」「**配置托管**」「**分享**」
+「**节点托管**」「**Agent 发现与互联**」「**节点治理**」收在一个进程里，
+并支持**多节点**（一个 `master` + 若干 `worker`）横向铺开。
 
 它属于 [`ncc-cli`](../README.md) 这个开源/可分发的部分：Go 单二进制、SQLite 单文件、
 内置 Web 控制台，不依赖平台私有代码，也不引入外部数据库或对象存储就能跑。
+变更历史（本组件与 `ncc` CLI 共用一份）见 [`../CHANGELOG.md`](../CHANGELOG.md)。
 
 ```bash
 go build -o dist/ncc-registry ./cmd/ncc-registry
 NCCR_PORT=8282 ./dist/ncc-registry          # → http://localhost:8282
 ```
 
-## 三件事
+## 两件事（能力总表）
 
 | 能力 | 说明 | 主要接口 |
 |---|---|---|
@@ -19,7 +21,10 @@ NCCR_PORT=8282 ./dist/ncc-registry          # → http://localhost:8282
 | **内网托管节点** | 用户把内网的 Agent / 服务**注册 + 心跳**托管进来，声明「我是谁、在哪、能干什么」 | `/api/nodes/heartbeat`、`/api/nodes` |
 | **Agent 发现与互联** | 在同一信任域内发现彼此、收进连接表、按区域聚合；问「这个能力该找哪个节点要」 | `/api/nodes/discover`、`/api/nodes/links`、`/api/nodes/route` |
 | **接入：key/secret 或内网短链** | 一条内网短链（或 key+secret）就能把一个 Agent 加进来；兑换出的是**最小权限的节点令牌** | `/api/access/*`、`/j/:key` |
-| **授权：连接 ≠ 授权** | 私有制品 / 私有节点要显式 `grant`；撤销立即生效（支持按命名空间限定） | `/api/grants*` |
+| **授权：连接 ≠ 授权** | 私有制品 / 私有节点 / 非公开配置要显式 `grant`；撤销立即生效（支持按命名空间限定） | `/api/grants*` |
+| **配置托管** | 团队的网络 / 基础设施 / Agent 配置作为一等资源：版本历史、回滚、按环境成组拉取、敏感值静态加密 | `/api/configs*` |
+| **分享链接** | 把一条制品变成**临时下载地址**发出去：对方不用登录、不用装 CLI；可限次 / 限时 / 撤销 | `/api/shares*`、`/s/:token` |
+| **节点管理（admin）** | 节点管理员管**用户 / 节点 / 服务**（禁用启停、重置密码、摘除、归档），每个动作都进审计 | `/api/admin/*` |
 | **多节点（master/worker）** | worker 注册 + 心跳上报本地目录；master 聚合目录、做能力路由、代理字节，还能把制品**分发**到 worker 并在下架时**回收** | `/api/cluster*` |
 
 ## 架构
@@ -54,7 +59,7 @@ flowchart TB
 cd ncc-registry
 go build -o dist/ncc-registry ./cmd/ncc-registry
 NCCR_DATA_DIR=./data ./dist/ncc-registry          # master，默认 :8282
-# 控制台 http://localhost:8282
+# 控制台 http://localhost:8282（含「节点管理」区块）
 ```
 
 ### ② master + worker（多节点）
@@ -102,6 +107,16 @@ $N registry rm @alice/hotel-skill --yes
 $N grant set --user @bob --kind artifact      # 连接 ≠ 授权：拿私有东西要显式授权
 $N grant set --user @bob --kind node
 
+# 分享：把一条制品变成临时下载地址（对方不用登录、不用装 CLI）
+$N registry share create @alice/hotel-skill --label "给合作方" --uses 1 --expires 7
+$N registry share list                        # 我发的（--all 需管理员）
+
+# 节点治理（本节点第一个注册的账号就是管理员；机器用 admin key/secret）
+$N registry admin login --key AK-… --secret …
+$N registry admin overview | users | nodes | services | audit
+$N registry admin disable bob@corp.com --note "违规发布"
+$N registry admin rotate --label ops          # 轮换 admin key/secret（旧的立即失效）
+
 # 既有的制品命令照旧可用（同一个 HTTP 契约）
 $N publish --file ./hotel.SKILL.md --kind skill --name "Hotel Skill" --slug hotel-skill --replicate all
 $N search skill --tag hotel
@@ -135,6 +150,13 @@ $N registry add --base http://localhost:8282 --key NK-7F3A2C --secret ab1b98… 
   同一实例即信任域，不需要对方审批；取私有制品仍要另配授权（见 Roadmap）。
 - **目录权威不下放**：master 是目录权威；worker 上报的是「我这里有」的声明，
   聚合只用于发现与路由，不替代权威记录。
+- **治理与资产是两套权**：`/api/admin/*`（管人、管节点）与普通接口（看/发制品、上报心跳）
+  走**两套门禁**。管理员身份有两种，等价：本节点**第一个注册的账号**（自带 `IsAdmin`），
+  或一把**机器凭据** `AK-…` + secret。别把治理权塞进作用域体系 —— 那是资产权。
+- **分享 ≠ 授权**：分享是**临时放行**（按链接、可限次/限时/撤销，拿到字节即结束），
+  授权是**长期按人**（`ncc grant`）。分享不改变制品本身的可见性。
+- **归档 ≠ 删除**：管理员处理服务条目只改 `status=archived`（从目录消失），
+  字节与版本历史保留 —— 删不删是条目归属者的事。
 
 ## 接入：key/secret 与内网短链
 
@@ -161,11 +183,13 @@ $N registry add --base http://localhost:8282 --key NK-7F3A2C --secret ab1b98… 
 |---|---|
 | `artifact` | 拉取我命名空间下的私有 / 草稿制品（可按命名空间限定） |
 | `node` | 在 discover 里看到并连接我的私有托管节点 |
+| `config` | 读取我的非公开配置（配置托管，见下一节） |
 
 ```bash
 ncc grant set --user @bob --kind artifact            # 全部命名空间的制品
 ncc grant set --user @bob --kind artifact --ns @team # 只放开 @team
 ncc grant set --user @bob --kind node                # 私有节点可见/可连
+ncc grant set --user @bob --kind config              # 非公开配置可读（不可写）
 ncc grant list            # 我给出的（--in 看别人给我的）
 ncc grant rm <id>         # 撤销，立即生效
 ```
@@ -173,6 +197,136 @@ ncc grant rm <id>         # 撤销，立即生效
 私有条目的字节地址是**短时签名地址**（`HMAC(secret, ref|exp)`，默认 10 分钟）：
 因为 `ncc download` 拉字节时不会再带 `Authorization`，所以拿到元数据的那一刻服务端就给它一条
 能自证的 URL —— 未授权者既拿不到元数据，也伪造不了签名。
+
+## 分享：把一条制品变成临时下载地址
+
+内网里要把一个产物给同事 / 给外部合作方看，最轻的做法不是「给他一个账号」，而是**一条链接**：
+
+```bash
+ncc registry share create @team/report --label "给合作方" --uses 1 --expires 7
+#  → 说明页  http://host:8282/s/<token>
+#    直链    http://host:8282/s/<token>/raw
+```
+
+| 入口 | 用途 | 计数 |
+|---|---|---|
+| `GET /s/<token>` | 说明页（这是什么、还能用几次、下载按钮） | 不计数 |
+| `GET /s/<token>/raw` | 直接下发字节（`curl -OJ` / Agent） | **只有它计数** |
+| `GET /s/<token>/raw?meta=1` | 只取元数据（`sha256` / 大小 / 引用） | 不计数 |
+
+- **token 只存 sha256**（与接入票据的 secret 同规矩），32 位随机串，只在创建时返回一次。
+- 可限次（`--uses`）、可过期（`--expires`）、可撤销（`ncc registry share rm`）：
+  撤销 / 过期 / 用尽即失效（`410 share_expired`）。
+- **创建分享不是提权**：只有本来就能读这条制品的人能分享它（否则 403）。
+- 分享**不改变制品的可见性**：私有制品分享给 A，不代表 A 从此能搜到它 —— 那要 `ncc grant`。
+- 管理员可以看全部分享（`ncc registry share list --all`）并撤销任意一条。
+
+```bash
+ncc registry share list            # 我发的（--all 需管理员）
+ncc registry share info <链接>      # 看一条链接的状态（公开，不消耗次数）
+ncc registry share rm <SH-…|链接>   # 撤销，立即失效
+```
+
+## 节点管理（admin）：用户 / 节点 / 服务
+
+一台内网 registry 需要有人管：**谁在这台节点注册过、有哪些节点挂着、哪些服务在对外**。
+这就是 `/api/admin/*`，进审计，且与普通接口是**两套门禁**。
+
+### 谁能管（两种身份，等价）
+
+| 身份 | 从哪来 | 怎么用 |
+|---|---|---|
+| **人** | 本节点**第一个注册的账号**（自动 `IsAdmin`） | `ncc registry login --email …` 后直接用 `ncc registry admin …` |
+| **机器** | 管理员首次出现时**自动签发**的 `AK-…` + secret（可轮换） | `ncc registry admin login --key AK-… --secret …`（写入本机配置），或直接带 `X-NCC-Admin-Key`/`X-NCC-Admin-Secret` 头 |
+
+```bash
+# 注册本节点第一个账号时会打印一次 admin 凭据
+ncc --base http://host:8282 register --email you@corp.com --password '***'
+#   → 👑 admin key AK-XXXXXX · admin secret ****（只显示这一次）
+
+ncc registry admin login --key AK-XXXXXX --secret ****   # 写进 ~/.ncc/config.json（0600）
+ncc registry admin status                                # 我是不是管理员、本机凭据能不能用
+ncc registry admin rotate --label ops                    # 轮换：新 secret 生效、旧的立即失效
+```
+
+### 管什么
+
+| 对象 | 能做什么 | CLI |
+|---|---|---|
+| **用户** | 看全部账号（含被禁用的）；禁用 / 启用（旧令牌立即失效，本人登录会看到原因）；重置密码（服务端生成，只显示一次） | `admin users` · `admin disable\|enable` · `admin passwd` |
+| **节点** | 看全部托管节点（含私有与离线，带归属者邮箱）；摘除任意节点（指向它的连接记录一并清理） | `admin nodes` · `admin rm-node <ND-…>` |
+| **服务** | 一次看全两类：节点侧 `kind=service`（正在跑的）与制品侧 `kind=api`（声明/交付的接口）；**节点摘除 / 制品归档** | `admin services` · `admin rm-service <ND-…\|@ns/slug>` |
+| **审计** | 谁在什么时候把谁怎么了（actor 是用户还是机器凭据、目标、IP、备注） | `admin audit [--action user.disable]` |
+
+```bash
+ncc registry admin overview
+ncc registry admin users --q bob
+ncc registry admin disable bob@corp.com --note "违规发布"
+ncc registry admin passwd bob@corp.com          # → 新密码只显示这一次
+ncc registry admin services                     # 节点侧 + 制品侧一起看
+ncc registry admin rm-service @team/hotel-api   # 制品侧：归档（字节保留）
+ncc registry admin audit --limit 20
+```
+
+两条硬规则（服务端强制）：**不能禁用自己的账号**（自锁保护），
+**不能禁用最后一个可用管理员**（否则这台节点再也没人能管）。
+
+> 控制台首页也有「节点管理（管理员）」区块：填上 admin key/secret 即可在网页里做上面这些事
+> （凭据只存在本机浏览器 localStorage，不会发给其它域）。
+
+## 配置托管（团队的网络 / 基础设施配置）
+
+一个团队的网络段、网关、模型端点、CI 变量……**不是制品，也不该塞进制品**：它们会被反复修改、
+需要版本与回滚、默认不能公开，而且经常夹着凭据。所以配置在这里是一等资源。
+
+| | 制品 Artifact | 配置 Config |
+|---|---|---|
+| 形态 | 可分发的文件（字节进 blob） | 会被就地修改的文档（内容进库） |
+| 默认可见性 | `public` | **`private`** |
+| 迭代方式 | 换 `version` 再发一版 | **就地改 + 每次写入留一版历史** |
+| 跨节点 | 可 fan-out 到 worker（副本 / 回收） | **不参与 fan-out**（权威数据，只在被指向的节点上维护） |
+| 敏感值 | 公开即人可见 | `secret=true` → 内容**静态加密**，默认打码 |
+
+```bash
+ncc registry config kinds                       # 类型（network/gateway/infra/agent/ci/security…）+ 格式 + 环境
+ncc registry config set @team/network --file ./network.yaml \
+    --kind network --env prod --summary "内网网段/DNS/VLAN" --tags network,dns --note "初始版本"
+ncc registry config list --mine                 # 我的全部（含私有；内容默认打码）
+ncc registry config get @team/network           # 元数据 + sha256（不发明文）
+ncc registry config get @team/network --reveal --out ./network.yaml   # 明文落盘
+ncc registry config history @team/network       # 谁在什么时候改了什么
+ncc registry config rollback @team/network --to 2                     # 回滚（作为新版本写回）
+ncc registry config bundle --ns @team --env prod --out ./conf         # 整套拉取（Agent 的第一跳）
+ncc registry config rm @team/network --yes
+```
+
+**权限三条判定**（缺一不可，服务端与 CLI 同一套）：
+
+| 动作 | 需要什么 |
+|---|---|
+| 读公开配置 | `visibility=public` 且 `status=active` → 谁都能读 |
+| 读非公开配置 | 作用域 `config:read` **且**（命名空间成员 **或** 拿到 `config` 授权） |
+| 写入 / 回滚 / 删除 | 作用域 `config:write` **且** 命名空间成员（外部只有读授权，不给写） |
+
+**给 Agent 的长效凭据**：签一张限定作用域的接入票据，兑换出来的节点令牌就只做这些事——
+票据的 `Sub` 是**签发者本人**，所以 Agent 是「代表你在团队空间里管配置」，不是另开一个身份：
+
+```bash
+ncc registry ticket create --label agent-conf --scopes config:read,config:write,nodes:write
+# 对方：ncc registry add '<短链>' --join
+# 之后 Agent 就可以：ncc registry config set @team/network --file ./new.yaml --note "Agent 改的"
+```
+
+**敏感值不再靠自觉**：`--secret` 的配置在落库前用 AES-256-GCM 加密（密钥由本节点的
+`jwt-secret` 派生）。因此备份库文件而不带 `jwt-secret` 是安全的；反过来说，**换机器或丢了数据目录
+就解不开这些密文**（这是设计意图）。校验和按**明文**算，Agent 拿到明文后可以自己复核。
+
+**成组拉取（bundle）**是 Agent 落地基础设施的第一步：`--env prod` 会同时命中 `prod` 与 `any`
+（通用项），每条都带建议文件名（`team-network.prod.yaml`）与 `sha256`。默认**跳过 `secret` 配置**
+—— 一次把凭据全下到磁盘不是好默认，要用就显式 `--secrets --reveal`。
+
+> **权威位置**：配置是**被指向的那个节点**的库里的数据（与制品的 fan-out 不同）。
+> 多节点共享配置请把 Agent 指向 master；CLI 在 worker 上操作时会给出提示。
 
 ## 集群写：分发（replicate）与回收（revoke）
 
@@ -252,8 +406,7 @@ ncc registry rm @alice/x --yes                                         # 下架 
 
 | 方法/路径 | 说明 |
 |---|---|
-| `GET /api/health` · `GET /api/meta` | 存活与本节点自述（角色 / 节点 id / 规模 / 控制台地址） |
-| `GET /api/registry/kinds` | 制品类型与数量 |
+| `GET /api/health` · `GET /api/meta` | 存活与本节点自述（角色 / 节点 id / 规模 / 控制台地址） || `GET /api/meta` 的 `kind` 与 `capabilities` | **节点声明自己的能力**（`node`；`registry` / `config` / `share` / `nodes` / `grants` / `access` / `cluster` / `admin`）。CLI / MCP 按这份清单放行命令 —— 声明了 `services` / `profile` 那天，同名命令在本节点上就直接可用 || `GET /api/registry/kinds` | 制品类型与数量 |
 | `GET /api/registry?q=&kind=&tag=&namespace=&page=&size=` | 目录检索（本节点权威） |
 | `GET /api/registry/<@ns/slug\|A-…>` | 制品详情 |
 | `GET /api/registry/<ref>/download` | 下载元数据（`url` / `sha256` / `size` / `via`） |
@@ -262,6 +415,13 @@ ncc registry rm @alice/x --yes                                         # 下架 
 | `GET /api/nodes/regions` | 区域覆盖（各区域在线 / 总数） |
 | `GET /api/nodes/route?ref=` | 能力路由：谁持有这个制品 + 统一入口地址 |
 | `GET /api/access/tickets/:key` | 票据概要（公开，不含 secret） |
+| `GET /s/:token` | 分享落地页（公开，不计数） |
+| `GET /s/:token/raw[?meta=1]` | 分享直链：下发字节（**计数**）/ 只看元数据（不计数） |
+| `GET /api/shares/info/:token` | 一条分享的状态（公开，不计数） |
+| `GET /api/configs/kinds` | 配置类型 / 格式 / 环境目录（含各类数量与上限） |
+| `GET /api/configs?namespace=&kind=&env=&tag=&q=&page=&size=` | 配置目录（匿名只看公开；带凭据加自己的与被授权的） |
+| `GET /api/configs/<@ns/slug\|C-…>?reveal=1&revision=N` | 取一份配置（**默认打码**；`reveal=1` 才出明文） |
+| `GET /api/configs/<ref>/revisions` | 版本历史（含作者 / 变更说明 / 校验和） |
 | `GET /j/:key` | 接入短链落地页（secret 在 fragment，服务端看不到） |
 | `GET /api/cluster` · `GET /api/cluster/workers` | 集群总览（master + 各 worker） |
 | `GET /api/cluster/directory?q=&kind=&tag=` | 聚合目录（本地 + 远端，条目带 `via`；本地条目带 `replicas`） |
@@ -280,12 +440,31 @@ ncc registry rm @alice/x --yes                                         # 下架 
 | `POST /api/nodes/heartbeat`（别名 `POST /api/namespaces/living`） | 托管节点注册 + 心跳 |
 | `DELETE /api/nodes/:id` | 下线我的节点 |
 | `POST /api/nodes/links` · `PATCH\|DELETE /api/nodes/links/:id` | 连接 / 改 Name 标签 / 断开 |
-| `GET /api/grants?direction=outgoing\|incoming` · `POST /api/grants` · `DELETE /api/grants/:id` | 分发授权（`artifact` \| `node`）：连接 ≠ 授权 |
+| `GET /api/grants?direction=outgoing\|incoming` · `POST /api/grants` · `DELETE /api/grants/:id` | 分发授权（`artifact` \| `node` \| `config`）：连接 ≠ 授权 |
 | `POST /api/access/redeem` | 用 key + secret 兑换节点令牌（可选同时入网：body 带 `node`） |
 | `GET\|POST /api/access/tickets` · `DELETE /api/access/tickets/:id` | 签发 / 列出 / 删除接入票据 |
 | `POST /api/cluster/replicate` | 把制品分发到 worker（`targets: "all"` 或名称/id 列表） |
 | `POST /api/cluster/join` · `POST /api/cluster/heartbeat` | worker 注册 / 心跳（master 侧） |
 | `POST /api/cluster/ingest` · `POST /api/cluster/revoke` | 节点间：落副本 / 回收副本（集群 token 鉴权） |
+| `POST /api/configs` · `PATCH/DELETE /api/configs/<ref>` | 创建 / 改内容（加版本）/ 删除配置（需 `config:write` + 成员身份） |
+| `POST /api/configs/<ref>/rollback` | 回滚到某一版（作为新版本写回，历史不改写） |
+| `GET /api/configs/bundle?namespace=&env=&kind=&tag=&secrets=1&reveal=1` | 成组拉取（`env` 命中 `prod` 与 `any`；默认跳过 `secret`） |
+| `POST /api/shares` · `GET /api/shares[?mine=1\|all=1]` · `DELETE /api/shares/:id` | 建 / 列 / 撤销分享链接（`all=1` 需管理员；只能撤自己的，管理员可撤任意） |
+
+需**节点管理员**（会话管理员账号，或 `X-NCC-Admin-Key` + `X-NCC-Admin-Secret`）：
+
+| 方法/路径 | 说明 |
+|---|---|
+| `GET /api/admin/overview` | 用户 / 管理员 / 节点（按类型）/ 服务 / 制品 / 配置 / 分享 / 审计 计数 |
+| `GET /api/admin/users?q=&limit=&offset=` | 全部账号（含被禁用），带各自节点与制品数 |
+| `PATCH /api/admin/users/:id` | 禁用 / 启用（`disabled` + `adminNote`） |
+| `POST /api/admin/users/:id/password` | 重置密码（不给 `password` 则由服务端生成并只返回一次） |
+| `GET /api/admin/nodes?kind=&region=&q=` | 全部托管节点（含私有与离线，带 `ownerEmail`） |
+| `DELETE /api/admin/nodes/:id` | 摘除节点（并清理指向它的连接记录） |
+| `GET /api/admin/services?source=all\|node\|artifact&q=` | 服务一览：`nodeServices`（kind=service）+ `apiArtifacts`（kind=api） |
+| `DELETE /api/admin/services/:ref` | 服务处理：`ND-…` → 摘除节点；`@ns/slug` → 归档制品 |
+| `GET /api/admin/audit?action=&limit=&offset=` | 审计日志 |
+| `GET /api/admin/keys` · `POST /api/admin/keys/rotate?label=` | 机器凭据列表 / 轮换（新 secret 只返回一次，旧的立即失效） |
 
 作用域：`registry:read|download|publish`、`nodes:read|write`、`keys:write`（写蕴含读）。
 
@@ -296,7 +475,8 @@ ncc registry rm @alice/x --yes                                         # 下架 
 
 `GET /` 是内置的单文件控制台（`internal/httpapi/web/index.html`，随二进制 embed，无构建步骤）：
 本节点身份与规模、集群 worker 列表（在线状态 / 制品数 / 最近心跳）、聚合目录（可搜索）、
-托管节点发现（含区域覆盖），以及 CLI / HTTP 的接入速查。
+托管节点发现（含区域覆盖）、**节点管理（管理员）**（填 admin key/secret 后可在网页里禁用账号、
+重置密码、摘除节点、归档服务条目、撤销分享、轮换凭据），以及 CLI / HTTP 的接入速查。
 
 ## 部署
 
@@ -334,7 +514,7 @@ bash scripts/smoke.sh      # 自带启停：master + worker 两节点，端口 1
 **授权（私有制品与私有节点：未授权不可见 → 授权后可见可取 → 撤销后立即失效）**、
 **集群写（发布即分发 → worker 副本 sha256 一致且不可本地改 → 下架回收副本）**、
 **存储目录可配置（字节/库/数据根各指一处，且默认布局不变）**。
-当前 61 项检查全绿。
+当前 96 项检查全绿。
 
 ## 与其它组件的关系
 

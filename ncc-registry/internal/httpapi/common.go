@@ -22,6 +22,7 @@ import (
 
 	"github.com/fusedmodel/ncc/ncc-registry/internal/config"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/model"
+	"github.com/fusedmodel/ncc/ncc-registry/internal/secretbox"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/storage"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/store"
 )
@@ -35,6 +36,9 @@ type Server struct {
 	St   *store.Store
 	Blob storage.Storage
 	hub  *clusterHub
+	// Box 配置内容的静态加密器（secret=true 的配置）。密钥由节点密钥派生，
+	// 换节点/丢数据目录就打不开 —— 这是设计意图，不是缺陷。
+	Box *secretbox.Box
 }
 
 // AuthInfo 认证上下文（JWT 会话 / 节点令牌 / API-Key）。
@@ -144,7 +148,7 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 			if strings.HasPrefix(token, "ncc_") {
 				if k, err := s.St.FindKeyBySecret(token); err == nil {
 					_ = s.St.TouchApiKey(k.ID)
-					if u, err := s.St.FindUserByID(k.UserID); err == nil {
+					if u, err := s.St.FindUserByID(k.UserID); err == nil && !u.Disabled {
 						c.Set(authCtxKey, &AuthInfo{
 							UserID: u.ID, Email: u.Email, Kind: "key",
 							KeyID: k.ID, Scopes: store.ParseList(k.Scopes),
@@ -152,7 +156,9 @@ func (s *Server) authMiddleware() gin.HandlerFunc {
 					}
 				}
 			} else if info, err := parseJWT(s.Cfg.JWTSecret, token); err == nil {
-				if u, err := s.St.FindUserByID(info.UserID); err == nil {
+				// 用 JWT 里的 id 回查一次库：被禁用的账号**旧令牌立即失效**
+				// （否则「禁用」就只是拦登录，已经登进来的人照样通行）。
+				if u, err := s.St.FindUserByID(info.UserID); err == nil && !u.Disabled {
 					info.Email = u.Email
 					// 只有用户会话代表本人（不受作用域限制）；节点令牌按票据作用域走。
 					info.Session = info.Kind == "user"
@@ -177,10 +183,12 @@ func authOf(c *gin.Context) *AuthInfo {
 var DefaultScopes = []string{
 	"registry:read", "registry:download", "registry:publish",
 	"nodes:read", "nodes:write", "grants:read", "grants:write",
+	"config:read", "config:write",
 }
 
 // NodeTicketScopes 接入票据兑换出的节点令牌默认作用域：
 // 能上报自己的心跳、能看/拉公开制品，但**不能发布**别人的条目。
+// 要让它管理配置，签发时显式加 --scopes config:read,config:write。
 var NodeTicketScopes = []string{
 	"nodes:write", "registry:read", "registry:download",
 }
@@ -190,6 +198,7 @@ var AllScopes = []string{
 	"registry:read", "registry:download", "registry:publish",
 	"nodes:read", "nodes:write",
 	"grants:read", "grants:write",
+	"config:read", "config:write",
 	"keys:write",
 }
 
@@ -217,6 +226,8 @@ func scopeImplies(have, want string) bool {
 		return want == "nodes:read"
 	case "grants:write":
 		return want == "grants:read"
+	case "config:write":
+		return want == "config:read"
 	}
 	return false
 }
@@ -321,6 +332,8 @@ func userJSON(u *model.User) gin.H {
 	return gin.H{
 		"id": u.ID, "email": u.Email, "name": u.Name,
 		"plan": u.Plan, "createdAt": u.CreatedAt,
+		// 治理身份：CLI / 控制台据此决定要不要显示管理入口。
+		"isAdmin": u.IsAdmin, "disabled": u.Disabled,
 	}
 }
 

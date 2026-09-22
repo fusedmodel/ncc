@@ -86,7 +86,23 @@ func (s *Server) register(c *gin.Context) {
 		return
 	}
 	token := signJWT(s.Cfg.JWTSecret, u.ID, u.Email, s.Cfg.JWTTTL)
-	ok(c, 201, gin.H{"token": token, "user": userJSON(u)})
+	resp := gin.H{"token": token, "user": userJSON(u)}
+	// 第一个注册的用户就是这台节点的管理员；顺手给机器一把管理凭据
+	// （secret 只在这里返回一次，之后要用 `ncc registry admin rotate` 轮换）。
+	if u.IsAdmin {
+		if k, secret, err := s.St.CreateAdminKey("bootstrap", u.ID); err == nil {
+			resp["admin"] = gin.H{
+				"isAdmin": true, "key": k.Key, "secret": secret,
+				"howto": gin.H{
+					"cli":  "ncc registry admin login --key " + k.Key + " --secret <secret>",
+					"note": "你是本节点的第一个账号，自动成为管理员；secret 只显示这一次",
+				},
+			}
+		} else {
+			logf("首个管理员已创建，但 admin key 签发失败: %v", err)
+		}
+	}
+	ok(c, 201, resp)
 }
 
 // login POST /api/auth/login
@@ -101,9 +117,22 @@ func (s *Server) login(c *gin.Context) {
 		fail(c, 401, "unauthorized", "邮箱或密码不正确")
 		return
 	}
+	// 被禁用的账号连登录也不给（禁用前已发出的令牌在 authMiddleware 里拦）。
+	if u.Disabled {
+		fail(c, 403, "account_disabled", "该账号已被节点管理员禁用"+disabledNote(u.AdminNote))
+		return
+	}
 	_ = s.St.TouchUserLogin(u.ID)
 	token := signJWT(s.Cfg.JWTSecret, u.ID, u.Email, s.Cfg.JWTTTL)
 	ok(c, 200, gin.H{"token": token, "user": userJSON(u)})
+}
+
+// disabledNote 把管理员的禁用备注带一句出来（内网里「找谁问」很重要）。
+func disabledNote(note string) string {
+	if strings.TrimSpace(note) == "" {
+		return ""
+	}
+	return "（原因：" + strings.TrimSpace(note) + "）"
 }
 
 // me GET /api/auth/me —— 当前身份 + 命名空间 + 凭据能力（CLI 据此判断能做什么）。
@@ -148,6 +177,7 @@ func (s *Server) me(c *gin.Context) {
 	ok(c, 200, gin.H{
 		"user": userJSON(u), "namespaces": list,
 		"credential": gin.H{"kind": a.Kind, "scopes": scopes, "session": a.Session},
+		"admin":      gin.H{"isAdmin": u.IsAdmin},
 		"node": gin.H{
 			"id": s.Cfg.NodeID, "name": s.Cfg.NodeName, "role": s.Cfg.Role,
 			"url": s.Cfg.PublicURL, "region": s.Cfg.NodeRegion, "version": Version,
