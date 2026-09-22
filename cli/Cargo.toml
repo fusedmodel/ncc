@@ -1,6 +1,6 @@
 [package]
 name = "ncc"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Official command-line client for NCC Registry — publish, search, install and download capability artifacts (API / Skill / MCP / Harness / Plugin / Scaffold)."
 license = "Apache-2.0"
