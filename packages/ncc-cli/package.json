@@ -1,6 +1,6 @@
 {
   "name": "@fusedmodel/ncc-cli",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "npm wrapper for the NCC CLI: locates (or downloads) the platform Rust binary and runs it.",
   "license": "Apache-2.0",
   "repository": {

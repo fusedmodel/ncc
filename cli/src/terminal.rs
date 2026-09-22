@@ -146,6 +146,44 @@ pub fn shell_capture(line: &str) -> Result<String> {
     Ok(combine_output(&out))
 }
 
+/// 版本号比较：`a` 是否比 `b` 新。
+///
+/// ⚠️ **不能用字符串比较**。这里原先写的是 `latest > cur`，字典序在个位数小版本上
+/// 碰巧与语义一致，但 `"0.9" > "0.10"` 为**真** —— 于是从 0.9 升到 0.10 时
+/// `update` 会报「已是最新」，**用户永远收不到那次更新的提示**。
+///
+/// 按 `.` 切分逐段做数值比较，段数不同时缺的补 0（`0.2` 与 `0.2.0` 等价）；
+/// 数字部分相同则「没有预发布后缀的」更新（`1.0.0` > `1.0.0-rc1`）。
+/// 解析不了的段当 0，不 panic —— 这是版本提示，不是校验。
+fn version_gt(a: &str, b: &str) -> bool {
+    fn split(v: &str) -> (Vec<u64>, bool) {
+        let (nums, pre) = match v.split_once('-') {
+            Some((n, p)) => (n, !p.is_empty()),
+            None => (v, false),
+        };
+        (
+            nums.split('.')
+                .map(|x| x.trim().parse::<u64>().unwrap_or(0))
+                .collect(),
+            pre,
+        )
+    }
+
+    let (na, pa) = split(a);
+    let (nb, pb) = split(b);
+    for i in 0..na.len().max(nb.len()) {
+        let (x, y) = (
+            na.get(i).copied().unwrap_or(0),
+            nb.get(i).copied().unwrap_or(0),
+        );
+        if x != y {
+            return x > y;
+        }
+    }
+    // 数字部分相同：没有预发布后缀的那个更新
+    pb && !pa
+}
+
 /// 检查官方包 / CLI 新版本。给 `ncc upgrade --check` 用，Terminal 命令台的 `update` 也调它。
 pub fn update_check() -> String {
     let cur = env!("CARGO_PKG_VERSION");
@@ -167,7 +205,7 @@ pub fn update_check() -> String {
                 Ok(v) => {
                     if let Some(tag) = v["tag_name"].as_str() {
                         let latest = tag.trim_start_matches('v');
-                        if latest > cur {
+                        if version_gt(latest, cur) {
                             s.push_str(&format!("\n  → 发现新版本 v{latest}: {base}"));
                         } else {
                             s.push_str("\n  已是最新版本。");
@@ -309,4 +347,54 @@ pub fn run(cfg: &CliConfig) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::version_gt;
+
+    #[test]
+    fn newer_patch_and_minor_are_detected() {
+        assert!(version_gt("0.1.2", "0.1.1"));
+        assert!(version_gt("0.2.0", "0.1.9"));
+        assert!(version_gt("1.0.0", "0.9.9"));
+        assert!(!version_gt("0.1.1", "0.1.2"));
+        assert!(!version_gt("0.1.1", "0.1.1"));
+    }
+
+    // 这个用例就是当初漏掉的那格：字典序下 "0.9" > "0.10" 为真，会把升级判成
+    // 「已是最新」，用户永远收不到提示。
+    #[test]
+    fn double_digit_segments_are_numeric_not_lexicographic() {
+        assert!("0.9" > "0.10", "前提：字典序确实是这么比的（否则这个用例没意义）");
+        assert!(!version_gt("0.9", "0.10"), "0.10 比 0.9 新，不能报「已是最新」");
+        assert!(version_gt("0.10", "0.9"));
+        assert!(version_gt("0.1.10", "0.1.9"));
+        assert!(version_gt("1.10.0", "1.9.0"));
+        assert!(version_gt("0.100", "0.99"), "0.100 比 0.99 新（数值比较，不是字典序）");
+    }
+
+    #[test]
+    fn differing_segment_counts_pad_with_zero() {
+        assert!(!version_gt("0.2", "0.2.0"), "0.2 与 0.2.0 等价");
+        assert!(!version_gt("0.2.0", "0.2"));
+        assert!(version_gt("0.2.1", "0.2"));
+        assert!(version_gt("1.0", "0.9.9"));
+    }
+
+    #[test]
+    fn prerelease_loses_to_the_release() {
+        assert!(version_gt("1.0.0", "1.0.0-rc1"));
+        assert!(!version_gt("1.0.0-rc1", "1.0.0"));
+        // 数字部分更高的预发布仍然更新
+        assert!(version_gt("1.0.1-rc1", "1.0.0"));
+    }
+
+    // 解析不了的段当 0，不能 panic —— 这是版本提示，不是校验。
+    #[test]
+    fn garbage_does_not_panic() {
+        assert!(!version_gt("abc", "0.1.0"));
+        assert!(!version_gt("", ""));
+        assert!(version_gt("1.0.0", "x.y.z"));
+    }
 }
