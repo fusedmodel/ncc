@@ -12,7 +12,8 @@ const path = require('path');
 
 const PKG_ROOT = path.join(__dirname, '..');
 const REPO_ROOT = path.join(PKG_ROOT, '..', '..');
-const HOME = process.env.HOME || os.homedir();
+// ⚠️ NCC_HOME 最优先，与 Rust 侧 `config::home_dir()` 一致（两边必须是同一个 ~/.ncc/bin/ncc）
+const HOME = process.env.NCC_HOME || process.env.HOME || os.homedir();
 
 // ⚠️ Windows 下**必须**带 .exe 后缀。
 //
@@ -31,7 +32,13 @@ const HOME = process.env.HOME || os.homedir();
 //   ✗ 执行 ncc 失败：spawn C:\Users\...\.ncc\bin\ncc ENOENT
 // 兄弟工程 rsi3d 的 launcher.js 用 exeName() 加后缀，所以没这个问题。
 const EXE = process.platform === 'win32' ? '.exe' : '';
-const NCC_BIN = path.join(HOME, '.ncc', 'bin', 'ncc' + EXE);
+const BIN_DIR = path.join(HOME, '.ncc', 'bin');
+const NCC_BIN = path.join(BIN_DIR, 'ncc' + EXE);
+
+// 版本标记：见 install.js 里的说明。缓存只有在「标记 == 本包装版本」时才可信 ——
+// 否则它可能是更早的包装装进去的旧二进制，直接用会让用户永远停在旧版本上。
+const MARKER = path.join(BIN_DIR, '.version');
+const PKG_VERSION = require(path.join(PKG_ROOT, 'package.json')).version;
 
 function platformFile() {
   const p = os.platform();
@@ -41,25 +48,35 @@ function platformFile() {
   return `ncc-${osn}-${arch}${osn === 'windows' ? '.exe' : ''}`;
 }
 
-function candidates() {
+function exists(p) {
+  try {
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 缓存里的那份是不是本版装的。 */
+function cacheIsCurrent() {
+  if (!exists(NCC_BIN)) return false;
+  try {
+    return fs.readFileSync(MARKER, 'utf8').trim() === PKG_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 不参与版本判定的候选：显式指定 / 随包分发 / 仓库本地构建。
+ * 这三个是调用方有意为之的来源，不该被 npm 包版本覆盖。
+ */
+function trustedBin() {
   const list = [];
   if (process.env.NCC_BIN) list.push(process.env.NCC_BIN);
   list.push(path.join(PKG_ROOT, 'vendor', platformFile()));
-  list.push(NCC_BIN);
   list.push(path.join(REPO_ROOT, 'cli', 'target', 'release', 'ncc' + EXE));
-  return list;
-}
-
-function firstBin() {
-  for (const p of candidates()) {
-    try {
-      fs.accessSync(p, fs.constants.X_OK);
-      return p;
-    } catch {
-      /* next */
-    }
-  }
-  return null;
+  return list.find(exists) || null;
 }
 
 function download(url, dest) {
@@ -71,15 +88,27 @@ function download(url, dest) {
   return r.status === 0;
 }
 
-let bin = firstBin();
+let bin = trustedBin();
 if (!bin) {
-  const base = process.env.NCC_RELEASE_BASE || 'https://github.com/fusedmodel/ncc/releases/latest/download';
-  const url = `${base}/${platformFile()}`;
-  console.error('→ 首次使用，正在下载 ncc…');
-  console.error('  ' + url);
-  if (download(url, NCC_BIN)) {
-    try { fs.chmodSync(NCC_BIN, 0o755); } catch { /* ignore */ }
-    bin = firstBin();
+  if (cacheIsCurrent()) {
+    bin = NCC_BIN;
+  } else {
+    const stale = exists(NCC_BIN);
+    const base = process.env.NCC_RELEASE_BASE || 'https://github.com/fusedmodel/ncc/releases/latest/download';
+    const url = `${base}/${platformFile()}`;
+    console.error(stale ? '→ 缓存里的 ncc 不是本版装的，正在更新…' : '→ 首次使用，正在下载 ncc…');
+    console.error('  ' + url);
+    if (download(url, NCC_BIN)) {
+      try { fs.chmodSync(NCC_BIN, 0o755); } catch { /* ignore */ }
+      try { fs.writeFileSync(MARKER, PKG_VERSION); } catch { /* ignore */ }
+      bin = NCC_BIN;
+    } else if (stale) {
+      // 下载失败，但手里还有一份旧的：先用起来，但要说清楚它不是本版 ——
+      // 静默退回才是真正会坑人的做法。
+      console.error('  ⚠️ 下载失败，退回使用缓存里的旧版本（可能与当前包装不匹配）。');
+      console.error('     恢复网络后可运行 `ncc upgrade`，或重装本包。');
+      bin = NCC_BIN;
+    }
   }
 }
 

@@ -31,7 +31,7 @@ The CLI talks to the registry at [ncc.ai](https://ncc.ai) or to your own deploym
 | `ncc download` · `ncc install` | fetch bytes, or install into `~/.ncc/packages` |
 | `ncc key create\|list\|revoke` | API keys |
 | `ncc living` | device heartbeat (Living); `--daemon` to report periodically |
-| `ncc terminal` · `ncc update` | terminal console, self-update check |
+| `ncc terminal` · `ncc upgrade` | terminal console, in-place self-upgrade |
 
 ## Where the binary comes from
 

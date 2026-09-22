@@ -31,12 +31,40 @@ impl Default for CliConfig {
     }
 }
 
+/// 用户根目录。
+///
+/// ⚠️ **必须与 JS 包装算出同一个目录** —— 两边操作的是同一个 `~/.ncc/bin/ncc`。
+/// Node 那边用的是 `process.env.HOME || os.homedir()`，而 `os.homedir()` 在 Windows 上
+/// 读的是 `USERPROFILE`；如果这里只认 `$HOME`，那么原生 Windows shell（通常没设 HOME）
+/// 会算成相对路径 `./.ncc`，于是升级/安装的是**另一份**文件，表现为「升级过了但还是旧版本」。
+///
+/// `NCC_HOME` 优先级最高：测试时指向临时目录，避免动真实的 `~/.ncc`。
+pub fn home_dir() -> PathBuf {
+    if let Ok(p) = env::var("NCC_HOME") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    for key in ["HOME", "USERPROFILE"] {
+        if let Ok(v) = env::var(key) {
+            if !v.is_empty() {
+                return PathBuf::from(v);
+            }
+        }
+    }
+    PathBuf::from(".")
+}
+
+/// `~/.ncc` 目录（配置、二进制、包都在这下面）
+pub fn ncc_dir() -> PathBuf {
+    home_dir().join(".ncc")
+}
+
 pub fn config_path() -> PathBuf {
     if let Ok(p) = env::var("NCC_CONFIG") {
         return PathBuf::from(p);
     }
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".ncc").join("config.json")
+    ncc_dir().join("config.json")
 }
 
 pub fn load() -> CliConfig {
