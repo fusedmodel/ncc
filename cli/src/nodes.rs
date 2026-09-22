@@ -338,8 +338,10 @@ pub struct GrantSetArgs {
     /// 被授权人：@用户名 或用户 id
     #[arg(long)]
     pub user: String,
-    /// 授权类型：artifact（可下载我的私有制品）| node（可看/连我的私有节点）| share（可看我的私有分享页）
-    #[arg(long, value_parser = ["artifact", "node", "share"])]
+    /// 授权类型（看指向哪个服务端）：
+    /// 平台 ncc.ai：artifact（私有制品）| service（非公开服务）| share（私有分享页）
+    /// 内网 ncc-registry：artifact | node（私有节点）| config（非公开配置）
+    #[arg(long, value_parser = ["artifact", "service", "share", "node", "config"])]
     pub kind: String,
     /// 限定命名空间（缺省=该类型的全部；share 不支持限定）
     #[arg(long = "ns")]
@@ -415,8 +417,10 @@ pub fn grant_list(cfg: &CliConfig, a: &GrantListArgs) -> Result<()> {
     for g in &rows {
         let kind = match s(g, "kind") {
             "artifact" => "制品下载",
-            "node" => "私有节点可见",
+            "service" => "非公开服务接入",
             "share" => "私有分享页",
+            "node" => "私有节点可见",
+            "config" => "非公开配置读取",
             other => other,
         };
         let ns = s(&g["namespace"], "slug");
@@ -454,8 +458,10 @@ pub fn grant_set(cfg: &CliConfig, a: &GrantSetArgs) -> Result<()> {
     let g = &d["grant"];
     let kind = match s(g, "kind") {
         "artifact" => "可下载你的私有制品",
-        "node" => "可发现并连接你的私有节点",
+        "service" => "可接入你的非公开服务",
         "share" => "可查看你的私有分享页",
+        "node" => "可发现并连接你的私有节点",
+        "config" => "可读取你的非公开配置",
         _ => "",
     };
     println!("✅ 已授权 {}：{}", party_label(&g["grantee"]), kind);

@@ -37,7 +37,7 @@ const MAX_OUT: usize = 2000;
 impl Deck {
     fn new(cfg: &CliConfig) -> Self {
         Deck {
-            base: cfg.base_url.clone(),
+            base: cfg.base_url().clone(),
             posix: terminal::runtime_summary(),
             output: vec![
                 "NCC Terminal — 能力命令台".to_string(),

@@ -1,10 +1,15 @@
+mod admin;
 mod api;
+mod capability;
 mod config;
+mod configs;
 mod mcp;
 mod nodes;
 mod profile;
 mod registry;
 mod registryadd;
+mod services;
+mod target;
 mod terminal;
 mod tui;
 mod upgrade;
@@ -19,11 +24,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
-#[command(name = "ncc", version, about = "ncc.ai Registry 命令行客户端\n用法: ncc <command> [args...]")]
+#[command(name = "ncc", version, about = "ncc.ai Registry 命令行客户端\n用法: ncc <command> [args...]\n目标：ncc target list（云端 ncc.ai / 内网 registry 节点各是一个目标）")]
 struct Cli {
-    /// 服务地址（覆盖并写入配置，如 http://localhost:8181）
+    /// 服务地址（本次命令用这个地址；已存在同名目标则复用，否则新建一个目标）
     #[arg(long, global = true)]
     base: Option<String>,
+    /// 本次命令用哪个目标（ncc target list 看全部）
+    #[arg(long, global = true)]
+    target: Option<String>,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -97,9 +105,18 @@ enum Cmd {
     Profile(ProfileArgs),
     /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
     Nodes(NodesArgs),
-    /// NCC Registry 节点（内网托管节点）：登录 / 入网 / 状态 / 发现 / 聚合目录 / 路由
+    /// NCC Service：对外服务（服务提供方打包的多条业务）—— 匹配找服务 / 声明自己的服务
+    ///
+    /// 需要目标声明 `services` 能力（云端 ncc.ai 已声明；内网节点将来也可以声明，
+    /// 那时同一个命令在那台节点上直接可用）。
+    Services(ServicesArgs),
+    /// NCC Registry 节点（内网托管节点）：登录 / 入网 / 目录 / 路由 / 配置 / 分享 / 管理
+    ///
+    /// 只在内网节点目标上跑（kind=registry）；云端命令见 `ncc hub …`。
     #[command(subcommand)]
     Registry(RegistryCmd),
+    /// 目标管理：我连着哪些 ncc（云端 ncc.ai / 内网 registry 节点）
+    Target(target::TargetArgs),
     /// 制品/分享授权：ncc grant set --user @someone --kind artifact | list | rm <id>
     #[command(subcommand)]
     Grant(GrantCmd),
@@ -139,10 +156,37 @@ enum NodesCmd {
 enum GrantCmd {
     /// 我的授权（--out 我给出的 / --in 别人给我的）
     List(nodes::GrantListArgs),
-    /// 授权：--user <id|@handle> --kind share|artifact [--ns @slug] [--note …]
+    /// 授权：--user <id|@handle> --kind share|artifact|service [--ns @slug] [--note …]
     Set(nodes::GrantSetArgs),
     /// 撤销授权
     Rm { id: String },
+}
+
+/// `ncc services` 子命令。不带子命令 = 浏览公开服务目录。
+#[derive(clap::Args)]
+struct ServicesArgs {
+    #[command(subcommand)]
+    action: Option<ServicesCmd>,
+}
+
+/// 服务提供方把多条业务打包声明；其他 Agent 按匹配策略找到并接入。
+#[derive(Subcommand)]
+enum ServicesCmd {
+    /// 浏览公开服务目录（--category / --tag / --region / --protocol / --q / --mine）
+    List(services::ListArgs),
+    /// 按意图匹配服务（Agent 主入口）：ncc services match "帮我订杭州的酒店"
+    Match(services::MatchArgs),
+    /// 看一条服务的完整接入信息：@提供方/slug 或 SV-… id
+    Show(services::ShowArgs),
+    /// 业务分类 / 接入方式 / 授权方式目录
+    Catalog {
+        #[arg(long)]
+        json: bool,
+    },
+    /// 声明一条对外服务（提供方侧）
+    Add(services::AddArgs),
+    /// 下架一条服务（提供方侧）
+    Rm(services::RmArgs),
 }
 
 #[derive(clap::Args)]
@@ -171,8 +215,9 @@ enum ProfileCmd {
 
 /// `ncc registry` 子命令。
 ///
-/// 把一个内网 ncc-registry 当成「托管节点 + 制品仓库 + Agent 目录」来用：
-/// 登录它、把本机托管进去、看集群、发现别人的节点、查聚合目录、问能力路由。
+/// 把一个内网 ncc-registry 当成「托管节点 + 制品仓库 + 配置库 + Agent 目录」来用：
+/// 登录它、把本机托管进去、看集群、发现别人的节点、查聚合目录、问能力路由，
+/// 以及托管配置、分享制品、当管理员治理用户 / 节点 / 服务。
 #[derive(Subcommand)]
 enum RegistryCmd {
     /// 用接入短链（或 key/secret）把内网 registry 接进来
@@ -194,6 +239,12 @@ enum RegistryCmd {
     },
     /// 接入票据：签发 / 列出 / 删除（给对方 key+secret 或一条内网短链）
     Ticket(registryadd::TicketCmd),
+    /// 配置托管：list | get | set | history | rollback | bundle | kinds | rm
+    Config(configs::ConfigCmd),
+    /// 分享链接：create | list | rm | info（发给别人，对方不用登录）
+    Share(admin::ShareArgs),
+    /// 节点管理：用户 / 节点 / 服务（需管理员账号或 admin key/secret）
+    Admin(admin::AdminArgs),
     /// 把制品分发到 worker（副本）：--to all|<名称,名称>
     Replicate(registryadd::ReplicateArgs),
     /// 下架制品并回收各节点上的副本（需 --yes）
@@ -319,30 +370,188 @@ struct SearchArgs {
 }
 
 fn main() {
-    let cli = Cli::parse();
+    // `ncc hub …` 是「本次用云端目标」的糖：在交给 clap 之前把 hub 摘掉。
+    // 这样 ncc hub services match "…" 与 ncc --target hub services match "…" 等价，
+    // 而不需要把整棵命令树再抄一份到 hub 底下。
+    let (args, hub_prefix) = strip_hub_prefix(std::env::args().collect());
+    // `ncc hub` 单独出现（没有子命令）= 看云端目标的状态
+    if hub_prefix && args.len() <= 1 {
+        let mut cfg = config::load();
+        if let Err(e) = resolve_target(&mut cfg, &Cli { base: None, target: None, cmd: Cmd::Target(target::TargetArgs { action: None }) }, hub_prefix) {
+            eprintln!("✗ {:#}", e);
+            std::process::exit(1);
+        }
+        let action = Cmd::Target(target::TargetArgs {
+            action: Some(target::TargetAction::Show { name: target::hub_target_name(&cfg), json: false }),
+        });
+        if let Err(e) = run(&mut cfg, &action) {
+            eprintln!("✗ {:#}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(c) => c,
+        Err(e) => {
+            // 解析失败时按 clap 自己的输出走（含 help / version）
+            e.exit();
+        }
+    };
 
     let mut cfg = config::load();
-    if let Some(b) = cli.base {
-        cfg.base_url = b.trim_end_matches('/').to_string();
-        let _ = config::save(&cfg);
+    if let Err(e) = resolve_target(&mut cfg, &cli, hub_prefix) {
+        eprintln!("✗ {:#}", e);
+        std::process::exit(1);
     }
 
-    let result = run(&cfg, &cli.cmd);
+    let result = run(&mut cfg, &cli.cmd);
     if let Err(e) = result {
         eprintln!("✗ {:#}", e);
         std::process::exit(1);
     }
 }
 
-fn run(cfg: &CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
+/// 把 `ncc hub …` 里的 `hub` 摘掉（只认第一个位置参数）。
+fn strip_hub_prefix(args: Vec<String>) -> (Vec<String>, bool) {
+    let mut out = Vec::with_capacity(args.len());
+    let mut hub = false;
+    for (i, a) in args.into_iter().enumerate() {
+        if i == 1 && a == "hub" {
+            hub = true;
+            continue;
+        }
+        out.push(a);
+    }
+    (out, hub)
+}
+
+/// 决定这次命令跑在哪个目标上：
+///
+///	--target <名字>   **本次**命令用这个目标（不改默认；要改默认用 ncc target use）
+///	--base <URL>      用这个地址：已存在同名目标就复用，否则新建一个目标（**会**保存，并提示）
+///	ncc hub …         **本次**用云端目标
+///	什么都不给        用配置里的当前目标
+fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::Result<()> {
+    if let Some(name) = &cli.target {
+        config::set_current(cfg, name)?; // 只改内存，不写盘
+    }
+    if hub_prefix && cli.target.is_none() {
+        match target::hub_target_name(cfg) {
+            Some(n) => config::set_current(cfg, &n)?,
+            None => {
+                anyhow::bail!(
+                    "还没有云端目标。新建：ncc target add hub --base https://ncc.ai（或先 ncc target list 看一眼）"
+                );
+            }
+        }
+    }
+    if let Some(b) = &cli.base {
+        let base = b.trim_end_matches('/').to_string();
+        match cfg.name_of_base(&base) {
+            Some(existing) => {
+                // 同一台机器已经有目标了：切过去，而不是再造一个
+                if existing != cfg.current_name() {
+                    config::set_current(cfg, &existing)?;
+                    println!("（--base 命中已有目标 {existing}，本次已切到它）");
+                }
+            }
+            None => {
+                // 新地址：建一个新目标并切过去。**不会覆盖**已有的云端目标与凭据。
+                let mut probe_cfg = cfg.clone();
+                probe_cfg.targets.insert(
+                    "probe".into(),
+                    config::Target { base_url: base.clone(), ..config::Target::default() },
+                );
+                probe_cfg.current = Some("probe".into());
+                let m = capability::probe(&probe_cfg);
+                let name = target::suggest_name_for(cfg, &base, &m.kind);
+                cfg.targets.insert(
+                    name.clone(),
+                    config::Target {
+                        kind: match m.kind.as_str() {
+                            "node" => "registry".to_string(),
+                            "hub" => "cloud".to_string(),
+                            _ => if base.contains("ncc.ai") { "cloud".into() } else { "registry".into() },
+                        },
+                        base_url: base.clone(),
+                        ..config::Target::default()
+                    },
+                );
+                config::set_current(cfg, &name)?;
+                config::save(cfg)?;
+                println!(
+                    "（--base {base} 已作为新目标 {name} 保存并切换；以后直接 ncc target use {name}）"
+                );
+                // 地址打错时当场提醒一次，而不是等下一次命令才发现。
+                if m.product.is_empty() {
+                    if let Some(note) = &m.note {
+                        eprintln!("⚠️  这个地址现在认不出服务：{note}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 命令 → 它需要的能力。返回 None 表示不需要服务器（本地命令）。
+///
+/// 只声明「明确属于某个能力」的命令；账号类（register/login/me/ns/key）两边都有，不管。
+fn required_capability(cmd: &Cmd) -> Option<&'static str> {
+    match cmd {
+        Cmd::Publish(_)
+        | Cmd::Search(_)
+        | Cmd::Info { .. }
+        | Cmd::Download { .. }
+        | Cmd::Install { .. } => Some("registry"),
+        Cmd::Living(_) => Some("living"),
+        Cmd::Profile(_) => Some("profile"),
+        Cmd::Nodes(_) => Some("nodes"),
+        Cmd::Services(_) => Some("services"),
+        Cmd::Grant(_) => Some("grants"),
+        Cmd::Registry(r) => match r {
+            RegistryCmd::Config(_) => Some("config"),
+            RegistryCmd::Admin(_) => Some("admin"),
+            RegistryCmd::Share(_) => Some("share"),
+            RegistryCmd::Ticket(_) | RegistryCmd::Add(_) => Some("access"),
+            RegistryCmd::Catalog(_) | RegistryCmd::Route { .. } => Some("cluster"),
+            RegistryCmd::Join(_) | RegistryCmd::Status(_) | RegistryCmd::Nodes(_) | RegistryCmd::Leave(_) => {
+                Some("nodes")
+            }
+            RegistryCmd::Login(_) | RegistryCmd::Replicate(_) | RegistryCmd::Rm(_) => Some("registry"),
+        },
+        _ => None,
+    }
+}
+
+fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
+    // 能力门禁：目标声明了这份清单且其中没有该能力 → 直接说清「该切到哪儿」，
+    // 而不是把 404 丢给用户。未知（老服务端没声明）则放行。
+    if let Some(cap) = required_capability(cmd) {
+        capability::ensure(cfg, cap)?;
+    }
+    // `ncc registry …` 只在内网节点目标上跑
+    if matches!(cmd, Cmd::Registry(_)) && !cfg.target().is_node() {
+        let nodes = cfg.node_names();
+        anyhow::bail!(
+            "当前目标是 {}（{} · {}）——`ncc registry …` 要在内网节点目标上跑\n  节点目标：{}",
+            cfg.current_name(),
+            cfg.target().kind_label(),
+            cfg.base_url(),
+            if nodes.is_empty() {
+                "（还没有）新建一个：ncc target add office --base http://<内网 IP>:8282".to_string()
+            } else {
+                format!("{}（ncc target use <名字>）", nodes.join(" · "))
+            }
+        );
+    }
     match cmd {
         Cmd::Register { email, password, name, invite } => cmd_register(cfg, email, password, name.as_deref(), invite.as_deref()),
         Cmd::Login { email, password } => cmd_login(cfg, email, password),
         Cmd::Logout => {
-            let mut c = cfg.clone();
-            c.token = None;
-            config::save(&c)?;
-            println!("已登出");
+            let name = cfg.current_name();
+            config::clear_session(cfg)?;
+            println!("已登出目标 {name}（其它目标的登录态不受影响）");
             Ok(())
         }
         Cmd::Me => cmd_me(cfg),
@@ -404,6 +613,18 @@ fn run(cfg: &CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             GrantCmd::Set(a) => nodes::grant_set(cfg, a),
             GrantCmd::Rm { id } => nodes::grant_rm(cfg, id),
         },
+        Cmd::Services(v) => match &v.action {
+            None => services::list(cfg, &services::ListArgs {
+                category: None, tag: None, region: None, protocol: None, q: None,
+                mine: false, limit: 20, json: false,
+            }),
+            Some(ServicesCmd::List(a)) => services::list(cfg, a),
+            Some(ServicesCmd::Match(a)) => services::match_intent(cfg, a),
+            Some(ServicesCmd::Show(a)) => services::show(cfg, a),
+            Some(ServicesCmd::Catalog { json }) => services::catalog(cfg, *json),
+            Some(ServicesCmd::Add(a)) => services::add(cfg, a),
+            Some(ServicesCmd::Rm(a)) => services::rm(cfg, a),
+        },
         Cmd::Registry(r) => match r {
             RegistryCmd::Add(a) => registryadd::add(cfg, a),
             RegistryCmd::Login(a) => registry::login(cfg, a),
@@ -413,24 +634,34 @@ fn run(cfg: &CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             RegistryCmd::Catalog(a) => registry::catalog(cfg, a),
             RegistryCmd::Route { target } => registry::route(cfg, target),
             RegistryCmd::Ticket(t) => registryadd::ticket(cfg, t),
+            RegistryCmd::Config(c) => match &c.action {
+                configs::ConfigAction::List(a) => configs::list(cfg, a),
+                configs::ConfigAction::Get(a) => configs::get(cfg, a),
+                configs::ConfigAction::Set(a) => configs::set(cfg, a),
+                configs::ConfigAction::History { target, json } => configs::history(cfg, target, *json),
+                configs::ConfigAction::Rollback(a) => configs::rollback(cfg, a),
+                configs::ConfigAction::Bundle(a) => configs::bundle(cfg, a),
+                configs::ConfigAction::Kinds { json } => configs::kinds(cfg, *json),
+                configs::ConfigAction::Rm(a) => configs::rm(cfg, a),
+            },
             RegistryCmd::Replicate(a) => registryadd::replicate(cfg, a),
             RegistryCmd::Rm(a) => registryadd::rm(cfg, a),
+            RegistryCmd::Share(s) => admin::run_share(cfg, s),
+            RegistryCmd::Admin(a) => admin::run(cfg, a),
             RegistryCmd::Leave(a) => registry::leave(cfg, a),
         },
+        Cmd::Target(t) => target::run(cfg, t),
         Cmd::Mcp => mcp::serve(cfg),
     }
 }
 
 /* ---------------- 账号 ---------------- */
-fn save_session(cfg: &CliConfig, token: &str, email: &str, name: &str) -> anyhow::Result<()> {
-    let mut c = cfg.clone();
-    c.token = Some(token.to_string());
-    c.email = Some(email.to_string());
-    c.name = Some(name.to_string());
-    config::save(&c)
+// 登录态写进**当前目标**：在本地 registry 登录不会把云端的会话挤掉（多目标的意义所在）。
+fn save_session(cfg: &mut CliConfig, token: &str, email: &str, name: &str) -> anyhow::Result<()> {
+    config::save_session(cfg, token, email, name)
 }
 
-fn cmd_register(cfg: &CliConfig, email: &str, password: &str, name: Option<&str>, invite: Option<&str>) -> anyhow::Result<()> {
+fn cmd_register(cfg: &mut CliConfig, email: &str, password: &str, name: Option<&str>, invite: Option<&str>) -> anyhow::Result<()> {
     // 邀请码：--invite 优先，其次环境变量 NCC_INVITE_CODE（服务端未启用门禁时可留空）
     let invite = invite.map(|s| s.to_string()).or_else(|| std::env::var("NCC_INVITE_CODE").ok());
     let body = json!({ "email": email, "password": password, "name": name, "inviteCode": invite });
@@ -439,10 +670,21 @@ fn cmd_register(cfg: &CliConfig, email: &str, password: &str, name: Option<&str>
     let u = &data["user"];
     save_session(cfg, token, u["email"].as_str().unwrap_or(email), u["name"].as_str().unwrap_or(name.unwrap_or("")))?;
     println!("✅ 注册成功：{}（token 已保存到 {}）", u["email"].as_str().unwrap_or(email), config::config_path().display());
+    // 内网 registry 的第一个账号自动成为节点管理员，并在这里拿到机器用 admin key/secret。
+    // secret 只在注册响应里出现一次 —— 不打印就等于让用户永久失去它。
+    if let Some(admin) = data.get("admin") {
+        if let Some(key) = admin["key"].as_str() {
+            println!("\n👑 你是本节点的第一个账号 → 自动成为管理员");
+            println!("   admin key      {key}");
+            println!("   admin secret   {}", admin["secret"].as_str().unwrap_or(""));
+            println!("   （secret 只显示这一次，请立刻保存；写进本机配置：）");
+            println!("   ncc registry admin login --key {key} --secret <上面的 secret>");
+        }
+    }
     Ok(())
 }
 
-fn cmd_login(cfg: &CliConfig, email: &str, password: &str) -> anyhow::Result<()> {
+fn cmd_login(cfg: &mut CliConfig, email: &str, password: &str) -> anyhow::Result<()> {
     let body = json!({ "email": email, "password": password });
     let data = api::post_json(cfg, "/api/auth/login", None, &body)?;
     let token = data["token"].as_str().context("响应缺少 token")?;
@@ -908,7 +1150,7 @@ fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
         Ok(())
     };
     if a.daemon {
-        println!("守护心跳：每 {}s 上报到 {}（Ctrl+C 停止）", a.interval.max(1), cfg.base_url);
+        println!("守护心跳：每 {}s 上报到 {}（Ctrl+C 停止）", a.interval.max(1), cfg.base_url());
         loop {
             report()?;
             std::thread::sleep(Duration::from_secs(a.interval.max(1)));

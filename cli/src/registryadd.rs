@@ -140,7 +140,7 @@ pub fn add(cfg: &CliConfig, a: &AddArgs) -> Result<()> {
         secret = s.trim().to_string();
     }
     if base.is_empty() {
-        base = cfg.base_url.clone();
+        base = cfg.base_url().clone();
     }
     if key.is_empty() || secret.is_empty() {
         bail!(
@@ -152,7 +152,22 @@ pub fn add(cfg: &CliConfig, a: &AddArgs) -> Result<()> {
 
     // 兑换发生在目标节点上，所以先切到目标 base 再发请求。
     let mut target = cfg.clone();
-    target.base_url = base.clone();
+    match target.name_of_base(&base) {
+        Some(existing) => {
+            target.current = Some(existing);
+        }
+        None => {
+            target.targets.insert(
+                "_join".into(),
+                crate::config::Target {
+                    kind: "registry".into(),
+                    base_url: base.clone(),
+                    ..crate::config::Target::default()
+                },
+            );
+            target.current = Some("_join".into());
+        }
+    }
 
     let mut body = json!({ "key": key, "secret": secret });
     if a.join {
@@ -180,12 +195,31 @@ pub fn add(cfg: &CliConfig, a: &AddArgs) -> Result<()> {
     let owner = &d["owner"];
 
     // 语出同源：把「这个 registry + 这枚令牌」写进配置，后续命令直接可用。
+    // 写的是**该节点对应的目标**（没有就新建一个），不会动其它目标。
     let mut c = cfg.clone();
-    c.base_url = reg["base"].as_str().unwrap_or(base.as_str()).trim_end_matches('/').to_string();
-    c.token = Some(token.to_string());
-    c.email = Some(format!("@{}", owner["namespace"].as_str().unwrap_or("")));
-    c.name = Some(owner["name"].as_str().unwrap_or("").to_string());
-    config::save(&c)?;
+    let node_base = reg["base"].as_str().unwrap_or(base.as_str()).trim_end_matches('/').to_string();
+    let name = match c.name_of_base(&node_base) {
+        Some(existing) => existing,
+        None => {
+            let n = crate::target::suggest_name_for(&c, &node_base, "node");
+            c.targets.insert(
+                n.clone(),
+                crate::config::Target {
+                    kind: "registry".into(),
+                    base_url: node_base.clone(),
+                    ..crate::config::Target::default()
+                },
+            );
+            n
+        }
+    };
+    c.current = Some(name.clone());
+    config::save_session(
+        &mut c,
+        token,
+        &format!("@{}", owner["namespace"].as_str().unwrap_or("")),
+        owner["name"].as_str().unwrap_or(""),
+    )?;
 
     println!("✅ 已接入内网 registry");
     println!(
@@ -194,7 +228,7 @@ pub fn add(cfg: &CliConfig, a: &AddArgs) -> Result<()> {
         reg["nodeId"].as_str().unwrap_or(""),
         reg["version"].as_str().unwrap_or("")
     );
-    println!("   地址     {}   控制台 {}/", c.base_url, c.base_url);
+    println!("   地址     {}   控制台 {}/", c.base_url(), c.base_url());
     println!(
         "   身份     {} @{} 的节点令牌（作用域 {}）",
         owner["name"].as_str().unwrap_or(""),

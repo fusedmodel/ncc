@@ -7,6 +7,7 @@
 //    否则客户端会把日志当成协议帧解析而报解析错误。
 use crate::api;
 use crate::api::urlenc;
+use crate::capability;
 use crate::config::{self, CliConfig};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
@@ -27,23 +28,56 @@ NCC Registry 是中立、跨协议的能力制品目录（api / skill / mcp / ha
 2. 看细节：ncc_get_artifact 取元数据；ncc_fetch_artifact 取回正文（例如 SKILL.md 可直接读进上下文照做）。
 3. 发布产出：ncc_publish_artifact 把成果发布成条目（需要先 `ncc login`，或配置 API-Key）。
 4. 找人与定位：ncc_find_people 按角色检索人才目录；ncc_list_roles 拿角色 id；ncc_get_profile 看某人的名片（作品集 + 已发布能力）。
-5. 人脉（需凭据）：ncc_list_contacts 看通讯录；ncc_region_profile 看人脉的区域/职能分布；ncc_recommend_contacts 按区域与角色要推荐。
+5. 找服务：公司 / 连锁集团把多条业务打包声明成**对外服务**。要办具体事时用 ncc_match_services 传意图（如「订杭州的酒店」），
+   它会按提供方的匹配策略打分并给出接入步骤（端点 / 节点 / 能力包 / 是否需要授权）；ncc_list_services 浏览目录，ncc_get_service 看细节。
+   非公开服务需要提供方授予 service 授权后才会展开接入细节。
+6. 团队配置：内网 ncc-registry 上托管了团队的网络 / 基础设施 / Agent 配置。用 ncc_list_configs 看有什么（公开配置无需凭据），
+   ncc_get_config 取一份（**内容默认打码**，只有带 reveal=true 才回明文；敏感配置是静态加密的）。
+   要改配置（ncc registry config set / rollback）属于写操作，留在 CLI 里由用户执行。
+7. 人脉（需凭据）：ncc_list_nodes 看节点连接表；ncc_region_profile 看区域分布；ncc_recommend_nodes 按区域要推荐。
 
-边界：节点（ncc_list_nodes / ncc_discover_nodes）与授权（ncc_list_grants）属于用户的私人数据，
+边界：节点（ncc_list_nodes / ncc_discover_nodes）、授权（ncc_list_grants）与你自己声明的服务属于用户的私人数据，
 只在用户问起时用，不要转发给第三方。
-连接节点、授权、发布这类会改变「别人能拿到什么」的动作只有读工具 —— 需要变更时，
-让用户自己跑 CLI（ncc nodes link / ncc grant set / ncc publish），并先征得同意。
+声明服务、连接节点、授权这类会改变「别人能拿到什么」的动作只有读工具 —— 需要变更时，
+让用户自己跑 CLI（ncc services add / ncc nodes link / ncc grant set），并先征得同意。
 
 制品引用统一写成 `@命名空间/slug`，也可用 `R-…` 形式的 id。
 检索与取回是公开只读的，无需登录；节点类工具需要凭据（API-Key 需 nodes:read / grants:read）。";
 
 /* ---------------- 入口 ---------------- */
 
+/// MCP 工具 → 它需要的能力（与服务端的 capabilities 词表一致）。
+/// 不在表里的工具（目录检索/取回/我是谁）属于基础能力，两边都声明，不做门禁。
+fn tool_capability(tool: &str) -> Option<&'static str> {
+    match tool {
+        "ncc_match_services" | "ncc_list_services" | "ncc_get_service" | "ncc_service_categories" => {
+            Some("services")
+        }
+        "ncc_list_configs" | "ncc_get_config" => Some("config"),
+        "ncc_list_nodes" | "ncc_discover_nodes" | "ncc_region_profile" | "ncc_recommend_nodes" => {
+            Some("nodes")
+        }
+        "ncc_list_grants" => Some("grants"),
+        "ncc_list_roles" | "ncc_find_people" | "ncc_get_profile" => Some("profile"),
+        _ => None,
+    }
+}
+
 /// `ncc mcp`：在 stdin/stdout 上跑 MCP server，直到 stdin 关闭。
 pub fn serve(cfg: &CliConfig) -> Result<()> {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
-    eprintln!("[ncc-mcp] ready · base={} · 等待 MCP 客户端握手", cfg.base_url);
+    // 启动时探测一次目标：把「你现在连的是谁、它声明了什么」写进日志与 tools/list 提示，
+    // 避免 Agent 把云端工具打到内网节点（或反过来）。
+    let meta = capability::probe(cfg);
+    let target_line = format!(
+        "【当前目标】{} · {} · {} · 能力：{}",
+        cfg.current_name(),
+        if meta.product.is_empty() { "未知服务端" } else { &meta.product },
+        cfg.base_url(),
+        meta.capability_line()
+    );
+    eprintln!("[ncc-mcp] ready · {target_line} · 等待 MCP 客户端握手");
 
     for line in stdin.lock().lines() {
         let line = line?;
@@ -97,11 +131,21 @@ fn handle(cfg: &CliConfig, method: &str, params: Option<&Value>) -> Result<Value
                 .and_then(|p| p.get("protocolVersion"))
                 .and_then(|v| v.as_str())
                 .unwrap_or(PROTOCOL_VERSION);
+            // 告诉 Agent「你现在连的是谁」：工具面按目标能力变化（云端有服务/名片，
+            // 内网节点有配置/治理），说清楚比让它们打到 404 强。
+            let meta = capability::probe(cfg);
+            let header = format!(
+                "当前目标：{}（{} · {}）\n它声明了能力：{}\n不在其中的工具会明确报错，而不是静默失败。\n\n",
+                cfg.current_name(),
+                if meta.product.is_empty() { "未知服务端" } else { &meta.product },
+                cfg.base_url(),
+                meta.capability_line()
+            );
             Ok(json!({
                 "protocolVersion": pv,
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "ncc-registry", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": INSTRUCTIONS,
+                "instructions": format!("{header}{INSTRUCTIONS}"),
             }))
         }
         "ping" => Ok(json!({})),
@@ -140,8 +184,8 @@ fn tools() -> Vec<Value> {
             "description": "查看单个制品的完整元数据（含 version、tags、sha256、storage.url、manifest 契约）。",
             "inputSchema": {
                 "type": "object",
-                "properties": { "target": { "type": "string", "description": "制品引用 @命名空间/slug，或 R-… 形式的 id" } },
-                "required": ["target"],
+                "properties": { "ref": { "type": "string", "description": "制品引用 @命名空间/slug，或 R-… 形式的 id（旧名 target 仍兼容）" } },
+                "required": ["ref"],
                 "additionalProperties": false
             }
         }),
@@ -150,8 +194,8 @@ fn tools() -> Vec<Value> {
             "description": "取回制品正文。文本类制品（SKILL.md / JSON / YAML / 脚本等）直接返回内容，可直接照做；二进制只返回下载地址与 sha256。",
             "inputSchema": {
                 "type": "object",
-                "properties": { "target": { "type": "string", "description": "制品引用 @命名空间/slug 或 R-…" } },
-                "required": ["target"],
+                "properties": { "ref": { "type": "string", "description": "制品引用 @命名空间/slug 或 R-…（旧名 target 仍兼容）" } },
+                "required": ["ref"],
                 "additionalProperties": false
             }
         }),
@@ -210,6 +254,79 @@ fn tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": { "username": { "type": "string", "description": "用户名（不带 @）；省略则为当前登录账号" } },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_match_services",
+            "description": "按**意图**匹配对外服务：公司 / 连锁集团把多条业务打包声明成服务，这里传入自然语言意图（如「帮我订杭州的酒店」「门店要巡检」），服务端按提供方的匹配策略打分并解释命中理由，同时给出接入步骤（端点 / MCP 地址 / 能力包 / 执行节点 / 是否需要授权）。要办事时先用它找「该找谁」。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "intent": { "type": "string", "description": "自然语言意图，如：帮我订杭州的酒店" },
+                    "category": { "type": "string", "description": "业务分类 id，见 ncc_service_categories，如 booking、inspection" },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "能力标签（可选，可多个）" },
+                    "region": { "type": "string", "description": "区域，如 杭州（不限区域的服务也算覆盖）" },
+                    "limit": { "type": "integer", "description": "返回条数，默认 5，最大 20" }
+                },
+                "required": ["intent"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_list_services",
+            "description": "浏览对外服务目录（不传意图，按分类 / 标签 / 区域过滤）。返回服务名称、业务分类、接入方式、授权方式与「何时找我」。想按需求找人办事请用 ncc_match_services。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "category": { "type": "string", "description": "业务分类 id，见 ncc_service_categories" },
+                    "tag": { "type": "string", "description": "能力标签" },
+                    "region": { "type": "string", "description": "覆盖区域" },
+                    "limit": { "type": "integer", "description": "返回条数，默认 20，最大 50" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_get_service",
+            "description": "看一条对外服务的完整接入信息：端点 / 执行节点 / 能力包 / 接入步骤 / 响应与计费 / 条款。非公开服务在你拿到提供方的 service 授权前只会返回「需要授权」与申请办法。",
+            "inputSchema": {
+                "type": "object",
+                "properties": { "ref": { "type": "string", "description": "服务引用：@提供方/标识（如 @aya/hotel-booking）或 SV-… id（旧名 target 仍兼容）" } },
+                "required": ["ref"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_service_categories",
+            "description": "列出对外服务的业务分类目录（六组，含中英标签与已有服务数）与接入方式 / 授权方式取值。用于给 ncc_match_services 的 category 参数取值。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+        json!({
+            "name": "ncc_list_configs",
+            "description": "列出内网 registry 上托管的**团队配置**（网络 / 网关 / 基础设施 / Agent / CI / 安全…）。公开且生效的配置无需凭据即可看到；自己命名空间的配置传 mine=true；敏感配置（secret）内容静态加密、默认只回校验和。改配置请让用户跑 CLI（ncc registry config set）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "namespace": { "type": "string", "description": "限定团队命名空间，如 @team 或 team" },
+                    "kind": { "type": "string", "description": "配置类型：network|gateway|infra|registry|agent|ci|observability|security|app|other" },
+                    "env": { "type": "string", "description": "环境：any|dev|staging|prod（含 any 通用项）" },
+                    "mine": { "type": "boolean", "description": "只看我（owner/成员）命名空间里的配置" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_get_config",
+            "description": "取一份托管配置的元数据与（可选的）内容。**内容默认打码**：要明文必须显式 reveal=true，而且需要配置读取权限（config:read + 命名空间成员身份或 config 授权）。含敏感值的配置在服务端是加密存储的，取明文前先确认用户确实需要。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ref": { "type": "string", "description": "配置引用：@命名空间/slug（如 @team/network）或 C-… id（旧名 target 仍兼容）" },
+                    "reveal": { "type": "boolean", "description": "是否取明文（默认 false，只回校验和与大小）" },
+                    "revision": { "type": "integer", "description": "取历史版本（见版本历史）" }
+                },
+                "required": ["ref"],
                 "additionalProperties": false
             }
         }),
@@ -282,12 +399,23 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
     let p = params.cloned().unwrap_or(json!({}));
     let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
     let args = p.get("arguments").cloned().unwrap_or(json!({}));
+    // 能力门禁：这个目标是哪台 ncc、它声明了什么。
+    // 例：把 ncc_match_services 打到内网 registry 节点上，应该告知「该工具属于 services 能力」，
+    // 而不是丢一个 404 给 Agent。未声明能力（老服务端）则放行。
+    if let Some(cap) = tool_capability(name) {
+        if let Err(e) = capability::ensure(cfg, cap) {
+            return Ok(tool_err(format!("{e:#}")));
+        }
+    }
     let sarg = |k: &str| -> Option<String> {
         args.get(k)
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
     };
+    // 引用参数的新旧名：`ref` 是正名（“目标”现在指连接目标，不能再混用），
+    // `target` 保留为兼容名（老 prompt / 老配置里写的还能用）。
+    let rarg = |k: &str| -> Option<String> { sarg(k).or_else(|| sarg("target")) };
     let narg = |k: &str, d: i64, max: i64| -> i64 {
         args.get(k).and_then(|v| v.as_i64()).unwrap_or(d).clamp(1, max)
     };
@@ -361,14 +489,14 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         })()),
 
         "ncc_get_artifact" => ok_or_text((|| {
-            let target = sarg("target").context("缺少 target")?;
+            let target = rarg("ref").context("缺少 ref")?;
             let d = api::get(cfg, &format!("/api/registry/{}", urlenc(&target)), token.as_deref())?;
             let it = d.get("item").cloned().unwrap_or(d);
             Ok(text(clip(&serde_json::to_string_pretty(&it)?)))
         })()),
 
         "ncc_fetch_artifact" => ok_or_text((|| {
-            let target = sarg("target").context("缺少 target")?;
+            let target = rarg("ref").context("缺少 ref")?;
             let dl = api::get(cfg, &format!("/api/registry/{}/download", urlenc(&target)), token.as_deref())?;
             let url = dl.get("url").and_then(|v| v.as_str()).context("下载响应缺少 url")?;
             let ns = dl.get("namespaceSlug").and_then(|v| v.as_str()).unwrap_or("");
@@ -691,6 +819,84 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             let dir = sarg("direction").unwrap_or_else(|| "outgoing".to_string());
             let v = crate::nodes::fetch_grants(cfg, &dir)?;
             Ok(text(clip(&crate::nodes::render_grants(&v, &dir))))
+        })()),
+
+        // ---- 对外服务（NCC Service）----
+        "ncc_match_services" => ok_or_text((|| {
+            let intent = sarg("intent")
+                .or_else(|| sarg("query"))
+                .ok_or_else(|| anyhow::anyhow!("需要 intent（你想办什么事）"))?;
+            let category = sarg("category").unwrap_or_default();
+            let region = sarg("region").unwrap_or_default();
+            let tags: Vec<String> = args
+                .get("tags")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str()).map(String::from).collect())
+                .unwrap_or_default();
+            let limit = narg("limit", 5, 20) as u32;
+            let v = crate::services::fetch_match(cfg, &intent, &category, &tags, &region, limit)?;
+            Ok(text(clip(&crate::services::render_match(&v))))
+        })()),
+
+        "ncc_list_services" => ok_or_text((|| {
+            let category = sarg("category").unwrap_or_default();
+            let tag = sarg("tag").unwrap_or_default();
+            let region = sarg("region").unwrap_or_default();
+            let limit = narg("limit", 20, 50) as u32;
+            let v = crate::services::fetch_list(cfg, &category, &tag, &region, limit)?;
+            Ok(text(clip(&crate::services::render_list(&v))))
+        })()),
+
+        "ncc_get_service" => ok_or_text((|| {
+            let target = rarg("ref").ok_or_else(|| anyhow::anyhow!("需要 ref（@提供方/标识 或 SV-…）"))?;
+            let v = crate::services::fetch_show(cfg, &target)?;
+            Ok(text(clip(&crate::services::render_show(&v))))
+        })()),
+
+        "ncc_service_categories" => ok_or_text((|| {
+            let v = api::get(cfg, "/api/services/catalog", None)?;
+            let mut out = String::from("业务分类（用于 ncc_match_services 的 category）：\n");
+            for c in v["categories"].as_array().cloned().unwrap_or_default() {
+                let n = c["count"].as_i64().unwrap_or(0);
+                out.push_str(&format!(
+                    "  {:<12} {:<14}（{}）  {}\n",
+                    c["id"].as_str().unwrap_or(""),
+                    c["zh"].as_str().unwrap_or(""),
+                    if n > 0 { format!("{n} 条服务") } else { "暂无".to_string() },
+                    c["descZh"].as_str().unwrap_or("")
+                ));
+            }
+            out.push_str("\n接入方式：");
+            for p in v["protocols"].as_array().cloned().unwrap_or_default() {
+                out.push_str(&format!(" {}（{}）", p["id"].as_str().unwrap_or(""), p["zh"].as_str().unwrap_or("")));
+            }
+            out.push_str("\n授权方式：");
+            for a in v["accessModes"].as_array().cloned().unwrap_or_default() {
+                out.push_str(&format!(" {}（{}）", a["id"].as_str().unwrap_or(""), a["zh"].as_str().unwrap_or("")));
+            }
+            out.push_str(&format!(
+                "\n\n目录里已有 {} 条公开服务，来自 {} 个提供方。",
+                v["total"], v["providers"]
+            ));
+            Ok(text(clip(&out)))
+        })()),
+
+        // ---- 团队配置（NCC Config，只读）----
+        "ncc_list_configs" => ok_or_text((|| {
+            let ns = sarg("namespace").unwrap_or_default();
+            let kind = sarg("kind").unwrap_or_default();
+            let env = sarg("env").unwrap_or_default();
+            let mine = args.get("mine").and_then(|v| v.as_bool()).unwrap_or(false);
+            let v = crate::configs::fetch_configs(cfg, &ns, &kind, &env, mine)?;
+            Ok(text(clip(&crate::configs::render_configs(&v))))
+        })()),
+
+        "ncc_get_config" => ok_or_text((|| {
+            let target = rarg("ref").ok_or_else(|| anyhow::anyhow!("需要 ref（@命名空间/slug）"))?;
+            let reveal = args.get("reveal").and_then(|v| v.as_bool()).unwrap_or(false);
+            let revision = args.get("revision").and_then(|v| v.as_i64());
+            let v = crate::configs::fetch_config(cfg, &target, reveal, revision)?;
+            Ok(text(clip(&crate::configs::render_config(&v))))
         })()),
 
         other => tool_err(format!("未知工具: {other}")),

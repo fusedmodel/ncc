@@ -10,6 +10,9 @@
 //	route    问「这个能力该找哪个节点要」（能力路由）
 //	leave    把我的节点从本节点下线
 //
+// 同一组的其它命令在各自的文件里：configs.rs（配置托管）、
+// registryadd.rs（短链接入 / 票据 / 分发）、admin.rs（节点治理与分享）。
+//
 // 边界（与服务端一致，别在这里加"聪明"的推断）：
 // - 注册与心跳是同一件事：第一次 `join` 即注册，之后每次上报续租在线状态。
 // - 节点自己声明类型：service（服务）/ agent（为人服务的 Agent）/ assigned（被分配的 Agent）。
@@ -210,7 +213,7 @@ fn parse_rfc3339(t: &str) -> Option<i64> {
 /* ---------------- login ---------------- */
 
 /// `ncc registry login` —— 以账号身份登入一个 ncc-registry 节点。
-pub fn login(cfg: &CliConfig, a: &LoginArgs) -> Result<()> {
+pub fn login(cfg: &mut CliConfig, a: &LoginArgs) -> Result<()> {
     let body = json!({ "email": a.email, "password": a.password });
     let d = api::post_json(cfg, "/api/auth/login", None, &body)?;
     let token = d["token"].as_str().context("响应缺少 token")?;
@@ -226,7 +229,7 @@ pub fn login(cfg: &CliConfig, a: &LoginArgs) -> Result<()> {
         u["email"].as_str().unwrap_or(""),
         u["name"].as_str().unwrap_or("")
     );
-    println!("   目标节点 {}", cfg.base_url);
+    println!("   目标节点 {}", cfg.base_url());
     if let Ok(meta) = api::get(cfg, "/api/meta", Some(token)) {
         let n = &meta["node"];
         println!(
@@ -304,7 +307,7 @@ pub fn join(cfg: &CliConfig, a: &JoinArgs) -> Result<()> {
         println!(
             "守护心跳：每 {}s 上报到 {}（Ctrl+C 停止）",
             a.interval.max(1),
-            cfg.base_url
+            cfg.base_url()
         );
         loop {
             report(&t)?;

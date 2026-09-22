@@ -96,7 +96,7 @@ fn csv(s: &str) -> Vec<String> {
 /// 短链展示：注册中心基址 + 用户名。
 /// 自托管时基址就是实例地址，公网则形如 https://ncc.ai/{username}。
 fn short_link(cfg: &CliConfig, username: &str) -> String {
-    format!("{}/{}", cfg.base_url.trim_end_matches('/'), username)
+    format!("{}/{}", cfg.base_url().trim_end_matches('/'), username)
 }
 
 /// 取 JSON 里的字符串数组；缺失返回空。

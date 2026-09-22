@@ -43,7 +43,7 @@ pub fn request(
     raw: Option<&[u8]>,
     extra_headers: &[(&str, &str)],
 ) -> anyhow::Result<Value> {
-    let url = format!("{}{}", cfg.base_url.trim_end_matches('/'), path);
+    let url = format!("{}{}", cfg.base_url().trim_end_matches('/'), path);
     let mut req = agent().request(method, &url);
     if let Some(t) = token {
         req = req.set("Authorization", &format!("Bearer {t}"));

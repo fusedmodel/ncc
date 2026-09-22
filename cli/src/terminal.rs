@@ -78,7 +78,7 @@ pub fn status(cfg: &CliConfig) -> String {
          os            {os}\n\
          base          {}\n\
          posix runtime {}",
-        cfg.base_url,
+        cfg.base_url(),
         runtime_summary()
     );
     #[cfg(windows)]
@@ -288,7 +288,7 @@ pub const HELP: &str = "\
 pub fn run(cfg: &CliConfig) -> Result<()> {
     println!();
     println!("NCC Terminal — 能力命令台  ({OFFICIAL} v{VERSION} · official)");
-    println!("base: {} · os: {} · posix: {}", cfg.base_url, env::consts::OS, runtime_summary());
+    println!("base: {} · os: {} · posix: {}", cfg.base_url(), env::consts::OS, runtime_summary());
     println!("输入 help 查看内置命令；非内置命令交给系统 shell 执行；exit 退出。\n");
 
     let stdin = io::stdin();
