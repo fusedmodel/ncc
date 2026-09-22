@@ -338,8 +338,8 @@ pub struct GrantSetArgs {
     /// 被授权人：@用户名 或用户 id
     #[arg(long)]
     pub user: String,
-    /// 授权类型：artifact（可下载我的私有制品）| share（可看我的私有分享页）
-    #[arg(long, value_parser = ["artifact", "share"])]
+    /// 授权类型：artifact（可下载我的私有制品）| node（可看/连我的私有节点）| share（可看我的私有分享页）
+    #[arg(long, value_parser = ["artifact", "node", "share"])]
     pub kind: String,
     /// 限定命名空间（缺省=该类型的全部；share 不支持限定）
     #[arg(long = "ns")]
@@ -415,10 +415,11 @@ pub fn grant_list(cfg: &CliConfig, a: &GrantListArgs) -> Result<()> {
     for g in &rows {
         let kind = match s(g, "kind") {
             "artifact" => "制品下载",
+            "node" => "私有节点可见",
             "share" => "私有分享页",
             other => other,
         };
-        let ns = s(g, "namespace");
+        let ns = s(&g["namespace"], "slug");
         println!(
             "  {:<26} {:<12} {:<16} {}",
             s(g, "id"),
@@ -453,6 +454,7 @@ pub fn grant_set(cfg: &CliConfig, a: &GrantSetArgs) -> Result<()> {
     let g = &d["grant"];
     let kind = match s(g, "kind") {
         "artifact" => "可下载你的私有制品",
+        "node" => "可发现并连接你的私有节点",
         "share" => "可查看你的私有分享页",
         _ => "",
     };

@@ -1,4 +1,4 @@
-# NCC CLI
+# NCC Registry
 
 [中文说明](README.zh-CN.md) · [Registry](https://ncc.ai) · [Issues](https://github.com/fusedmodel/ncc/issues)
 
@@ -154,7 +154,15 @@ ncc terminal
 | `ncc nodes` / `kinds` / `discover` | My nodes, the kind catalog, connectable nodes on this instance |
 | `ncc nodes link` / `label` / `unlink` | Link a node and give it a name label |
 | `ncc nodes region` / `recommend` | Region coverage and recommendations (agent-facing) |
-| `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `share`) |
+| `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `node` \| `share`) |
+| `ncc registry add` | Join a self-hosted `ncc-registry` with a one-click intranet link, or key/secret |
+| `ncc registry login` / `join` | Sign in to that node, or host this machine as a node (register + heartbeat) |
+| `ncc registry status` / `nodes` | That node and its cluster (master/worker) / discover nodes on the instance |
+| `ncc registry catalog` / `route` | Aggregated directory across the cluster / which node can serve an artifact |
+| `ncc registry ticket create` / `list` / `rm` | Issue and manage join tickets (key + secret + intranet link) |
+| `ncc registry replicate` | Push a copy of an artifact to workers (`--to all` or names) |
+| `ncc registry rm` | Take an artifact down and reclaim every replica (`--yes`) |
+| `ncc registry leave` | Take my node offline (the next heartbeat re-registers it) |
 | `ncc terminal [status\|setup]` | Open the capability console / inspect the POSIX runtime |
 | `ncc update` | Check for a newer CLI or official package |
 | `ncc mcp` | Start as an **MCP server** over stdio, so any agent can drive NCC |
@@ -418,6 +426,65 @@ A self-hosted instance also serves its own client distribution, so its users can
 
 To distribute your own builds through either path, set `NCC_RELEASE_BASE` to the mirror you control.
 
+### Inside a private network: `ncc-registry`
+
+[`ncc-registry`](ncc-registry/) is a self-contained intranet node — a single Go binary that hosts
+**artifacts**, hosts **nodes** (your agents and services), and lets them **discover and connect to each
+other**. It scales out as one `master` plus any number of `worker` edge nodes:
+
+```bash
+cd ncc-registry && go build -o dist/ncc-registry ./cmd/ncc-registry
+
+# master (authoritative: accounts, artifacts, node directory, cluster view)
+NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./dist/ncc-registry
+
+# worker (also hosts artifacts/nodes, reports its catalogue to the master)
+NCCR_ROLE=worker NCCR_PORT=8283 NCCR_NODE_NAME=office-worker-a \
+  NCCR_MASTER_URL=http://office-master:8282 ./dist/ncc-registry
+```
+
+Then point the CLI at it:
+
+```bash
+ncc --base http://office-master:8282 registry login --email you@corp.com --password '***'
+ncc registry join --kind agent --name my-mac --region office --capabilities mcp,api --daemon
+ncc registry status            # this node, the cluster, and my hosted nodes
+ncc registry catalog           # aggregated directory (master + every worker)
+ncc registry route @alice/hotel-skill   # which node actually holds it
+ncc install @alice/hotel-skill          # bytes are proxied through the master
+```
+
+Rather than walking everyone through `--base` plus a password, issue a **join ticket** and hand out a
+link — the secret rides in the URL fragment, so it never reaches server logs or `Referer`:
+
+```bash
+# on the registry: issue once, hand out the link
+ncc registry ticket create --label "alice's agent" --uses 1 --expires 7
+# → key NK-7F3A2C, secret (shown once), link http://office-master:8282/j/NK-7F3A2C#<secret>
+
+# on the agent machine: one command, straight in
+ncc registry add 'http://office-master:8282/j/NK-7F3A2C#<secret>' --join --kind agent
+# or split it up:
+ncc registry add --base http://office-master:8282 --key NK-7F3A2C --secret <secret> --join
+```
+
+What comes out is a **node token**: it may report its own heartbeat and read public artifacts, but it
+cannot publish. Opening the link in a browser shows the same instructions plus a one-click check.
+
+Two more things the intranet node does: **replicate** (push a copy to workers, so nearby nodes pull
+locally) and **revoke** (take it down everywhere it was copied):
+
+```bash
+ncc publish --file ./hotel.SKILL.md --kind skill --name "Hotel Skill" --replicate all
+ncc registry replicate @alice/hotel-skill --to all
+ncc registry rm @alice/hotel-skill --yes     # master deletes it and reclaims every replica
+```
+
+And connections still are not authorization: reading someone's private artifact or private node needs
+an explicit grant (`ncc grant set --user @bob --kind artifact|node`).
+
+See [`ncc-registry/README.md`](ncc-registry/README.md) for the full API, config table and deployment notes.
+
 ## Scripting and CI
 
 The CLI is designed to be driven by other programs:
@@ -487,6 +554,7 @@ Prebuilt targets: `darwin` (x86_64, arm64), `linux` (x86_64, arm64), `windows` (
 ```
 cli/                 Rust crate (bin: ncc)
 packages/ncc-cli/    npm wrapper (@fusedmodel/ncc-cli) — launcher + binary downloader
+ncc-registry/        Self-hosted intranet node (Go, single binary): artifacts + nodes + master/worker cluster
 agent/               Agent integration pack (MCP config, SKILL.md, harness manifest)
 release/bin/         Checked-in prebuilt binaries + checksums.txt
 scripts/             build-release.sh (cross-compile + checksums)

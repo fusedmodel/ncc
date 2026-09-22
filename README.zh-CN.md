@@ -1,4 +1,4 @@
-# NCC CLI
+# NCC Registry
 
 [English](README.md) · [注册中心](https://ncc.ai) · [问题反馈](https://github.com/fusedmodel/ncc/issues)
 
@@ -154,7 +154,15 @@ ncc terminal
 | `ncc nodes` / `kinds` / `discover` | 我的节点、类型目录、本实例上可连接的节点 |
 | `ncc nodes link` / `label` / `unlink` | 连接节点并给 Name 标签 |
 | `ncc nodes region` / `recommend` | 区域覆盖与推荐（Agent 面） |
-| `ncc grant list` / `set` / `rm` | 按人授权（`artifact` / `share`） |
+| `ncc grant list` / `set` / `rm` | 按人授权（`artifact` / `node` / `share`） |
+| `ncc registry add` | 用一条内网短链（或 key/secret）把内网 registry 接进来 |
+| `ncc registry login` / `join` | 登入自托管内网节点 / 把本机托管进去（注册 + 心跳） |
+| `ncc registry status` / `nodes` | 本节点 + 集群（master/worker）/ 发现该实例上的节点 |
+| `ncc registry catalog` / `route` | 聚合目录（本节点 + 各 worker）/ 这个能力该找哪个节点要 |
+| `ncc registry ticket create` / `list` / `rm` | 签发 / 管理接入票据（key + secret + 内网短链） |
+| `ncc registry replicate` | 把制品分发到 worker（副本） |
+| `ncc registry rm` | 下架制品并回收各节点副本（`--yes`） |
+| `ncc registry leave` | 下线我的节点（下次心跳会重新注册） |
 | `ncc terminal [status\|setup]` | 打开能力命令台 / 查看 POSIX 运行时 |
 | `ncc update` | 检查 CLI 或官方包是否有新版本 |
 | `ncc mcp` | 以 **MCP server**（stdio）启动，让任意 Agent 驱动 NCC |
@@ -305,6 +313,35 @@ MCP 对应 `ncc_region_profile` / `ncc_recommend_nodes`）。节点的区域来�
 `recommend` 的排序在服务端完成（按「你已在该区域有几个节点」降序），
 CLI / MCP / 前端共用同一顺序。两者都不在网页上展示。
 
+### `ncc registry`
+
+面向自托管内网节点 [`ncc-registry`](ncc-registry/) 的命令组（用 `--base` 指向那个节点）。
+它把「制品托管 + 节点托管 + 多节点集群」当成一个内网服务来用：
+
+```bash
+# 登入某个内网节点（复用同一套账号体系）
+ncc --base http://office-master:8282 registry login --email you@corp.com --password '***'
+
+# 把这台机器作为一个节点托管进去（注册 + 心跳，--daemon 常驻）
+ncc registry join --kind agent --name my-mac --region 上海-内网 --capabilities mcp,api
+ncc registry join --kind service --name billing-svc --url http://10.0.0.9:9000
+
+ncc registry status                # 本节点身份 + 集群（master/worker）+ 我的托管节点
+ncc registry nodes --kind agent    # 在本实例上发现可连接的节点
+ncc registry catalog               # 聚合目录（本节点 + 各 worker，条目带 via）
+ncc registry route @alice/hotel-skill   # 这个能力该找哪个节点要
+ncc registry leave --name my-mac   # 下线我的节点（下次心跳会重新注册）
+```
+
+要点：
+
+- **注册与心跳是同一件事**：第一次 `join` 即注册，之后每次上报续租在线状态；
+  在线与否由服务端 `NCCR_NODE_TTL` 判定。
+- **master 是唯一入口**：worker 上的制品也能装 —— `ncc install` 拿到的地址落在 master 上，
+  master 会把字节从持有它的 worker 代理回来（`sha256` 校验不变）。
+- **`route` 是能力路由**：先看 master 本地有没有，再看哪个 worker 有，返回候选与统一入口。
+- **连接 ≠ 授权**：`ncc nodes link` 只解决「找得到」，取私有制品仍需授权。
+
 ### `ncc key`
 
 API-Key 是**能力令牌**，有两个独立约束：`scopes`（能做什么）与 `namespaces`（能拉谁的东西）。
@@ -410,6 +447,64 @@ ncc --base https://registry.internal.example me
 
 要通过这两条路径分发自己的构建，把 `NCC_RELEASE_BASE` 设为你控制的镜像即可。
 
+### 内网形态：`ncc-registry`
+
+[`ncc-registry`](ncc-registry/) 是一个自包含的内网节点：单个 Go 二进制，同时**托管制品**、
+**托管节点**（你的 Agent 与服务），并让它们**互相发现、连起来**。它可以按「一个 `master` +
+任意多个 `worker` 边缘节点」铺开：
+
+```bash
+cd ncc-registry && go build -o dist/ncc-registry ./cmd/ncc-registry
+
+# master（权威：账号 / 制品 / 节点目录 / 集群视图）
+NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./dist/ncc-registry
+
+# worker（自己也托管制品与节点，并把本地目录上报给 master）
+NCCR_ROLE=worker NCCR_PORT=8283 NCCR_NODE_NAME=office-worker-a \
+  NCCR_MASTER_URL=http://office-master:8282 ./dist/ncc-registry
+```
+
+然后把 CLI 接上去：
+
+```bash
+ncc --base http://office-master:8282 registry login --email you@corp.com --password '***'
+ncc registry join --kind agent --name my-mac --region 上海-内网 --capabilities mcp,api --daemon
+ncc registry status            # 本节点 + 集群 + 我的托管节点
+ncc registry catalog           # 聚合目录（master + 各 worker）
+ncc registry route @alice/hotel-skill   # 这个能力到底在哪个节点上
+ncc install @alice/hotel-skill          # 字节由 master 代理回来
+```
+
+不用手把手教每个人填 `--base` + 密码：签一张**接入票据**，把链接发出去就行 ——
+secret 放在 URL fragment 里，不进服务端日志、不进 Referer：
+
+```bash
+# 在内网节点上：签一次，把链接发给对方
+ncc registry ticket create --label "alice 的 Agent" --uses 1 --expires 7
+# → key NK-7F3A2C、secret（只显示一次）、链接 http://office-master:8282/j/NK-7F3A2C#<secret>
+
+# 在对方机器上：一条命令直接接入
+ncc registry add 'http://office-master:8282/j/NK-7F3A2C#<secret>' --join --kind agent
+# 或分开填：
+ncc registry add --base http://office-master:8282 --key NK-7F3A2C --secret <secret> --join
+```
+
+拿到的是**节点令牌**：只能上报自己的心跳、读公开制品，不能发布。链接用浏览器打开会有同样的说明，
+外加一个「用本链接凭据接入」的验证按钮。
+
+内网节点还管两件事：**分发**（把副本推到 worker，就近可拉）与**回收**（下架时把各处的副本收掉）：
+
+```bash
+ncc publish --file ./hotel.SKILL.md --kind skill --name "Hotel Skill" --replicate all
+ncc registry replicate @alice/hotel-skill --to all
+ncc registry rm @alice/hotel-skill --yes     # master 下架并回收全部副本
+```
+
+而连接仍然不等于授权：要看/取别人的私有制品或私有节点，仍需要显式授权
+（`ncc grant set --user @bob --kind artifact|node`）。
+
+完整 API、配置表与部署说明见 [`ncc-registry/README.md`](ncc-registry/README.md)。
+
 ## 脚本与 CI
 
 CLI 被设计为可被其它程序驱动：
@@ -476,8 +571,7 @@ bash scripts/build-release.sh --all    # 交叉编译全部目标（需 `rustup 
 
 ```
 cli/                 Rust crate（bin: ncc）
-packages/ncc-cli/    npm 包装（@fusedmodel/ncc-cli）—— 启动器 + 二进制下载
-agent/               Agent 接入包（MCP 配置、SKILL.md、harness 契约）
+packages/ncc-cli/    npm 包装（@fusedmodel/ncc-cli）—— 启动器 + 二进制下载ncc-registry/        内网自托管节点（Go 单二进制）：制品托管 + 节点托管 + master/worker 多节点agent/               Agent 接入包（MCP 配置、SKILL.md、harness 契约）
 release/bin/         入库的预编译二进制 + checksums.txt
 scripts/             build-release.sh（交叉编译 + 校验和）
 ```

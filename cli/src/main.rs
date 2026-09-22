@@ -3,6 +3,8 @@ mod config;
 mod mcp;
 mod nodes;
 mod profile;
+mod registry;
+mod registryadd;
 mod terminal;
 mod tui;
 
@@ -91,6 +93,9 @@ enum Cmd {
     Profile(ProfileArgs),
     /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
     Nodes(NodesArgs),
+    /// NCC Registry 节点（内网托管节点）：登录 / 入网 / 状态 / 发现 / 聚合目录 / 路由
+    #[command(subcommand)]
+    Registry(RegistryCmd),
     /// 制品/分享授权：ncc grant set --user @someone --kind artifact | list | rm <id>
     #[command(subcommand)]
     Grant(GrantCmd),
@@ -158,6 +163,39 @@ enum ProfileCmd {
     /// 作品集：list | add | rm
     #[command(subcommand)]
     Work(profile::WorkCmd),
+}
+
+/// `ncc registry` 子命令。
+///
+/// 把一个内网 ncc-registry 当成「托管节点 + 制品仓库 + Agent 目录」来用：
+/// 登录它、把本机托管进去、看集群、发现别人的节点、查聚合目录、问能力路由。
+#[derive(Subcommand)]
+enum RegistryCmd {
+    /// 用接入短链（或 key/secret）把内网 registry 接进来
+    Add(registryadd::AddArgs),
+    /// 登入一个 ncc-registry 节点（用 --base 指定地址）
+    Login(registry::LoginArgs),
+    /// 把本机作为一个节点托管进去（注册 + 心跳；--daemon 常驻）
+    Join(registry::JoinArgs),
+    /// 看本节点、集群（master/worker）、我的托管节点
+    Status(registry::StatusArgs),
+    /// 发现本实例上可连接的节点（Agent 发现）
+    Nodes(registry::NodesArgs),
+    /// 聚合目录：本节点 + 各 worker 的制品
+    Catalog(registry::CatalogArgs),
+    /// 这个能力该找哪个节点要（能力路由）
+    Route {
+        /// 制品引用：@命名空间/slug 或 A-… id
+        target: String,
+    },
+    /// 接入票据：签发 / 列出 / 删除（给对方 key+secret 或一条内网短链）
+    Ticket(registryadd::TicketCmd),
+    /// 把制品分发到 worker（副本）：--to all|<名称,名称>
+    Replicate(registryadd::ReplicateArgs),
+    /// 下架制品并回收各节点上的副本（需 --yes）
+    Rm(registryadd::RmArgs),
+    /// 下线我的节点（下次心跳会重新注册）
+    Leave(registry::LeaveArgs),
 }
 
 #[derive(Subcommand)]
@@ -261,6 +299,9 @@ struct PublishArgs {
     visibility: String,
     /// 以 draft 状态创建（默认 published）
     #[arg(long)] draft: bool,
+    /// 发布后把副本分发到 worker：all 或名称/id（逗号分隔）；仅 ncc-registry 支持
+    #[arg(long)]
+    replicate: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -361,6 +402,19 @@ fn run(cfg: &CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             GrantCmd::List(a) => nodes::grant_list(cfg, a),
             GrantCmd::Set(a) => nodes::grant_set(cfg, a),
             GrantCmd::Rm { id } => nodes::grant_rm(cfg, id),
+        },
+        Cmd::Registry(r) => match r {
+            RegistryCmd::Add(a) => registryadd::add(cfg, a),
+            RegistryCmd::Login(a) => registry::login(cfg, a),
+            RegistryCmd::Join(a) => registry::join(cfg, a),
+            RegistryCmd::Status(a) => registry::status(cfg, a),
+            RegistryCmd::Nodes(a) => registry::nodes(cfg, a),
+            RegistryCmd::Catalog(a) => registry::catalog(cfg, a),
+            RegistryCmd::Route { target } => registry::route(cfg, target),
+            RegistryCmd::Ticket(t) => registryadd::ticket(cfg, t),
+            RegistryCmd::Replicate(a) => registryadd::replicate(cfg, a),
+            RegistryCmd::Rm(a) => registryadd::rm(cfg, a),
+            RegistryCmd::Leave(a) => registry::leave(cfg, a),
         },
         Cmd::Mcp => mcp::serve(cfg),
     }
@@ -498,6 +552,15 @@ fn cmd_publish(cfg: &CliConfig, a: &PublishArgs) -> anyhow::Result<()> {
         body["manifest"] = v;
     }
 
+    // 发布即分发（可选）："all" 或 [worker 名称/id]；其它后端会忽略这个字段。
+    if let Some(r) = a.replicate.as_deref().filter(|x| !x.is_empty()) {
+        body["replicate"] = if r.eq_ignore_ascii_case("all") {
+            json!("all")
+        } else {
+            json!(r.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+        };
+    }
+
     let data = api::post_json(cfg, "/api/registry", Some(&token), &body)?;
     let it = &data["item"];
     println!("✅ 已发布 [{}] {}/{}@{}  status={}  ({})",
@@ -508,6 +571,21 @@ fn cmd_publish(cfg: &CliConfig, a: &PublishArgs) -> anyhow::Result<()> {
         it["status"].as_str().unwrap_or(""),
         it["id"].as_str().unwrap_or(""));
     println!("   存储: {}", it["storage"]["url"].as_str().unwrap_or(""));
+    if let Some(reps) = data["replicated"].as_array() {
+        if !reps.is_empty() {
+            println!("   已分发到 {} 个节点：", reps.len());
+            for r in reps {
+                if r["ok"].as_bool().unwrap_or(false) {
+                    println!("     ✓ {}  {} 字节", r["nodeName"].as_str().unwrap_or(""), r["size"].as_i64().unwrap_or(0));
+                } else {
+                    println!("     ✗ {}  {}", r["nodeName"].as_str().unwrap_or(""), r["error"].as_str().unwrap_or("失败"));
+                }
+            }
+        }
+    }
+    if let Some(e) = data["replicateError"].as_str() {
+        println!("   ⚠ 分发未执行：{e}");
+    }
     Ok(())
 }
 
