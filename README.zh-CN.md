@@ -1,6 +1,6 @@
 # NCC Registry
 
-[English](README.md) · [注册中心](https://ncc.ai) · [问题反馈](https://github.com/fusedmodel/ncc/issues)
+[English](README.md) · [注册中心](https://ncc.ai) · [问题反馈](https://github.com/fusedmodel/ncc/issues) · [更新日志](CHANGELOG.md)
 
 ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
@@ -97,11 +97,14 @@ cd release/bin && sha256sum -c checksums.txt          # Linux
 由于尚无公开注册中心，以下命令请对着本地或自托管实例执行：
 
 ```bash
-# 0) 指向某个实例（会写入配置文件并持久化）
+# 0) 指向某个实例：已存在同名目标就复用，否则新建一个目标并切过去
+#    （不会再默默改掉你原来的目标；现在什么样的目标都有：ncc target list）
 ncc --base http://localhost:8181 me
 
 # 1) 注册账号（会自动创建个人命名空间）
 #    闭测期需要邀请码。
+#    如果这台上第一个注册的账号，它还会自动成为节点/云端管理员，
+#    并打印一次性 admin key/secret（见「节点管理」）。
 ncc register --email you@example.com --password 'a-strong-password' \
              --name You --invite NCC-2026-INVITE
 ncc me
@@ -125,8 +128,70 @@ ncc profile set --headline "把模糊需求落成能上线的 AI 系统" \
 ncc profile                            # 查看名片与短链
 ncc living --name my-agent --kind agent --capabilities mcp,api   # 注册一个节点
 ncc nodes                              # 我的节点 + 连接的节点
+ncc services match "帮我订杭州的酒店"    # 按意图找服务（服务提供方打包的业务）
 ncc terminal
 ```
+
+接上内网节点时：
+
+```bash
+# 先看一眼我现在连着谁（云端 / 内网节点各是什么、各自声明了什么能力）
+ncc target list
+
+# 新建一个内网节点目标（地址写错当场提醒），并切过去
+ncc target add office --base http://10.0.0.5:8282 --use
+ncc --base http://127.0.0.1:8282 login --email you@corp.com --password '***'
+
+# 临时用一下别的目标（不改默认）
+ncc --target hub me
+ncc hub publish --file ./hotel.SKILL.md --kind skill --name "Hotel Skill" --slug hotel-skill
+```
+
+## 目标：云端 ncc.ai 与内网节点
+
+`ncc` 是一个客户端，而 ncc 有**两个世界**：
+
+| 世界 | 默认目标名 | 它是什么 | 在它上面做什么 |
+|---|---|---|---|
+| **云端** | `hub` | ncc.ai 公共注册中心 | 服务市场（`services`）、名片（`profile`）、分享页、计费、运营后台 |
+| **内网节点** | 自定（`local` / `office` …） | 自托管的 `ncc-registry` 单二进制 | 制品、节点、配置托管、分享链接、节点治理、集群 |
+
+两者都叫 registry，接口名也有重名（`/api/nodes`、`/api/grants`、`/api/admin` …）但语义不同，
+所以 CLI 用**目标（target）**把「跟谁说话」显式化。
+
+```bash
+ncc target list                  # 当前目标、各目标地址与登录身份、各自声明的能力
+ncc target use office            # 切换（每个目标各自保存凭据，互不覆盖）
+ncc target show                  # 当前目标的详情
+ncc target add lab --base http://10.0.0.9:8282
+ncc target rm lab
+ncc hub                          # 「云端现在什么样」的快捷查看
+```
+
+三种临时指向（**不改默认目标**）：
+
+| 写法 | 含义 |
+|---|---|
+| `ncc --target <名字> <命令>` | 本次命令跑在那个目标上 |
+| `ncc hub <命令>` | 本次命令跑在云端（等价于 `--target hub`）|
+| `ncc --base <URL>` | 本次用这个地址：已存在同名目标就复用，否则**新建一个目标**并切过去（会提示）|
+
+### 能力：命令能不能跑，看目标声不声明
+
+每个节点都在 `GET /api/meta` 里**声明自己的能力**（`registry` / `services` / `profile` /
+`config` / `nodes` / `grants` / `share` / `access` / `cluster` / `admin` / `living` …）。
+CLI 按这个清单放行：
+
+```bash
+ncc target use office && ncc services match "帮我订杭州的酒店"
+#   ✗ 目标 office（ncc-registry · 内网节点）没有声明 `services` 能力
+#     它声明的能力：registry · config · share · nodes · grants · access · cluster · admin
+#     `services` 目前由云端（ncc.ai）提供。切过去：ncc target use hub
+```
+
+这是刻意的：**不是「云端专属」/「本地专属」的硬编码**，而是「这个节点声明了什么」。
+本地 `ncc-registry` 将来说支持 `services` / `profile`，同一个命令在那台节点上就直接可用，
+客户端不用改。老版本服务端没有 `/api/meta` 时按「未知 → 不限制」处理，不会把功能锁死。
 
 ## 命令一览
 
@@ -134,6 +199,8 @@ ncc terminal
 
 | 命令 | 说明 |
 |---|---|
+| `ncc target list` / `use` / `add` / `rm` / `show` | 目标管理：我连着哪些 ncc（云端 / 内网节点）|
+| `ncc hub <命令>` | 把一条命令指到云端目标执行（一次性的）|
 | `ncc register` | 注册账号；自动创建个人命名空间 |
 | `ncc login` / `ncc logout` | 登录 / 登出 |
 | `ncc me` | 显示当前用户、套餐与命名空间 |
@@ -154,12 +221,20 @@ ncc terminal
 | `ncc nodes` / `kinds` / `discover` | 我的节点、类型目录、本实例上可连接的节点 |
 | `ncc nodes link` / `label` / `unlink` | 连接节点并给 Name 标签 |
 | `ncc nodes region` / `recommend` | 区域覆盖与推荐（Agent 面） |
-| `ncc grant list` / `set` / `rm` | 按人授权（`artifact` / `node` / `share`） |
+| `ncc services` / `catalog` / `match` / `show` | 对外服务：目录 / 按意图匹配 / 单条接入信息 |
+| `ncc services add` / `rm` | 声明 / 下架自己的对外服务（提供方） |
+| `ncc grant list` / `set` / `rm` | 按人授权（`artifact` / `service` / `share`） |
 | `ncc registry add` | 用一条内网短链（或 key/secret）把内网 registry 接进来 |
 | `ncc registry login` / `join` | 登入自托管内网节点 / 把本机托管进去（注册 + 心跳） |
 | `ncc registry status` / `nodes` | 本节点 + 集群（master/worker）/ 发现该实例上的节点 |
 | `ncc registry catalog` / `route` | 聚合目录（本节点 + 各 worker）/ 这个能力该找哪个节点要 |
 | `ncc registry ticket create` / `list` / `rm` | 签发 / 管理接入票据（key + secret + 内网短链） |
+| `ncc registry config` / `kinds` / `get` / `set` | 配置托管：目录 / 取（默认打码）/ 写入（加版本） |
+| `ncc registry config` `history` / `rollback` / `bundle` | 版本历史 / 回滚 / 按环境成组拉取 |
+| `ncc registry share create` / `list` / `rm` / `info` | 分享：把一条制品变成**临时下载地址**（对方不用登录、不用装 CLI）|
+| `ncc registry admin overview` / `users` / `nodes` / `services` / `audit` | 节点治理：用户 / 节点 / 服务 / 审计（需管理员账号或 admin key/secret）|
+| `ncc registry admin disable` / `enable` / `passwd` / `rm-node` / `rm-service` | 禁用启用账号 / 重置密码 / 摘除节点 / 归档服务条目 |
+| `ncc registry admin login` / `status` / `rotate` | 写入机器凭据 / 看自己是不是管理员 / 轮换 admin key+secret |
 | `ncc registry replicate` | 把制品分发到 worker（副本） |
 | `ncc registry rm` | 下架制品并回收各节点副本（`--yes`） |
 | `ncc registry leave` | 下线我的节点（下次心跳会重新注册） |
@@ -172,7 +247,8 @@ ncc terminal
 
 | 参数 | 说明 |
 |---|---|
-| `--base <URL>` | 注册中心地址。覆盖配置文件，并回写配置文件 |
+| `--base <URL>` | 本次命令用这个地址：已存在同名目标就复用，否则新建一个目标并切过去 |
+| `--target <名字>` | 本次命令用这个目标（默认目标不变；改默认：`ncc target use <名字>`）|
 | `-h, --help` / `-V, --version` | 帮助 / 版本 |
 
 ### `ncc publish`
@@ -290,6 +366,7 @@ ncc nodes unlink NL-xxxx
 
 ncc grant set --user @某人 --kind artifact --ns @you   # 可下载我的私有制品
 ncc grant set --user @某人 --kind share                # 可看我的私有分享页
+ncc grant set --user @某人 --kind service              # 可接入我的非公开服务
 ncc grant list --in                                    # 别人给我的授权
 ```
 
@@ -313,9 +390,46 @@ MCP 对应 `ncc_region_profile` / `ncc_recommend_nodes`）。节点的区域来�
 `recommend` 的排序在服务端完成（按「你已在该区域有几个节点」降序），
 CLI / MCP / 前端共用同一顺序。两者都不在网页上展示。
 
+### `ncc services`
+
+服务提供方（公司 / 连锁集团）可以把**多条业务分别声明成一条对外服务**，对其他 Agent 开放。
+其他 Agent 按**匹配策略**找到「该找谁、怎么接、要不要授权」。
+
+```bash
+ncc services catalog                      # 业务分类（6 组 28 类）/ 接入方式 / 授权方式目录
+ncc services                              # 浏览公开服务目录（或 --mine 看自己的）
+ncc services match "帮我订杭州的酒店"      # 按意图匹配（服务端打分，带回理由与接入步骤）
+ncc services show @aya/hotel-booking      # 一条服务的完整接入信息
+ncc services match --json "…"             # 原始 JSON（score / reasons / howToUse）
+
+# 提供方侧：声明与下架
+ncc services add --name "酒店预订中台" --category booking --slug hotel-booking \
+  --summary "华东区门店房态与预订能力" --tag 预订 --intent 订酒店 \
+  --match "订华东区酒店时优先找我" --region "杭州 · 上海" \
+  --protocol openapi --endpoint https://api.example.com/openapi/hotel.json \
+  --access open --publish
+ncc services rm SV-xxxx
+```
+
+| 概念 | 回答的问题 | 放行数据 |
+|---|---|---|
+| 服务 Service | 这门业务找谁、怎么接、要不要授权 | ❌ 声明；接入细节看授权 |
+| 节点 Node | 它在哪跑（服务可绑定一个执行节点） | ❌ 只是地址 |
+| 授权 Grant | 谁能看到非公开服务的接入细节 | ✅ `--kind service` |
+
+要点：
+
+- 声明默认 `draft`（仅自己可见），`--publish` 或改状态才对外开放；每条服务上限 30 条。
+- 接入方式 `--protocol`：`http` / `openapi` / `mcp` / `artifact`（先 `ncc install` 能力包）/ `human`。
+- 授权方式 `--access`：`open` 公开可调 / `grant` 需授权 / `invite` 定向（不进目录）。
+- **非公开服务只露摘要**：未获授权时匹配结果只有名称、分类、区域与匹配策略，
+  端点 / 执行节点 / 能力包与调用步骤要拿到 `--kind service` 授权才展开。
+- **区域不限**写 `全国` 或留空：它会在任何区域查询里都被算作覆盖。
+
 ### `ncc registry`
 
-面向自托管内网节点 [`ncc-registry`](ncc-registry/) 的命令组（用 `--base` 指向那个节点）。
+面向自托管内网节点 [`ncc-registry`](ncc-registry/) 的命令组。它只在 **kind=registry 的目标**
+上跑（云端命令直接写成 `ncc hub …`，或先 `ncc target use hub`；在错误的目标上会直接告诉你该切到哪个）：
 它把「制品托管 + 节点托管 + 多节点集群」当成一个内网服务来用：
 
 ```bash
@@ -341,6 +455,90 @@ ncc registry leave --name my-mac   # 下线我的节点（下次心跳会重新�
   master 会把字节从持有它的 worker 代理回来（`sha256` 校验不变）。
 - **`route` 是能力路由**：先看 master 本地有没有，再看哪个 worker 有，返回候选与统一入口。
 - **连接 ≠ 授权**：`ncc nodes link` 只解决「找得到」，取私有制品仍需授权。
+
+### `ncc registry config`（配置托管）
+
+内网 registry 除了放制品，还能**托管团队的网络 / 基础设施 / Agent 配置**：默认私有、
+每次写入留一版历史、可回滚、敏感值静态加密；Agent 拿到限定作用域的凭据就能自己读写。
+
+```bash
+ncc registry config kinds                      # 类型（network/gateway/infra/agent/ci/security…）+ 格式 + 环境
+ncc registry config set @team/network --file ./network.yaml --kind network --env prod \
+    --summary "内网网段/DNS/VLAN" --tags network,dns --note "初始版本"
+ncc registry config list --mine                # 我的配置（含私有；内容默认打码）
+ncc registry config get @team/network --reveal --out ./network.yaml    # 取明文落盘
+ncc registry config history @team/network      # 谁在何时改了什么
+ncc registry config rollback @team/network --to 2                      # 回滚（作为新版本写回）
+ncc registry config bundle --ns @team --env prod --out ./conf          # 整套拉取（含 any 通用项）
+ncc registry config rm @team/network --yes
+```
+
+| 动作 | 需要什么 |
+|---|---|
+| 读公开配置 | `visibility=public` 且 `status=active` → 谁都能读 |
+| 读非公开配置 | 作用域 `config:read` **且**（命名空间成员 **或** `ncc grant set --kind config` 授权） |
+| 写入 / 回滚 / 删除 | 作用域 `config:write` **且** 命名空间成员（外部只给读） |
+
+给 Agent 的长效凭据就是一张限定作用域的票据（令牌的 `Sub` 是签发者本人，
+所以它是「代表你在团队空间里管配置」）：
+```bash
+ncc registry ticket create --label agent-conf --scopes config:read,config:write,nodes:write
+```
+
+要点：
+
+- **与制品的区别**：制品是分发的文件（公开、可 fan-out 到 worker）；配置是团队的权威数据
+  （默认私有、就在被指向的那个节点上维护、不参与 fan-out）。
+- **内容默认打码**：不加 `--reveal` 只回 `sha256` 与大小 —— 打码是默认，不是异常。
+- **敏感值**：`--secret` 的配置落库前 AES-256-GCM 加密（密钥由 `jwt-secret` 派生）；
+  备份库但不带 `jwt-secret` 是安全的，换机器就解不开。
+- **bundle 默认跳过 `secret` 配置**：一次把凭据全下到磁盘不是好默认，要用就 `--secrets --reveal`。
+
+### `ncc registry share`（分享链接）
+
+把一条制品变成**临时下载地址**发出去：对方不用登录、不用装 CLI。
+
+```bash
+ncc registry share create @team/report --label "给合作方" --uses 1 --expires 7
+#  → 说明页  http://<节点>/s/<token>        浏览器打开是说明页 + 下载按钮
+#    直链    http://<节点>/s/<token>/raw    curl -OJ 就能拿到字节（只有它计数）
+ncc registry share list                        # 我发的（--all 需管理员）
+ncc registry share info "<链接>"                # 看一条链接的状态（公开，不消耗次数）
+ncc registry share rm <SH-…|链接>               # 撤销，立即失效
+```
+
+- **分享 ≠ 授权**：分享是按链接的临时放行（可限次 / 限时 / 撤销，拿到字节即结束）；
+  要给某个人长期权限用 `ncc grant`。
+- **创建分享不是提权**：只有本来就能读这条制品的人能分享它。
+- token 只存 sha256，只在创建时返回一次；撤销 / 过期 / 用尽即失效（`410`）。
+
+### `ncc registry admin`（节点治理）
+
+管一台内网 registry 上的**用户 / 节点 / 服务**，每个动作都进审计。
+
+两种身份等价：**本节点第一个注册的账号**（自动成为管理员，直接用会话即可），
+或一把**机器凭据** `AK-…` + secret（管理员首次出现时自动签发，之后可轮换）：
+
+```bash
+# 注册本节点第一个账号时会打印一次 admin 凭据（secret 只显示一次）
+ncc --base http://<节点>:8282 register --email you@corp.com --password '***'
+ncc registry admin login --key AK-XXXXXX --secret ****   # 写进 ~/.ncc/config.json（0600）
+ncc registry admin status                                # 我是不是管理员 / 本机凭据能不能用
+ncc registry admin rotate --label ops                    # 轮换：新 secret 生效、旧的立即失效
+
+ncc registry admin overview                              # 用户 / 节点 / 服务 / 资产 / 审计 计数
+ncc registry admin users --q bob                         # 谁在这台节点注册过（含被禁用的）
+ncc registry admin disable bob@corp.com --note "违规发布"  # 禁用：旧令牌立即失效
+ncc registry admin enable  bob@corp.com
+ncc registry admin passwd  bob@corp.com                  # 重置密码（服务端生成，只显示一次）
+ncc registry admin nodes --kind service                  # 全部托管节点（含私有与离线）
+ncc registry admin rm-node ND-…                           # 摘除节点（连接记录一并清理）
+ncc registry admin services                              # 节点侧 kind=service + 制品侧 kind=api
+ncc registry admin rm-service ND-…  |  @team/hotel-api    # 节点摘除 / 制品归档（字节保留）
+ncc registry admin audit --limit 20                      # 谁在什么时候把谁怎么了
+```
+
+两条服务端强制的规则：**不能禁用自己的账号**，**不能禁用最后一个可用管理员**。
 
 ### `ncc key`
 
@@ -411,11 +609,12 @@ ncc key revoke <id>
 
 | 路径 | 用途 |
 |---|---|
-| `~/.ncc/config.json` | 注册中心地址，以及登录态 token、email、name。首次登录时创建 |
+| `~/.ncc/config.json` | **目标（target）清单**：每个目标一份地址与凭据（登录 token / admin key+secret），以及当前目标名。首次运行时自动创建（权限 0600）|
 | `~/.ncc/bin/ncc` | 安装脚本或 npm 启动器放置的二进制 |
 | `~/.ncc/packages/` | `ncc install` 的默认根目录 |
 
-`--base` 是 CLI 唯一会持久化的参数：传入它会改写配置文件的 `base_url`，之后无需再带该参数。
+在本地节点登录**不会**把你从云端挤下线：凭据存在各自的目标里。
+`--base` 也会按地址复用/新建目标，而不再默默改写你原来的目标。
 
 ### 环境变量
 
@@ -431,14 +630,21 @@ ncc key revoke <id>
 
 `HOME`、`HOSTNAME`、`SHELL` 会被读取用于推导默认值（配置位置、设备名、POSIX 摘要），可按常规方式覆盖。
 
-> **配置文件是纯文本且保存着 bearer token。** 写入时未加固文件权限 —— 共享机器上建议 `chmod 600 ~/.ncc/config.json`。在 CI 中更推荐用 `NCC_PACKAGES_DIR` / `NCC_CONFIG` 指向临时文件，而不是把凭据文件提交进仓库。
+> **配置文件是纯文本且保存着 bearer token。** CLI 写入时会自动设为 `0600`（仅本人可读），
+> 但如果它是从旧版本升上来的，建议自己确认一次：`chmod 600 ~/.ncc/config.json`。
+> 在 CI 中更推荐用 `NCC_PACKAGES_DIR` / `NCC_CONFIG` 指向临时文件，而不是把凭据文件提交进仓库。
 
 ## 指向自己的注册中心
 
 任何 NCC 兼容实例都可作为后端：
 
 ```bash
+# 一次性的：不动当前目标
 ncc --base https://registry.internal.example me
+
+# 固定下来：建一个具名目标，之后直接 ncc target use internal
+ncc target add internal --base https://registry.internal.example --use
+ncc me
 ```
 
 自托管实例还会提供自己的客户端分发，让用户装到的二进制天然知道正确的 base URL：
@@ -501,8 +707,8 @@ ncc registry replicate @alice/hotel-skill --to all
 ncc registry rm @alice/hotel-skill --yes     # master 下架并回收全部副本
 ```
 
-而连接仍然不等于授权：要看/取别人的私有制品或私有节点，仍需要显式授权
-（`ncc grant set --user @bob --kind artifact|node`）。
+而连接仍然不等于授权：要看/取别人的私有制品或接入非公开服务，仍需要显式授权
+（`ncc grant set --user @bob --kind artifact|service`）。
 
 完整 API、配置表与部署说明见 [`ncc-registry/README.md`](ncc-registry/README.md)。
 
@@ -542,9 +748,15 @@ NCC_CONFIG=/tmp/ncc-dev.json ./target/release/ncc --base http://localhost:8181 m
 |---|---|
 | `src/main.rs` | 参数解析（clap）与所有命令实现 |
 | `src/api.rs` | 基于 `ureq` 的轻量 HTTP 客户端：JSON 请求、raw 上传、错误解码 |
-| `src/config.rs` | `~/.ncc/config.json` 读写与登录态处理 || `src/profile.rs` | 名片、作品集、角色目录 |
-| `src/social.rs` | 通讯录、好友请求、授权、区域 profile |
-| `src/mcp.rs` | MCP server（stdio）：工具 schema 与分发 || `src/terminal.rs` | 能力命令台、POSIX 运行时探测、更新检查 |
+| `src/config.rs` | `~/.ncc/config.json` 读写与登录态处理 |
+| `src/profile.rs` | 名片、作品集、角色目录 |
+| `src/nodes.rs` | 节点连接（链接表 / 发现）、授权（grant）、区域聚合与推荐 |
+| `src/services.rs` | 对外服务：目录 / 匹配 / 取用 / 声明与下架 |
+| `src/registry.rs` `src/registryadd.rs` | 自托管内网节点（ncc-registry）：登录 / 入网 / 目录 / 路由 / 票据 |
+| `src/configs.rs` | 配置托管：目录 / 取（默认打码）/ 写入与版本 / 回滚 / bundle |
+| `src/admin.rs` | 节点治理（admin：用户 / 节点 / 服务 / 审计 / 凭据轮换）与分享链接 |
+| `src/mcp.rs` | MCP server（stdio）：工具 schema 与分发 |
+| `src/terminal.rs` | 能力命令台、POSIX 运行时探测、更新检查 |
 | `src/tui.rs` | 全屏 ratatui TUI（stdin 为真实 TTY 时启用） |
 
 值得保持的设计约束：依赖列表保持精简；所有操作都走公开 HTTP API，不另造私有协议；客户端永不成为机器之间的数据中转。
@@ -597,14 +809,20 @@ scripts/             build-release.sh（交叉编译 + 校验和）
 | `ncc_list_roles` | 工作角色目录 |
 | `ncc_find_people` | 按角色 / 技能找人 |
 | `ncc_get_profile` | 某人的名片：角色 + 作品集 + 已发布能力 |
-| `ncc_list_contacts` | 通讯录（含有效区域） |
-| `ncc_region_profile` | 人脉在哪些区域/职能更厚 |
-| `ncc_recommend_contacts` | 按区域 / 角色推荐，同区域优先 |
+| `ncc_match_services` | 按意图匹配对外服务：分数、命中理由、接入步骤 |
+| `ncc_list_services` | 浏览服务目录（分类 / 标签 / 区域） |
+| `ncc_get_service` | 单条服务的完整接入信息 |
+| `ncc_service_categories` | 业务分类目录（`category` 取值） |
+| `ncc_list_configs` | 托管配置目录（公开配置无需凭据；`mine` 看自己的） |
+| `ncc_get_config` | 取一份配置（**默认打码**，`reveal` 才回明文） |
+| `ncc_list_nodes` | 我的节点连接表（`mine` / `links`） |
+| `ncc_discover_nodes` | 本实例上可连接的节点 |
+| `ncc_region_profile` | 节点在哪些区域更厚 |
+| `ncc_recommend_nodes` | 按区域推荐节点，同区域优先 |
 | `ncc_list_grants` | 授权关系（给出的 / 收到的） |
-| `ncc_list_friend_requests` | 好友请求（默认只看待处理） |
 
-与人脉相关的工具**故意做成只读**。任何会改变「别人能拿到什么」的动作 —— 加人、授权、
-同意好友 —— 都留在 CLI 里，由用户明确执行。
+节点、授权与服务相关的工具**故意做成只读**。任何会改变「别人能拿到什么」的动作 ——
+声明服务、连接节点、授权 —— 都留在 CLI 里，由用户明确执行。
 
 检索、取回与人才目录**无需登录**；只有发布需要凭据。`ncc mcp` 的 stdout 只输出协议消息、
 日志全部走 stderr —— 这是 MCP stdio 的硬要求。

@@ -1,6 +1,6 @@
 # NCC Registry
 
-[中文说明](README.zh-CN.md) · [Registry](https://ncc.ai) · [Issues](https://github.com/fusedmodel/ncc/issues)
+> [中文说明](README.zh-CN.md) · [Registry](https://ncc.ai) · [Issues](https://github.com/fusedmodel/ncc/issues) · [Changelog](CHANGELOG.md)
 
 ![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
@@ -97,11 +97,14 @@ cd release/bin && sha256sum -c checksums.txt          # Linux
 Because no public registry is live yet, run these against a local or self-hosted instance:
 
 ```bash
-# 0) Point the client at an instance (persisted in the config file)
+# 0) Point the client at an instance: an existing target with that URL is reused,
+#    otherwise a new target is created and selected (your old target is never silently rewritten)
 ncc --base http://localhost:8181 me
 
 # 1) Create an account (auto-creates your personal namespace)
 #    An invite code is required while the registry is in closed beta.
+#    The first account of an instance also becomes its admin and gets a
+#    one-time admin key/secret printed (see `ncc registry admin`).
 ncc register --email you@example.com --password 'a-strong-password' \
              --name You --invite NCC-2026-INVITE
 ncc me
@@ -128,12 +131,72 @@ ncc nodes                              # my nodes + linked nodes
 ncc terminal
 ```
 
+Connecting to an intranet node:
+
+```bash
+ncc target list                        # who am I talking to, and what does each side declare?
+ncc target add office --base http://10.0.0.5:8282 --use
+ncc --base http://127.0.0.1:8282 login --email you@corp.com --password '***'
+ncc --target hub me                    # one-shot: use the cloud for this command
+ncc hub publish --file ./x.SKILL.md --kind skill --name X --slug x
+```
+
+## Targets: the cloud ncc.ai vs an intranet node
+
+`ncc` is one client, but ncc has **two worlds**:
+
+| World | Default target name | What it is | What you do on it |
+|---|---|---|---|
+| **Cloud** | `hub` | the public registry at ncc.ai | services marketplace, profiles, share pages, billing, ops console |
+| **Intranet node** | your pick (`local` / `office` …) | self-hosted `ncc-registry` (single binary) | artifacts, nodes, config hosting, share links, node governance, cluster |
+
+Both are called “registry”, and some endpoint names even collide (`/api/nodes`,
+`/api/grants`, `/api/admin` …) with **different semantics** — so the CLI makes
+“who am I talking to” explicit with **targets**:
+
+```bash
+ncc target list                  # current target, addresses, sessions, declared capabilities
+ncc target use office            # switch (each target keeps its own credentials)
+ncc target show                  # details of the current target
+ncc target add lab --base http://10.0.0.9:8282
+ncc target rm lab
+ncc hub                          # quick look at the cloud target
+```
+
+Three ways to point somewhere for **one command only** (the default target stays put):
+
+| Form | Meaning |
+|---|---|
+| `ncc --target <name> <cmd>` | run this command against that target |
+| `ncc hub <cmd>` | run it against the cloud (same as `--target hub`) |
+| `ncc --base <URL>` | use that URL: reuse an existing target, else create one and switch (it tells you) |
+
+### Capabilities: a command runs if the target declares it
+
+Every node declares what it supports in `GET /api/meta` (`registry` / `services` / `profile` /
+`config` / `nodes` / `grants` / `share` / `access` / `cluster` / `admin` / `living` …). The CLI
+routes by that list:
+
+```bash
+ncc target use office && ncc services match "book a hotel in Hangzhou"
+#   ✗ 目标 office（ncc-registry · 内网节点）没有声明 `services` 能力
+#     它声明的能力：registry · config · share · nodes · grants · access · cluster · admin
+#     `services` 目前由云端（ncc.ai）提供。切过去：ncc target use hub
+```
+
+This is deliberate: **no hard-coded “cloud-only” / “local-only” split**, just “what did this
+node declare”. When the intranet node grows `services` / `profile`, the very same command
+works on it with no client change. Older servers without `/api/meta` are treated as
+“unknown → unrestricted” so nothing gets locked out.
+
 ## Command reference
 
 `<target>` is either a registry id (`R-…`) or a reference (`@namespace/slug`).
 
 | Command | Description |
 |---|---|
+| `ncc target list` / `use` / `add` / `rm` / `show` | Targets: which ncc instances am I connected to (cloud / intranet nodes) |
+| `ncc hub <cmd>` | Run a command against the cloud target (one-shot) |
 | `ncc register` | Create an account; auto-creates your personal namespace |
 | `ncc login` / `ncc logout` | Start / end a session |
 | `ncc me` | Show the signed-in user, plan and namespaces |
@@ -154,12 +217,20 @@ ncc terminal
 | `ncc nodes` / `kinds` / `discover` | My nodes, the kind catalog, connectable nodes on this instance |
 | `ncc nodes link` / `label` / `unlink` | Link a node and give it a name label |
 | `ncc nodes region` / `recommend` | Region coverage and recommendations (agent-facing) |
-| `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `node` \| `share`) |
+| `ncc services` / `catalog` / `match` / `show` | Services offered: catalog / match by intent / full details of one |
+| `ncc services add` / `rm` | Declare or take down your own services (provider side) |
+| `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `service` \| `share`) |
 | `ncc registry add` | Join a self-hosted `ncc-registry` with a one-click intranet link, or key/secret |
 | `ncc registry login` / `join` | Sign in to that node, or host this machine as a node (register + heartbeat) |
 | `ncc registry status` / `nodes` | That node and its cluster (master/worker) / discover nodes on the instance |
 | `ncc registry catalog` / `route` | Aggregated directory across the cluster / which node can serve an artifact |
 | `ncc registry ticket create` / `list` / `rm` | Issue and manage join tickets (key + secret + intranet link) |
+| `ncc registry config` / `kinds` / `get` / `set` | Config hosting: catalog / fetch (masked by default) / write (new revision) |
+| `ncc registry config` `history` / `rollback` / `bundle` | Version history / rollback / per-environment bundle |
+| `ncc registry share create` / `list` / `rm` / `info` | Share: turn an artifact into an **expiring download link** (no login required) |
+| `ncc registry admin overview` / `users` / `nodes` / `services` / `audit` | Node governance: users / nodes / services / audit (admin account or admin key/secret) |
+| `ncc registry admin disable` / `enable` / `passwd` / `rm-node` / `rm-service` | Disable/enable accounts / reset passwords / remove nodes / archive service entries |
+| `ncc registry admin login` / `status` / `rotate` | Store machine credentials / check your admin status / rotate the admin key+secret |
 | `ncc registry replicate` | Push a copy of an artifact to workers (`--to all` or names) |
 | `ncc registry rm` | Take an artifact down and reclaim every replica (`--yes`) |
 | `ncc registry leave` | Take my node offline (the next heartbeat re-registers it) |
@@ -172,7 +243,8 @@ Global flags:
 
 | Flag | Description |
 |---|---|
-| `--base <URL>` | Registry base URL. Overrides the config file and is written back to it. |
+| `--base <URL>` | Use that URL for this command: reuse an existing target or create one and switch |
+| `--target <name>` | Use that target for this command (the default target is unchanged; to change it: `ncc target use <name>`) |
 | `-h, --help` / `-V, --version` | Help / version |
 
 ### `ncc publish`
@@ -294,6 +366,7 @@ ncc nodes unlink NL-xxxx
 
 ncc grant set --user @someone --kind artifact --ns @you   # may download my private artifacts
 ncc grant set --user @someone --kind share                # may view my private share pages
+ncc grant set --user @someone --kind service              # may call my non-public services
 ncc grant list --in                                       # what others granted me
 ```
 
@@ -318,6 +391,131 @@ discovery — that belongs to grants. Unlinking removes only your entry.
 from its owner's profile location. `recommend` is sorted server-side by how many nodes you already
 have in that region, so CLI, MCP and the web share one ordering instead of each inventing its own.
 Neither is shown on the website.
+
+### `ncc services`
+
+A provider (a company, or a chain group) can declare **each of its businesses as its own
+service**, open to other agents. Other agents match on the provider's policy to learn *who to
+call, how to connect and whether a grant is needed*.
+
+```bash
+ncc services catalog                      # categories (6 groups / 28), protocols, access modes
+ncc services                              # browse the public catalog (or --mine)
+ncc services match "book me a hotel in Hangzhou"   # server-side scoring + reasons + steps
+ncc services show @aya/hotel-booking      # full connection details for one service
+ncc services match --json "…"             # raw JSON (score / reasons / howToUse)
+
+# provider side
+ncc services add --name "Hotel booking hub" --category booking --slug hotel-booking \
+  --summary "East-China room availability" --tag booking --intent "book hotel" \
+  --match "Call me for East-China hotel bookings" --region "Hangzhou · Shanghai" \
+  --protocol openapi --endpoint https://api.example.com/openapi/hotel.json \
+  --access open --publish
+ncc services rm SV-xxxx
+```
+
+| Concept | Question it answers | Grants data access? |
+|---|---|---|
+| Service | Who to call for this business, how to connect, is a grant needed | ❌ declaration; details follow the grant |
+| Node | Where it runs (a service may bind one node) | ❌ address only |
+| Grant | Who may see the connection details of non-public services | ✅ `--kind service` |
+
+Worth knowing:
+
+- New services are `draft` (visible to you only) until published; up to 30 per profile.
+- `--protocol`: `http` / `openapi` / `mcp` / `artifact` (install the package first) / `human`.
+- `--access`: `open` / `grant` (details need a grant) / `invite` (not listed at all).
+- **Non-public services expose a summary only**: without a grant, results carry name, category,
+  region and policy — endpoint, node, package and steps stay hidden.
+- **Any region** means `countrywide` or empty: it counts as covering every region query.
+
+### `ncc registry config` (config hosting)
+
+Besides artifacts, the intranet registry also **hosts team configuration** (network, gateway,
+infra, agents, CI…): private by default, one revision per write, rollback, secrets encrypted at
+rest — and agents can manage them with a scoped credential.
+
+```bash
+ncc registry config kinds                      # kinds (network/gateway/infra/agent/ci/security…) + formats + envs
+ncc registry config set @team/network --file ./network.yaml --kind network --env prod \
+    --summary "subnets/DNS/VLAN" --tags network,dns --note "initial"
+ncc registry config list --mine                # my configs (private included; content masked)
+ncc registry config get @team/network --reveal --out ./network.yaml    # plaintext to a file
+ncc registry config history @team/network      # who changed what, when
+ncc registry config rollback @team/network --to 2                      # rollback (written back as a new revision)
+ncc registry config bundle --ns @team --env prod --out ./conf          # fetch the whole set (prod + any)
+ncc registry config rm @team/network --yes
+```
+
+| Action | Requires |
+|---|---|
+| Read a public config | `visibility=public` and `status=active` → anyone |
+| Read a non-public config | scope `config:read` **and** (namespace member **or** `ncc grant set --kind config`) |
+| Write / rollback / delete | scope `config:write` **and** namespace membership (outsiders only get read) |
+
+A long-lived credential for an agent is a scoped join ticket (the token's `Sub` is the issuer,
+so it acts on your behalf inside your team namespace):
+
+```bash
+ncc registry ticket create --label agent-conf --scopes config:read,config:write,nodes:write
+```
+
+Worth knowing:
+
+- **Not an artifact**: artifacts are distributable files (public, fan-out to workers); configs are
+  authoritative team data (private, kept on the node you point at, never fanned out).
+- **Content is masked by default**: without `--reveal` you only get `sha256` and size.
+- **Secrets**: with `--secret`, content is AES-256-GCM encrypted before it touches the database
+  (key derived from `jwt-secret`). Backing up the DB without that secret is safe; moving machines
+  means the ciphertext can no longer be opened.
+- **Bundles skip `secret` configs by default**: use `--secrets --reveal` when you really want them.
+
+### `ncc registry share` (expiring links)
+
+Turn an artifact into a **temporary download link** — the receiver does not need an account or the CLI.
+
+```bash
+ncc registry share create @team/report --label "for partner" --uses 1 --expires 7
+#  → page  http://<node>/s/<token>        landing page with a download button
+#    raw   http://<node>/s/<token>/raw    curl -OJ (only this endpoint counts a use)
+ncc registry share list                        # mine (--all needs admin)
+ncc registry share info "<link>"                # check a link (public, does not consume a use)
+ncc registry share rm <SH-…|link>               # revoke — effective immediately
+```
+
+- **Share ≠ grant**: a share is a temporary, link-scoped allowance (limited uses / expiry / revocable);
+  for lasting access to a person use `ncc grant`.
+- **Creating a share is not privilege escalation**: only someone who can already read the artifact can share it.
+- The token is stored as sha256 only and returned once; revoked / expired / exhausted links return `410`.
+
+### `ncc registry admin` (node governance)
+
+Manage the **users / nodes / services** of one intranet registry. Every action is audited.
+
+Two equivalent identities: the **first account registered on the node** (becomes admin automatically —
+just sign in), or a **machine credential** `AK-…` + secret (issued when the first admin appears, rotatable):
+
+```bash
+# The first registration prints the admin credential once (secret shown a single time)
+ncc --base http://<node>:8282 register --email you@corp.com --password '***'
+ncc registry admin login --key AK-XXXXXX --secret ****   # stored in ~/.ncc/config.json (0600)
+ncc registry admin status                                # am I an admin? are local creds usable?
+ncc registry admin rotate --label ops                    # rotate: new secret works, old one dies
+
+ncc registry admin overview                              # users / nodes / services / assets / audit counts
+ncc registry admin users --q bob                         # who registered here (disabled included)
+ncc registry admin disable bob@corp.com --note "abuse"   # disable: existing tokens die immediately
+ncc registry admin enable  bob@corp.com
+ncc registry admin passwd  bob@corp.com                  # reset password (server-generated, shown once)
+ncc registry admin nodes --kind service                  # all hosted nodes (private + offline included)
+ncc registry admin rm-node ND-…                           # remove a node (its links are cleaned up too)
+ncc registry admin services                              # node-side kind=service + artifact-side kind=api
+ncc registry admin rm-service ND-…  |  @team/hotel-api    # remove node / archive artifact (bytes kept)
+ncc registry admin audit --limit 20                      # who did what to whom, when
+```
+
+Two rules the server enforces: **you cannot disable your own account**, and
+**you cannot disable the last usable admin**.
 
 ### `ncc key`
 
@@ -390,11 +588,13 @@ Inside the console:
 
 | Path | Purpose |
 |---|---|
-| `~/.ncc/config.json` | Registry base URL plus your session token, email and name. Created on first login |
+| `~/.ncc/config.json` | The **target list**: address + credentials per target (session token, admin key+secret) and the current target name. Created on first run (mode 0600) |
 | `~/.ncc/bin/ncc` | Binary installed by the install script or npm launcher |
 | `~/.ncc/packages/` | Default root for `ncc install` |
 
-`--base` is the only flag the CLI persists: passing it rewrites `base_url` in the config file, and subsequent invocations use it without the flag.
+Signing in to an intranet node does **not** sign you out of the cloud: credentials live per
+target. `--base` reuses or creates a target by address instead of silently rewriting your
+current one.
 
 ### Environment variables
 
@@ -410,14 +610,22 @@ Inside the console:
 
 `HOME`, `HOSTNAME` and `SHELL` are read for defaults (config location, device name, POSIX summary) and can be overridden as usual.
 
-> **The config file is plain text and holds a bearer token.** It is written without hardening the file mode — `chmod 600 ~/.ncc/config.json` if your machine is shared. Prefer `NCC_PACKAGES_DIR` / `NCC_CONFIG` plus a short-lived config in CI over committing a credentials file.
+> **The config file is plain text and holds a bearer token.** The CLI chmods it to `0600` on
+> write, but if it was carried over from an older version, double-check it yourself:
+> `chmod 600 ~/.ncc/config.json`. In CI, prefer `NCC_PACKAGES_DIR` / `NCC_CONFIG` pointing at a
+> short-lived file over committing a credentials file.
 
 ## Using your own registry
 
 Any NCC-compatible instance works as a backend:
 
 ```bash
+# one-shot: leaves your current target alone
 ncc --base https://registry.internal.example me
+
+# make it stick: create a named target, then `ncc target use internal`
+ncc target add internal --base https://registry.internal.example --use
+ncc me
 ```
 
 A self-hosted instance also serves its own client distribution, so its users can install a binary that already knows the right base URL:
@@ -482,7 +690,7 @@ ncc registry rm @alice/hotel-skill --yes     # master deletes it and reclaims ev
 ```
 
 And connections still are not authorization: reading someone's private artifact or private node needs
-an explicit grant (`ncc grant set --user @bob --kind artifact|node`).
+an explicit grant (`ncc grant set --user @bob --kind artifact|service`).
 
 See [`ncc-registry/README.md`](ncc-registry/README.md) for the full API, config table and deployment notes.
 
@@ -524,7 +732,11 @@ Source layout:
 | `src/api.rs` | Thin HTTP client over `ureq`: JSON requests, raw uploads, error decoding |
 | `src/config.rs` | `~/.ncc/config.json` load/save and session handling |
 | `src/profile.rs` | Profile card, portfolio, role catalog |
-| `src/social.rs` | Contacts, friend requests, grants, region profile |
+| `src/nodes.rs` | Node links (link table / discovery), grants, region aggregate and recommendations |
+| `src/services.rs` | Services offered: catalog / matching / usage / declare and take down |
+| `src/registry.rs`, `src/registryadd.rs` | Self-hosted intranet node (ncc-registry): login / join / catalog / route / tickets |
+| `src/configs.rs` | Config hosting: catalog / fetch (masked by default) / write with revisions / rollback / bundle |
+| `src/admin.rs` | Node governance (admin: users / nodes / services / audit / credential rotation) and share links |
 | `src/mcp.rs` | MCP server over stdio (tool schemas + dispatch) |
 | `src/terminal.rs` | Command console, POSIX runtime detection, update check |
 | `src/tui.rs` | Full-screen ratatui TUI (used when stdin is a real TTY) |
@@ -581,15 +793,21 @@ fetch artifacts, publish results and look up people — no extra service to run:
 | `ncc_list_roles` | Work-role catalog |
 | `ncc_find_people` | Find people by role / skill |
 | `ncc_get_profile` | Someone's card: roles + portfolio + published capabilities |
-| `ncc_list_contacts` | Your address book, with effective regions |
-| `ncc_region_profile` | Where your network clusters, and in which roles |
-| `ncc_recommend_contacts` | Candidates by region / role, same-region-first |
+| `ncc_match_services` | Match services by intent: scores, reasons, connection steps |
+| `ncc_list_services` | Browse the service catalog (category / tag / region) |
+| `ncc_get_service` | Full connection details for one service |
+| `ncc_service_categories` | Business category catalog for the `category` argument |
+| `ncc_list_configs` | Hosted team configuration (public ones need no credential; `mine` for your own) |
+| `ncc_get_config` | Fetch one config (**masked by default**; `reveal` returns plaintext) |
+| `ncc_list_nodes` | Your node link table (`mine` / `links`) |
+| `ncc_discover_nodes` | Connectable nodes on this instance |
+| `ncc_region_profile` | Where your node network clusters |
+| `ncc_recommend_nodes` | Nodes by region, same-region-first |
 | `ncc_list_grants` | Grant relationships (outgoing / incoming) |
-| `ncc_list_friend_requests` | Friend requests (pending by default) |
 
-The people-related tools are **read-only on purpose**. Anything that changes what another party
-can obtain — adding contacts, granting access, accepting requests — stays in the CLI, where the
-user performs it deliberately.
+The node, grant and service tools are **read-only on purpose**. Anything that changes what
+another party can obtain — declaring a service, linking a node, granting access — stays in the
+CLI, where the user performs it deliberately.
 
 Search, fetch and the people directory need **no login**; only publishing does. `ncc mcp` writes only
 protocol messages to stdout and all logs to stderr — required by MCP's stdio transport.

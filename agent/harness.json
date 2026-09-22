@@ -9,7 +9,7 @@
       "requires": ["ncc"]
     },
     "protocols": ["mcp"],
-    "description": "把 NCC Registry 作为 MCP server 暴露给任意 Agent：检索、取回、发布能力制品，并按角色检索人才目录。",
+    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、读团队托管配置、按角色找人。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化。",
     "tools": [
       "ncc_list_kinds",
       "ncc_search_catalog",
@@ -19,12 +19,25 @@
       "ncc_whoami",
       "ncc_list_roles",
       "ncc_find_people",
-      "ncc_get_profile"
+      "ncc_get_profile",
+      "ncc_match_services",
+      "ncc_list_services",
+      "ncc_get_service",
+      "ncc_service_categories",
+      "ncc_list_configs",
+      "ncc_get_config",
+      "ncc_list_nodes",
+      "ncc_discover_nodes",
+      "ncc_region_profile",
+      "ncc_recommend_nodes",
+      "ncc_list_grants"
     ],
     "inputs": [
-      { "name": "target", "type": "string", "description": "制品引用 @namespace/slug 或 R-… id" },
+      { "name": "connection", "type": "string", "description": "连接目标名（ncc target list）；缺省用当前目标。云端 hub / 内网节点如 office" },
+      { "name": "ref", "type": "string", "description": "引用：制品 @namespace/slug 或 R-… / 服务 @提供方/标识 / 配置 @命名空间/slug（旧名 target 仍兼容）" },
       { "name": "query", "type": "string", "description": "检索关键词" },
-      { "name": "kind", "type": "string", "description": "制品类型过滤" }
+      { "name": "kind", "type": "string", "description": "制品类型过滤" },
+      { "name": "intent", "type": "string", "description": "服务匹配：一句人话意图（如「帮我订杭州的酒店」）" }
     ],
     "outputs": [
       { "name": "content", "type": "text", "description": "文本结果（检索列表 / 元数据 JSON / 制品正文）" }
