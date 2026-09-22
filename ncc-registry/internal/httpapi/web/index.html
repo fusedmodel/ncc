@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NCC Registry · 内网托管节点</title>
+<meta name="robots" content="noindex" />
+<style>
+:root{
+  --bg:#fff; --bg2:#f9fafb; --bg3:#f3f4f6; --ink:#111827; --ink2:#4b5563;
+  --ink3:#6b7280; --ink4:#9ca3af; --line:#e5e7eb; --line2:#f3f4f6;
+  --ok:#16a34a; --err:#dc2626;
+  --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Noto Sans SC',system-ui,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:var(--sans);color:var(--ink);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+.wrap{max-width:1120px;margin:0 auto;padding:0 24px}
+header{border-bottom:1px solid var(--line2);position:sticky;top:0;background:rgba(255,255,255,.86);backdrop-filter:blur(12px);z-index:9}
+.hrow{display:flex;align-items:center;gap:14px;height:62px}
+.logo{display:grid;place-items:center;width:28px;height:28px;border-radius:8px;background:var(--ink);color:#fff;font-weight:800;font-size:13px}
+.brand{font-weight:800;letter-spacing:-.015em;font-size:16px}
+.brand span{color:var(--ink3);font-weight:600}
+.grow{flex:1}
+button{font-family:inherit;font-size:13px;font-weight:600;border:1px solid var(--line);background:#fff;color:var(--ink);border-radius:9px;padding:7px 13px;cursor:pointer}
+button:hover{border-color:var(--ink)}
+section{padding:30px 0 6px}
+h2{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);margin-bottom:12px}
+.grid{display:grid;gap:12px}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.kv div{background:#fff;padding:12px 14px}
+.kv b{display:block;font-size:10.5px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink4);margin-bottom:3px}
+.kv i{font-style:normal;font-family:var(--mono);font-size:12.5px;color:var(--ink);word-break:break-all}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th{text-align:left;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink4);font-weight:700;padding:0 10px 8px;border-bottom:1px solid var(--line)}
+td{padding:10px;border-bottom:1px solid var(--line2);vertical-align:top}
+td.mono,.mono{font-family:var(--mono);font-size:12.5px}
+.muted{color:var(--ink3)}
+.badge{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.03em;padding:2px 8px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink3);text-transform:uppercase}
+.badge.dark{background:var(--ink);color:#fff;border-color:var(--ink)}
+.badge.ok{color:var(--ok);border-color:#bbf7d0}
+.badge.off{color:var(--ink4)}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+input,select{font-family:inherit;font-size:13.5px;padding:8px 11px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink)}
+input:focus,select:focus{outline:none;border-color:var(--ink)}
+.empty{padding:18px;border:1px dashed var(--line);border-radius:12px;color:var(--ink3);font-size:13.5px;background:var(--bg2)}
+pre{font-family:var(--mono);font-size:12.5px;background:var(--bg2);border:1px solid var(--line2);border-radius:12px;padding:14px 16px;overflow-x:auto;color:var(--ink2);line-height:1.8}
+pre b{color:var(--ink)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:900px){.two{grid-template-columns:1fr}}
+footer{padding:34px 0 48px;color:var(--ink4);font-size:12.5px}
+.tag{display:inline-block;font-family:var(--mono);font-size:11px;border:1px solid var(--line);border-radius:999px;padding:2px 9px;color:var(--ink2);margin-right:5px}
+.err{color:var(--err);font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap hrow">
+    <div class="logo">N</div>
+    <div class="brand">NCC Registry <span id="hdrRole">node</span></div>
+    <div class="grow"></div>
+    <span id="hdrNode" class="mono muted"></span>
+    <button id="refresh">刷新</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section>
+    <h2>本节点</h2>
+    <div class="kv" id="selfBox"></div>
+  </section>
+
+  <section>
+    <h2>集群（多节点）</h2>
+    <div id="clusterBox"></div>
+  </section>
+
+  <section>
+    <h2>聚合目录（本节点 + 各 worker）</h2>
+    <div class="row">
+      <input id="q" placeholder="搜索 name / slug / summary" size="28" />
+      <select id="kind"><option value="">全部类型</option></select>
+      <button id="search">搜索</button>
+      <span id="dirMeta" class="muted mono"></span>
+    </div>
+    <div id="dirBox"></div>
+  </section>
+
+  <section>
+    <h2>托管节点（Agent 发现）</h2>
+    <div id="nodesBox"></div>
+  </section>
+
+  <section class="two">
+    <div>
+      <h2>接入：CLI</h2>
+      <pre id="cliBox"></pre>
+    </div>
+    <div>
+      <h2>接入：HTTP API</h2>
+      <pre id="apiBox"></pre>
+    </div>
+  </section>
+
+  <footer class="wrap">
+    NCC Registry · 内网托管节点 / 制品托管 / Agent 发现与互联 · <span id="foot"></span>
+  </footer>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const sizeTxt = (n) => !n ? '—' : n < 1024 ? n + ' B' : n < 1048576 ? (n/1024).toFixed(1) + ' KB' : (n/1048576).toFixed(1) + ' MB';
+const timeTxt = (s) => { if (!s) return '—'; const d = new Date(s); return isNaN(d) ? '—' : d.toLocaleString(); };
+
+async function jget(path) {
+  const r = await fetch(path, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(path + ' → HTTP ' + r.status);
+  return r.json();
+}
+
+function kv(pairs) {
+  return pairs.map(([k, v]) => `<div><b>${esc(k)}</b><i>${esc(v ?? '—')}</i></div>`).join('');
+}
+
+function table(head, rows) {
+  if (!rows.length) return '<div class="empty">暂无数据</div>';
+  return `<table><thead><tr>${head.map((h) => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+
+function statusBadge(online) {
+  return online ? '<span class="badge ok">在线</span>' : '<span class="badge off">离线</span>';
+}
+
+async function loadSelf() {
+  const m = await jget('/api/meta');
+  const n = m.node || {};
+  $('hdrRole').textContent = n.role === 'master' ? 'master' : 'worker';
+  $('hdrNode').textContent = n.id + ' · ' + n.version;
+  $('selfBox').innerHTML = kv([
+    ['角色', n.role], ['节点名', n.name], ['节点 ID', n.id],
+    ['对外地址', n.url], ['区域', n.region || '未声明'], ['版本', n.version],
+    ['制品（公开已发布）', m.counts?.artifacts ?? 0],
+    ['托管节点', m.counts?.hostedNodes ?? 0],
+    ['账号', m.counts?.users ?? 0],
+  ]);
+  $('foot').textContent = m.about || '';
+  $('cliBox').innerHTML = [
+    `<b># 1) 登录本节点</b>`,
+    `ncc --base ${esc(n.url)} registry login --email you@corp.com --password '***'`,
+    ``,
+    `<b># 2) 把自己的 Agent 节点托管进来</b>`,
+    `ncc registry join --kind agent --name my-agent --region 上海-内网 --daemon`,
+    ``,
+    `<b># 2b) 或用一条内网短链让对方自己接进来（签发一次）</b>`,
+    `ncc registry ticket create --label "给 alice 的 Agent" --uses 1 --expires 7`,
+    `#   → 把打印出的链接发给对方：ncc registry add '<链接>' --join`,
+    ``,
+    `<b># 3) 看集群与我的节点</b>`,
+    `ncc registry status`,
+    `ncc registry nodes --kind agent`,
+    `ncc registry route @alice/hotel-skill`,
+    ``,
+    `<b># 4) 制品发布 / 分发 / 下架回收（沿用既有命令）</b>`,
+    `ncc publish --file ./hotel.SKILL.md --kind skill --name "Hotel Skill" --replicate all`,
+    `ncc registry catalog`,
+    `ncc registry rm @alice/hotel-skill --yes`,
+    ``,
+    `<b># 5) 授权别人取你的私有制品 / 私有节点（连接 ≠ 授权）</b>`,
+    `ncc grant set --user @bob --kind artifact`,
+    `ncc grant set --user @bob --kind node`,
+  ].join('\n');
+  $('apiBox').innerHTML = [
+    `GET  /api/meta`,
+    `POST /api/auth/register|login`,
+    `GET  /api/registry?q=&kind=&namespace=`,
+    `GET  /api/registry/@ns/slug/download`,
+    `POST /api/registry/uploads   (raw + X-Filename)`,
+    `POST /api/registry           (create item, replicate=all)`,
+    `DELETE /api/registry/@ns/slug (下架 + 回收副本)`,
+    `POST /api/nodes/heartbeat    (节点注册+心跳)`,
+    `GET  /api/nodes/discover?kind=agent&region=`,
+    `GET  /api/cluster`,
+    `GET  /api/cluster/directory`,
+    `POST /api/cluster/replicate  (ref, targets)`,
+    `GET  /api/nodes/route?ref=@ns/slug`,
+    `POST /api/access/tickets     (签发接入票据)`,
+    `POST /api/access/redeem      (key + secret → 节点令牌)`,
+    `GET  /api/grants?direction=outgoing|incoming`,
+    ``,
+    `鉴权: Authorization: Bearer <JWT / 节点令牌 / ncc_ API-Key>`,
+    `集群: X-NCC-Cluster-Token（master 配了 token 时）`,
+  ].join('\n');
+}
+
+async function loadCluster() {
+  const c = await jget('/api/cluster');
+  const t = c.totals || {};
+  const rows = (c.workers || []).map((w) => `<tr>
+    <td>${esc(w.name)}<div class="mono muted">${esc(w.id)}</div></td>
+    <td class="mono">${esc(w.url)}</td>
+    <td>${esc(w.region || '—')}</td>
+    <td class="mono">${w.artifacts ?? 0}</td>
+    <td class="mono">${w.nodes ?? 0}</td>
+    <td>${statusBadge(w.online)}<div class="muted mono">${esc(timeTxt(w.lastSeen))}</div></td>
+  </tr>`);
+
+  let head = '';
+  if (c.role === 'worker') {
+    const m = c.master || {};
+    head = `<div class="kv" style="margin-bottom:14px">${kv([
+      ['形态', 'worker（边缘托管点）'],
+      ['master', (m.name || '') + ' ' + (m.url || c.self?.url || '')],
+      ['master 在线', m.online ? '是' : '否'],
+      ['最近心跳', timeTxt(c.lastHeartbeat)],
+    ])}</div>` + (c.lastError ? `<div class="err" style="margin-bottom:12px">最近一次心跳错误：${esc(c.lastError)}</div>` : '');
+  }
+  $('clusterBox').innerHTML = head + `<div class="row">
+      <span class="badge dark">${esc(c.role)}</span>
+      <span class="badge">worker ${t.workers ?? 0}（在线 ${t.workersOnline ?? 0}）</span>
+      <span class="badge">托管节点 ${t.hostedNodes ?? 0}</span>
+      <span class="badge">制品 ${t.artifacts ?? 0}</span>
+      <span class="badge">账号 ${t.users ?? 0}</span>
+      <span class="muted mono">TTL ${c.ttlSec}s · 心跳 ${c.everySec}s</span>
+    </div>` + table(['节点', '地址', '区域', '制品', '托管节点', '状态'], rows);
+}
+
+async function loadKinds() {
+  try {
+    const d = await jget('/api/registry/kinds');
+    const sel = $('kind');
+    (d.kinds || []).forEach((k) => {
+      const o = document.createElement('option');
+      o.value = k.kind;
+      o.textContent = `${k.label || k.kind}${k.published ? ' · ' + k.published : ''}`;
+      sel.appendChild(o);
+    });
+  } catch (e) { /* 目录还没起来也不影响其它区块 */ }
+}
+
+async function loadDirectory() {
+  const q = encodeURIComponent($('q').value.trim());
+  const kind = encodeURIComponent($('kind').value);
+  const d = await jget(`/api/cluster/directory?q=${q}&kind=${kind}`);
+  $('dirMeta').textContent = `${d.total} 条（本地 ${d.local} · 远端 ${d.remote}）`;
+  const rows = (d.items || []).map((it) => {
+    const via = it.via || {};
+    const viaTxt = via.role === 'self' ? '本节点' : 'worker ' + (via.nodeName || via.nodeId || '');
+    const tags = (it.tags || []).map((t) => `<span class="tag">${esc(t)}</span>`).join('');
+    const replicas = (it.replicas || []).length
+      ? `<span class="badge">副本 ×${it.replicas.length}</span>`
+      : (it.origin === 'replica' ? '<span class="badge">副本</span>' : '');
+    return `<tr>
+      <td class="mono">${esc(it.ref || '')}<div class="muted">${esc(it.name || '')}</div></td>
+      <td><span class="badge">${esc(it.kind || '')}</span>${replicas}</td>
+      <td>${esc(it.summary || '')}${tags ? '<div style="margin-top:5px">' + tags + '</div>' : ''}</td>
+      <td class="mono">${esc(viaTxt)}</td>
+      <td class="mono">${sizeTxt(it.storage?.size)}</td>
+      <td class="mono">${it.downloads ?? 0}</td>
+    </tr>`;
+  });
+  $('dirBox').innerHTML = table(['引用', '类型', '说明', '来源', '大小', '下载'], rows);
+}
+
+async function loadNodes() {
+  const d = await jget('/api/nodes/discover');
+  const regions = await jget('/api/nodes/regions').catch(() => ({ regions: [] }));
+  const chips = (regions.regions || []).map((r) => `<span class="badge">${esc(r.region)} ${r.online}/${r.total} 在线</span>`).join(' ');
+  const rows = (d.nodes || []).map((n) => `<tr>
+    <td>${esc(n.name)}<div class="mono muted">@${esc(n.namespace?.slug || '')}/${esc(n.slug)}</div></td>
+    <td><span class="badge">${esc(n.kind)}</span></td>
+    <td>${esc(n.region || '—')}</td>
+    <td>${esc(n.owner?.name || '')}</td>
+    <td class="mono">${(n.capabilities || []).join(', ') || '—'}</td>
+    <td>${statusBadge(n.online)}</td>
+  </tr>`);
+  $('nodesBox').innerHTML = (chips ? `<div class="row">${chips}</div>` : '') +
+    table(['节点', '类型', '区域', '归属', '能力', '状态'], rows);
+}
+
+async function refresh() {
+  const tasks = [loadSelf(), loadCluster(), loadDirectory(), loadNodes()];
+  const results = await Promise.allSettled(tasks);
+  const failed = results.filter((r) => r.status === 'rejected');
+  if (failed.length && failed.length === results.length) {
+    $('selfBox').innerHTML = `<div class="empty">无法连接本节点 API：${esc(failed[0].reason.message)}</div>`;
+  }
+}
+
+$('refresh').addEventListener('click', refresh);
+$('search').addEventListener('click', () => loadDirectory().catch(() => {}));
+$('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') loadDirectory().catch(() => {}); });
+$('kind').addEventListener('change', () => loadDirectory().catch(() => {}));
+
+loadKinds();
+refresh();
+setInterval(() => { loadCluster().catch(() => {}); }, 15000);
+</script>
+</body>
+</html>
