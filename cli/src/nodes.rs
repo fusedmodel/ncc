@@ -339,9 +339,9 @@ pub struct GrantSetArgs {
     #[arg(long)]
     pub user: String,
     /// 授权类型（看指向哪个服务端）：
-    /// 平台 ncc.ai：artifact（私有制品）| service（非公开服务）| share（私有分享页）
+    /// 平台 ncc.ai：artifact（私有制品）| service（非公开服务）| share（私有分享页）| p2p（与我的私有节点直连）
     /// 内网 ncc-registry：artifact | node（私有节点）| config（非公开配置）
-    #[arg(long, value_parser = ["artifact", "service", "share", "node", "config"])]
+    #[arg(long, value_parser = ["artifact", "service", "share", "p2p", "node", "config"])]
     pub kind: String,
     /// 限定命名空间（缺省=该类型的全部；share 不支持限定）
     #[arg(long = "ns")]
@@ -419,6 +419,7 @@ pub fn grant_list(cfg: &CliConfig, a: &GrantListArgs) -> Result<()> {
             "artifact" => "制品下载",
             "service" => "非公开服务接入",
             "share" => "私有分享页",
+            "p2p" => "私有节点直连",
             "node" => "私有节点可见",
             "config" => "非公开配置读取",
             other => other,
@@ -460,6 +461,7 @@ pub fn grant_set(cfg: &CliConfig, a: &GrantSetArgs) -> Result<()> {
         "artifact" => "可下载你的私有制品",
         "service" => "可接入你的非公开服务",
         "share" => "可查看你的私有分享页",
+        "p2p" => "可与你的私有节点直连（P2P）",
         "node" => "可发现并连接你的私有节点",
         "config" => "可读取你的非公开配置",
         _ => "",

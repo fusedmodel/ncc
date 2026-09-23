@@ -5,9 +5,11 @@ mod config;
 mod configs;
 mod mcp;
 mod nodes;
+mod p2p;
 mod profile;
 mod registry;
 mod registryadd;
+mod registryp2p;
 mod services;
 mod target;
 mod terminal;
@@ -21,7 +23,24 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// stdio 协议模式（`ncc mcp`）。
+///
+/// ⚠️ MCP 的硬要求：stdout **只能**出 JSON-RPC 帧。一行人类可读提示就会让客户端
+/// 解析失败（实测踩过：`ncc mcp --base …` 的「已切到某目标」提示泄到 stdout）。
+/// 所以一切「人读提示」都要过 `note()`，协议模式下自动改走 stderr。
+static PROTOCOL_STDOUT: AtomicBool = AtomicBool::new(false);
+
+/// 人读提示：正常走 stdout；协议模式下走 stderr（不污染帧流）。
+fn note(msg: &str) {
+    if PROTOCOL_STDOUT.load(Ordering::Relaxed) {
+        eprintln!("{msg}");
+    } else {
+        println!("{msg}");
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "ncc", version, about = "ncc.ai Registry 命令行客户端\n用法: ncc <command> [args...]\n目标：ncc target list（云端 ncc.ai / 内网 registry 节点各是一个目标）")]
@@ -120,6 +139,11 @@ enum Cmd {
     /// 制品/分享授权：ncc grant set --user @someone --kind artifact | list | rm <id>
     #[command(subcommand)]
     Grant(GrantCmd),
+    /// NCC P2P：跨局域网节点直连（打洞条件预检 / 真实建连检查 / 信令 / 票据）
+    ///
+    /// 需要目标声明 `p2p` 能力（ncc.ai 云端已声明）；`probe` 是纯本地命令，不需要服务器。
+    #[command(subcommand)]
+    P2p(p2p::P2pCmd),
     /// 以 MCP server 方式暴露 NCC（stdio），供 Claude Desktop / Cursor / VS Code / 任意 Agent 接入
     Mcp,
 }
@@ -247,6 +271,8 @@ enum RegistryCmd {
     Admin(admin::AdminArgs),
     /// 把制品分发到 worker（副本）：--to all|<名称,名称>
     Replicate(registryadd::ReplicateArgs),
+    /// 打洞条件与入口：self（节点侧 NAT 画像）| check（从节点对打）| serve（开/关可被打洞入口）
+    P2p(registryp2p::P2pArgs),
     /// 下架制品并回收各节点上的副本（需 --yes）
     Rm(registryadd::RmArgs),
     /// 下线我的节点（下次心跳会重新注册）
@@ -399,6 +425,10 @@ fn main() {
     };
 
     let mut cfg = config::load();
+    // 先判定协议模式，再决定提示走哪个流：resolve_target 里的提示也算。
+    if matches!(cli.cmd, Cmd::Mcp) {
+        PROTOCOL_STDOUT.store(true, Ordering::Relaxed);
+    }
     if let Err(e) = resolve_target(&mut cfg, &cli, hub_prefix) {
         eprintln!("✗ {:#}", e);
         std::process::exit(1);
@@ -452,7 +482,7 @@ fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::R
                 // 同一台机器已经有目标了：切过去，而不是再造一个
                 if existing != cfg.current_name() {
                     config::set_current(cfg, &existing)?;
-                    println!("（--base 命中已有目标 {existing}，本次已切到它）");
+                    note(&format!("（--base 命中已有目标 {existing}，本次已切到它）"));
                 }
             }
             None => {
@@ -479,9 +509,9 @@ fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::R
                 );
                 config::set_current(cfg, &name)?;
                 config::save(cfg)?;
-                println!(
+                note(&format!(
                     "（--base {base} 已作为新目标 {name} 保存并切换；以后直接 ncc target use {name}）"
-                );
+                ));
                 // 地址打错时当场提醒一次，而不是等下一次命令才发现。
                 if m.product.is_empty() {
                     if let Some(note) = &m.note {
@@ -509,6 +539,11 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Nodes(_) => Some("nodes"),
         Cmd::Services(_) => Some("services"),
         Cmd::Grant(_) => Some("grants"),
+        Cmd::P2p(p) => match p {
+            // 预检纯本地（要 STUN，但不要 NCC 服务端）：老服务端/离线环境也应当能用。
+            p2p::P2pCmd::Probe(_) => None,
+            _ => Some("p2p"),
+        },
         Cmd::Registry(r) => match r {
             RegistryCmd::Config(_) => Some("config"),
             RegistryCmd::Admin(_) => Some("admin"),
@@ -519,6 +554,7 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
                 Some("nodes")
             }
             RegistryCmd::Login(_) | RegistryCmd::Replicate(_) | RegistryCmd::Rm(_) => Some("registry"),
+            RegistryCmd::P2p(_) => Some("p2p"),
         },
         _ => None,
     }
@@ -613,6 +649,13 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             GrantCmd::Set(a) => nodes::grant_set(cfg, a),
             GrantCmd::Rm { id } => nodes::grant_rm(cfg, id),
         },
+        Cmd::P2p(p) => match p {
+            p2p::P2pCmd::Probe(a) => p2p::probe(cfg, &a),
+            p2p::P2pCmd::Ice => p2p::ice(cfg),
+            p2p::P2pCmd::Check(a) => p2p::check(cfg, &a),
+            p2p::P2pCmd::Signal(s) => p2p::signal(cfg, &s),
+            p2p::P2pCmd::Ticket(t) => p2p::ticket(cfg, &t),
+        },
         Cmd::Services(v) => match &v.action {
             None => services::list(cfg, &services::ListArgs {
                 category: None, tag: None, region: None, protocol: None, q: None,
@@ -646,6 +689,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             },
             RegistryCmd::Replicate(a) => registryadd::replicate(cfg, a),
             RegistryCmd::Rm(a) => registryadd::rm(cfg, a),
+            RegistryCmd::P2p(a) => registryp2p::p2p(cfg, a),
             RegistryCmd::Share(s) => admin::run_share(cfg, s),
             RegistryCmd::Admin(a) => admin::run(cfg, a),
             RegistryCmd::Leave(a) => registry::leave(cfg, a),

@@ -22,11 +22,11 @@ ncc 有两个世界，同一个 CLI / 同一套 MCP 工具都可能连到其中�
 
 | 世界 | 目标名 | 提供什么 |
 |---|---|---|
-| **云端 ncc.ai** | `hub` | 公共目录、服务市场（`ncc_match_services`）、名片与找人、分享页 |
-| **内网 registry 节点** | 自定（`local` / `office` …） | 制品、节点、**团队配置**（`ncc_list_configs`）、分享链接 |
+| **云端 ncc.ai** | `hub` | 公共目录、服务市场（`ncc_match_services`）、名片与找人、分享页，以及 P2P 的**控制面**（信令 / 票据 / ICE 配置） |
+| **内网 registry 节点** | 自定（`local` / `office` …） | 制品、节点、**团队配置**（`ncc_list_configs`）、分享链接、**节点侧打洞画像与入口**（`ncc_p2p_node`） |
 
 每个节点在 `GET /api/meta` 里**声明自己的能力**（`registry` / `services` / `profile` /
-`config` / `nodes` / `grants` …），工具按这份清单放行。所以：
+`config` / `nodes` / `grants` / `p2p` …），工具按这份清单放行。所以：
 
 - **工具清单是变化的**，以 `tools/list` 为准；调不通时先看错误信息里的「这个目标没有声明 X 能力」
   与它给的切换建议，不要反复重试。
@@ -56,7 +56,7 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp", "--base", "http://localhost:8282"] } } }
 ```
 
-提供的工具（20 个，按能力分组；不在当前目标能力清单里的会明确报错）：
+提供的工具（23 个，按能力分组；不在当前目标能力清单里的会明确报错）：
 
 | 能力 | 工具 | 用途 |
 |---|---|---|
@@ -73,6 +73,9 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 | 节点与授权 | `ncc_list_nodes` / `ncc_discover_nodes` | 我的节点与连接表 / 发现可连接的节点 |
 | | `ncc_region_profile` / `ncc_recommend_nodes` | 区域覆盖 / 按区域要推荐 |
 | | `ncc_list_grants` | 我给出与收到的授权 |
+| 跨网直连（P2P） | `ncc_p2p_probe` | **本机**打洞条件预检（纯本地：UDP 出站 / 公网映射 / NAT 映射与过滤行为） |
+| | `ncc_p2p_check` | 真实打洞实测（0 字节）：`addr` 直接对打 / `peer` 走控制面信令 |
+| | `ncc_p2p_node` | **目标节点那台机器**的 NAT 画像 + 可被打洞入口状态 |
 | 团队配置（内网节点） | `ncc_list_configs` | 托管配置目录（公开配置无需凭据） |
 | | `ncc_get_config` | 取一份配置（**内容默认打码**，`reveal=true` 才出明文） |
 
@@ -102,6 +105,14 @@ GET  /api/configs/bundle?namespace=&env=prod      # 成组拉取（env 命中 pr
 GET  /api/shares?mine=1                           # 我发的分享链接
 GET  /s/{token}/raw?meta=1                        # 分享链接：先看元数据（不计数）
 GET  /s/{token}/raw                               # 分享链接：取字节（**计数**，不用登录）
+
+# P2P（跨网直连）：云端是**控制面**，内网节点是**节点侧画像 + 打洞入口**
+GET  /api/p2p/ice                                 # 控制面下发的 STUN/TURN 配置（TURN 必须客户自托管）
+GET  /api/p2p/peer?ref=@ns/slug                   # 对端节点是谁、我够不够得着（够不着会给原因）
+GET  /api/p2p/self                                # 【内网节点】那台机器的 NAT 画像 + 入口状态
+POST /api/p2p/check {peer, waitSec}               # 【内网节点】从节点侧与一个映射地址对打（0 字节）
+GET  /api/p2p/serve · POST /api/p2p/serve {on, peer}   # 【内网节点】看/开「可被打洞入口」（只应答 STUN）
+GET  /api/p2p/tickets?mine=1                      # 我发出的 P2P 票据（连接 ≠ 授权）
 
 # 需要登录（Authorization: Bearer <JWT 或 ncc_ API-Key>）
 POST /api/registry/uploads               # 上传字节（raw body + X-Filename 头）
@@ -134,6 +145,14 @@ ncc registry config list --mine
 ncc registry config get @team/network --reveal --out ./network.yaml
 ncc registry share create @team/report --label "给合作方" --uses 1 --expires 7
 ncc registry admin overview         # 管理员才有的节点治理（用户/节点/服务 + 审计）
+
+# P2P（跨网直连的判断面；这些是**人**执行的动作，Agent 只用读工具 + check）
+ncc p2p probe                       # 本机条件预检（纯本地）
+ncc p2p check @team/nas             # 两端同时跑：真实建连检查
+ncc p2p check --addr 1.2.3.4:5678   # 不走信令，直接对打（对端 mapped）
+ncc registry p2p self               # 内网节点那台机器的画像
+ncc registry p2p serve --on --peer <对端 mapped>   # 在节点上开可被打洞入口（只应答 STUN）
+ncc p2p ticket create --peer @team/nas --ref @team/db-backup --expires-in 300
 ```
 
 ## 常用工作流
@@ -177,6 +196,35 @@ ncc registry admin overview         # 管理员才有的节点治理（用户/�
 4. **写配置（set / rollback / bundle 落盘）不在 MCP 工具里** —— 让用户跑
    `ncc registry config set …`（写操作改的是团队的真实基础设施，要用户自己拍）。
 
+### F. 「这两个节点能不能直连 / 跨网传数据」——先判条件，别承诺
+
+三个工具对应三种不同的机器，别混：
+
+| 问的是谁的条件 | 用哪个工具 | 判什么 |
+|---|---|---|
+| **跑 MCP 的这台机器** | `ncc_p2p_probe` | 纯本地预检（不需要登录/对端）：UDP 出站、公网映射(srflx)、NAT 映射行为、过滤行为 → `direct` / `likely_direct` / `relay_likely` / `blocked` |
+| **目标内网节点那台机器** | `ncc_p2p_node` | 那台机器的画像 + 它的**可被打洞入口**开没开（内网出口 NAT 常与开发机完全不同） |
+| **这条路径到底通不通** | `ncc_p2p_check` | 真实对打（0 字节）：`ok:true` + RTT = 通了；`ok:false` 会给出原因与下一步 |
+
+怎么用：
+
+1. 先用 `ncc_p2p_probe` 判「**永远打不通**」的情况（UDP 被封 / 对称 NAT / CGNAT）——这一步不需要登录，
+   也不用等对端，能立刻把「别指望直连」说清楚；
+2. 要跨到某个内网节点，`ncc_p2p_node` 拿它的 `mapped`（对端应发往的地址）与入口状态；
+3. 再用 `ncc_p2p_check` 实测：`addr` 直接对打（不需要登录），或 `peer` 走控制面信令（双方都要登录且
+   **在同一分钟内各跑一次**）。
+
+⚠️ 三个必须说给用户听的事实：
+
+- **打洞必须双方同时发起**。本机 NAT 过滤多为「地址/端口相关」，对端即使开着入口，单纯被动应答
+  **一个包也收不到**（实测：入口 `已应答 0 次`）。所以 `peer` 这个「反向打洞对端」必须由**信令**给，
+  不是配置项。
+- **失败不要降级**：打洞失败 + 没有客户自托管 TURN 时，**明确报「不可达」**。
+  红线：发现 ≠ 授权 ≠ 字节通道；STUN 可由 NCC 托管，**TURN 必须客户自托管**；
+  **NCC 永不中转业务字节**（中心搬运（master/worker `replicate`）是另一条路，不是这里的兜底）。
+- **入口开关不是 Agent 能拍的事**：`ncc registry p2p serve --on` 会在 UDP 上对外开放一个入口，
+  必须由用户在节点上显式执行（工具里只有**只读**的状态查看）。
+
 ## 约定与边界
 
 - **发布前先征求用户同意**：发布是公开可见的对外动作，除非用户明确要求，不要自动发布。
@@ -185,6 +233,9 @@ ncc registry admin overview         # 管理员才有的节点治理（用户/�
   要给人长期权限得用 `ncc grant`。分享只能由「本来就能读那条制品」的人创建。
 - **节点治理（admin）不进 MCP**：禁用账号、重置密码、摘除节点、归档服务条目只走 CLI，
   而且需要管理员身份 —— 这是**对人的动作**，必须由用户自己执行。
+- **P2P 的写动作也不进 MCP**：开/关可被打洞入口（`ncc registry p2p serve --on|--off`）、
+  发/撤票据（`ncc p2p ticket create|revoke`）、授权（`ncc grant set --kind p2p`）都属于
+  「改变谁能进来 / 谁能取什么」的动作，必须由用户显式执行；工具里只有读（画像、入口状态）与探测（打洞实测）。
 - **private 需要付费套餐**，免费账号只能用 `public`。
 - **认领来源**：引用别人的制品时写清 `@命名空间/slug@版本`，便于回溯。
 - 检索、取回、人才目录、服务匹配、公开配置都**不需要登录**；发布、看自己的配置、分享需要凭据

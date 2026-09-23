@@ -213,6 +213,10 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc install <target>` | 安装到本地包目录 |
 | `ncc key list` / `create` / `revoke` / `scopes` | 管理能力令牌（类型 / 作用域 / 命名空间限定 / 过期） |
 | `ncc living` | 把本机作为设备节点上报到你的命名空间 |
+| `ncc p2p probe` / `p2p check <节点>` | 打洞条件预检（纯本地）/ 两端真实建连检查（互打 STUN，≈ ICE connectivity check） |
+| `ncc p2p ticket create/list/verify/revoke` | P2P 票据：谁（哪个节点）能从你这里取哪条资源；连接 ≠ 授权 |
+| `ncc registry p2p self` / `check --peer <ip:port>` | 在**目标节点那台机器**上出 NAT 画像 / 与对端映射真实对打（0 字节） |
+| `ncc registry p2p serve [--on] [--peer <ip:port>]` | 开/关节点的**可被打洞入口**（只应答 STUN）；`--peer` 指定反向打洞对端 |
 | `ncc profile [show <用户名>]` | 查看名片（默认自己，可看别人） |
 | `ncc profile roles` | 列出工作角色目录 |
 | `ncc profile set` | 设置名片字段（先读后写，只覆盖显式给出的字段） |

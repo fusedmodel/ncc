@@ -127,6 +127,8 @@ ncc profile set --headline "Turning vague needs into shipped AI systems" \
                 --roles fde,agent-engineer --availability open
 ncc profile                            # your card + short link
 ncc living --name my-agent --kind agent --capabilities mcp,api   # register a node
+ncc p2p probe                                                   # local hole-punch preflight (no server)
+ncc p2p check @you/mac                                          # real connectivity check (run on both sides)
 ncc nodes                              # my nodes + linked nodes
 ncc terminal
 ```
@@ -219,7 +221,12 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc nodes region` / `recommend` | Region coverage and recommendations (agent-facing) |
 | `ncc services` / `catalog` / `match` / `show` | Services offered: catalog / match by intent / full details of one |
 | `ncc services add` / `rm` | Declare or take down your own services (provider side) |
-| `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `service` \| `share`) |
+| `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `service` \| `share` \| `p2p`) |
+| `ncc p2p probe` | Hole-punch preflight — local NAT profile, no server needed |
+| `ncc p2p check <node>` | Real connectivity check against a peer node (both sides run it; ≈ ICE connectivity check) |
+| `ncc p2p ticket create` / `list` / `verify` / `revoke` | P2P tickets: which node may pull which resource from you |
+| `ncc registry p2p self` / `check --peer <ip:port>` | NAT profile **on the node machine** / real UDP punch against a peer mapping (0 bytes) |
+| `ncc registry p2p serve` `[--on] [--peer <ip:port>]` | Node's punchable UDP entry (STUN replies only); `--peer` sets the reverse-punch peer |
 | `ncc registry add` | Join a self-hosted `ncc-registry` with a one-click intranet link, or key/secret |
 | `ncc registry login` / `join` | Sign in to that node, or host this machine as a node (register + heartbeat) |
 | `ncc registry status` / `nodes` | That node and its cluster (master/worker) / discover nodes on the instance |

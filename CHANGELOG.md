@@ -10,6 +10,75 @@
 
 ## [未发布]
 
+### 新增 · **`ncc`**：`ncc p2p`（跨局域网节点直连）
+
+- `ncc p2p probe`：**纯本地**打洞条件预检（不需要服务器）——同一本地 UDP socket 向多台 STUN
+  请求，判定 NAT **映射行为**；遇到带 `OTHER-ADDRESS` 的服务器（如 `stun.miwifi.com`）就多做
+  RFC 5780 的**过滤行为**分类（`CHANGE-REQUEST` `0x06`/`0x02`，位约定照抄 pion 自带工具）。
+  结论：`direct | likely_direct | relay_likely | blocked`（实测本机：锥形映射 + 端口相关过滤 → `likely_direct`）。
+- `ncc p2p check <节点>`：**真实建连检查** —— 经服务端信令交换双方映射地址，然后双向对打
+  STUN Binding 请求（即 ICE connectivity check 的原理），约 1–3 秒、**不传业务字节**。
+  预期两端同时跑；单边跑会明确告诉你对端该执行什么命令。
+- `ncc p2p {ice,signal,ticket}`：看控制面下发的 ICE 配置 / 信令调试 / 票据（创建·列表·出示·撤销）。
+- 新增授权种类 **`p2p`**：`ncc grant set --user @某人 --kind p2p` —— 允许直连我的**私有节点**
+  （私有节点无法 `link`，这是既有设计）。语义与其它三类独立：连接 ≠ 授权。
+- 实现上**不引新依赖**：STUN 只用到「Binding 请求 + XOR-MAPPED-ADDRESS + OTHER-ADDRESS +
+  CHANGE-REQUEST」几样，手搋比拉 webrtc/tokio 生态划算，交叉编译不受影响。
+- 实测（macOS，两个 `NCC_HOME` 的独立账号 + 两个 living 节点）：两端同时 `check` → **直连可用 ✓，
+  首个往返 15–17 ms**。
+
+### 新增 · **`ncc`** + **`ncc-registry`**：节点侧 P2P（`ncc registry p2p self|check|serve`）
+
+云端 `ncc p2p` 回答的是「**我这台**能不能打到别人」，而内网节点那台机器的出口 NAT 常常完全是另一回事。
+所以这一版把判断能力放到**节点自己身上**（`ncc-registry` 提供接口，CLI 提供命令）：
+
+- `ncc registry p2p self`：在**目标节点那台机器**上出 NAT 画像 + 结论 + ICE 配置 + 入口状态。
+- `ncc registry p2p check --peer ip:port [--wait N]`：从节点侧与一个已知映射地址**真实对打**（0 字节，不传业务）。
+- `ncc registry p2p serve [--on|--off] [--peer ip:port,...]`：开/关**可被打洞入口**（一个 UDP socket，
+  只应答 STUN Binding 请求，不接收业务字节），`--peer` 指定**反向打洞**对端。
+- 节点侧接口：`GET /api/p2p/self`、`POST /api/p2p/check`、`GET|POST /api/p2p/serve`；随服务启动用
+  `NCCR_P2P_SERVE=1`（默认**关**：它会在 UDP 上对外应答）。STUN/TURN 配置：`NCCR_P2P_STUN` / `NCCR_P2P_TURN`。
+- 节点 `GET /api/meta` 增加能力 `p2p`（CLI 按能力放行，老服务端不声明也不是错误）。
+
+**⚠️ 这一版最重要的实测结论（写进 PRD §5.4.1）：纯被动应答在「地址/端口相关过滤」的 NAT 上收不到任何包。**
+本机过滤行为实测就是 `address_and_port_dependent`：映射存在≠能收包，**过滤孔必须自己先发才开**。
+所以入口默认带**反向打洞**（每 300 ms 向 `--peer` 发一个 Binding 请求）—— 两端同时发，孔才互相开。
+实测：两端互指对端映射后，`requestsTaken / responsesSeen` 双向持续增长；把一端换成「没有 peer 的入口」，
+另一端 `responsesSeen` 立刻停止增长。**结论**：入口要真正可用，`peer` 必须由**信令**下发（每个 socket
+映射不同），手写 `--peer` 只用于演示与排障。
+
+### 新增 · Agent 接入包补齐 **P2P**（`ncc_p2p_probe` / `ncc_p2p_check` / `ncc_p2p_node`）
+
+跨网直连的**判断面**现在也接给了 Agent（MCP 工具从 20 → **23 个**）。三个工具算的是**三台不同机器**的条件，
+这正是最容易搞混的地方，所以工具描述与 SKILL.md 里都写明了：
+
+- `ncc_p2p_probe` —— **跑 MCP 的这台机器**的打洞条件预检：**纯本地**，不需登录、不需对端
+  （UDP 出站 / 公网映射 srflx / NAT 映射行为 / 过滤行为），结论 `direct | likely_direct | relay_likely | blocked`。
+  结论是 `relay_likely` / `blocked` 时模型不该承诺直连。
+- `ncc_p2p_node` —— **目标内网节点那台机器**的画像 + 「可被打洞入口」状态（内网出口 NAT 常与开发机完全不同）。
+  只在内网 `ncc-registry` 目标上可用：打到云端控制面目标时会明确告知「云端只有控制面，切到节点目标或用 probe」。
+- `ncc_p2p_check` —— **这条路径到底通不通**：真实对打（0 字节）。`addr` 直接对打（不走信令、不需登录）；
+  `peer` 走控制面信令（需登录、双方要在同一分钟内各跑一次）。失败时回的是「原因 + 下一步」，不是一句超时。
+
+**不进 MCP 的动作**（都是「改变谁能进来 / 谁能取什么」，必须用户自己拍）：开/关打洞入口
+（`ncc registry p2p serve --on|--off`）、发票据/撤销（`ncc p2p ticket create|revoke`）、
+P2P 授权（`ncc grant set --kind p2p`）。工具面只给**读**与**探测**。
+
+同时把「本机预检 / 目标节点画像 / 真实打洞」这三者的区别、以及三条红线（发现 ≠ 授权 ≠ 字节通道；
+STUN 可由 NCC 托管但 **TURN 必须客户自托管**；打洞失败**不降级**为中心中转业务字节）写进了
+`agent/SKILL.md`（含 HTTP API 与 CLI 命令）与 `agent/harness.json`（工具清单 20 → 23）。
+
+实现上无重复逻辑：`ncc p2p probe` / `ncc p2p check` 的**结构化结果**抽成
+`p2p::probe_run` / `p2p::check_flow`（`quiet` 控制是否打印过程信息），CLI 与 MCP 共用同一份，
+人读文本也只留一份 `render_profile` / `render_check`（MCP 的 stdout 只能出协议帧，一行日志都不能漏）。
+
+### 修复 · MCP 模式下 `--base` 提示污染 stdout（会让客户端解析失败）
+
+`ncc mcp --base <地址>` 时，「（--base 命中已有目标 …，本次已切到它）」这类**人读提示**被写到了
+stdout —— 而 MCP 的 stdio 约定是 **stdout 只能出 JSON-RPC 帧**，一行提示就会让客户端报解析错误。
+现在主流程先判定协议模式（`Cmd::Mcp`），所有人类提示统一走 `note()`：正常落 stdout，
+协议模式下自动改走 stderr。
+
 ### 变更 · Agent 接入包（`agent/`）与 MCP 工具面刷新
 
 - `agent/SKILL.md` / `agent/README.md` / `agent/harness.json` 之前停在「9 个工具、只有 `--base`」；

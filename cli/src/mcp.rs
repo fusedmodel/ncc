@@ -35,6 +35,11 @@ NCC Registry 是中立、跨协议的能力制品目录（api / skill / mcp / ha
    ncc_get_config 取一份（**内容默认打码**，只有带 reveal=true 才回明文；敏感配置是静态加密的）。
    要改配置（ncc registry config set / rollback）属于写操作，留在 CLI 里由用户执行。
 7. 人脉（需凭据）：ncc_list_nodes 看节点连接表；ncc_region_profile 看区域分布；ncc_recommend_nodes 按区域要推荐。
+8. 跨局域网直连（P2P，判断面）：ncc_p2p_probe 看**本机**的出网条件（纯本地，结论 direct|likely_direct|relay_likely|blocked）；
+   ncc_p2p_node 看**目标内网节点那台机器**的条件与「可被打洞入口」是否开着；ncc_p2p_check 做真实打洞实测（0 字节）。
+   三条红线要记住：**发现 ≠ 授权 ≠ 字节通道**（能连不等于能取数据）；**STUN 可由 NCC 托管，TURN 必须客户自托管**；
+   **打洞失败就明确报错，绝不降级成 NCC 中转业务字节**。入口开关（`ncc registry p2p serve --on`）、
+   票据（`ncc p2p ticket create/revoke`）与授权都属于用户自己拍的动作，不在 MCP 工具里。
 
 边界：节点（ncc_list_nodes / ncc_discover_nodes）、授权（ncc_list_grants）与你自己声明的服务属于用户的私人数据，
 只在用户问起时用，不要转发给第三方。
@@ -58,6 +63,9 @@ fn tool_capability(tool: &str) -> Option<&'static str> {
             Some("nodes")
         }
         "ncc_list_grants" => Some("grants"),
+        // 节点侧的打洞入口状态由 ncc-registry 的 /api/p2p/self 回答（云端没有这个面）。
+        // 本机预检与真实打洞都在**本地**算（不依赖目标），因此不做能力门禁。
+        "ncc_p2p_node" => Some("p2p"),
         "ncc_list_roles" | "ncc_find_people" | "ncc_get_profile" => Some("profile"),
         _ => None,
     }
@@ -381,6 +389,37 @@ fn tools() -> Vec<Value> {
                 "properties": { "direction": { "type": "string", "description": "outgoing（默认）| incoming" } },
                 "additionalProperties": false
             }
+        }),
+        json!({
+            "name": "ncc_p2p_probe",
+            "description": "本机打洞条件预检（**纯本地**：不需要登录、不需要对端）：UDP 出站能不能用、能否拿到公网映射（srflx）、NAT 映射行为（锥形/对称）与过滤行为（RFC 5780）。结论 direct | likely_direct | relay_likely | blocked。回答「这台机器能不能跟别的节点直连」时先用它；结论是 relay_likely / blocked 时不要承诺直连（TURN 由客户自托管，NCC 不中转业务字节）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "stun": { "type": "string", "description": "只用这些 STUN（逗号分隔，如 stun:stun.qq.com:3478）；不给就先用目标下发的 ICE 配置" },
+                    "offline": { "type": "boolean", "description": "true = 完全不问服务端（纯离线预检）" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_p2p_check",
+            "description": "真实打洞实测（**0 字节**，不传业务数据）：与对端互打 STUN Binding 请求，收到回包即证明这条路径允许入向（≈ ICE connectivity check），耗 2～20 秒。两种用法：addr = 直接对一个映射地址 ip:port 对打（不走信令、不需登录，适合内网节点 `ncc registry p2p self` 报出的 mapped）；peer = 对端节点引用（走控制面信令，需登录，且**两端要在同一分钟内各跑一次**）。⚠️ 打洞必须双方同时发起，单边跑一定失败；本机 NAT 过滤是地址/端口相关时（绝大多数家用与企业网），对方即使开着入口也收不到单边包。不要用中心搬运静默兜底。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "addr": { "type": "string", "description": "对端映射地址 ip:port（与 peer 二选一）；通常来自对端 `ncc_p2p_node` 的 mapped" },
+                    "peer": { "type": "string", "description": "对端节点引用 LD-… 或 @命名空间/节点slug（与 addr 二选一）" },
+                    "from": { "type": "string", "description": "我以哪个节点身份参与（缺省：我名下唯一的 living 节点）" },
+                    "wait": { "type": "integer", "description": "等对端与收包的秒数，默认 12，最大 60" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_p2p_node",
+            "description": "目标 ncc-registry 节点**那台机器**的 NAT 画像与「可被打洞入口」状态（与 ncc_p2p_probe 的区别：那个算的是跑 MCP 的**本机**；内网节点的出口 NAT 常完全是另一回事）。回答「能不能直连那台节点」时用它看 verdict / mapped / 入口是否开着。提示：入口的 peer（对端映射）必须由信令下发才能长期可用，不是配置项。",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }),
     ]
 }
@@ -821,6 +860,62 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             Ok(text(clip(&crate::nodes::render_grants(&v, &dir))))
         })()),
 
+        // ---- 跨局域网直连（P2P，判断面：不搬运业务字节）----
+        // 红线：发现 ≠ 授权 ≠ 字节通道；STUN 可由 NCC 托管，**TURN 必须客户自托管**；
+        // 打洞失败就明确报错，不降级为中心中转。所以这里只做「判断」，不接字节。
+        "ncc_p2p_probe" => ok_or_text((|| {
+            let offline = args.get("offline").and_then(|v| v.as_bool()).unwrap_or(false);
+            let (_, txt) = crate::p2p::probe_run(cfg, sarg("stun").as_deref(), offline);
+            Ok(text(clip(&format!(
+                "（注：这算的是**跑 MCP 的这台机器**，不是目标节点）\n{}",
+                txt.trim_start()
+            ))))
+        })()),
+
+        "ncc_p2p_check" => ok_or_text((|| {
+            let addr = sarg("addr");
+            let peer = sarg("peer");
+            match (&addr, &peer) {
+                (None, None) => anyhow::bail!("需要 addr（对端映射 ip:port）或 peer（对端节点引用）之一"),
+                (Some(_), Some(_)) => {
+                    anyhow::bail!("addr 与 peer 只能给一个：addr 直接对打（不走信令），peer 走控制面信令")
+                }
+                _ => {}
+            }
+            if peer.is_some() {
+                // 走信令要控制面声明 p2p 能力；不声明就明确说清楚，别丢 404 给模型。
+                capability::ensure(cfg, "p2p")?;
+            }
+            let a = crate::p2p::CheckArgs {
+                peer,
+                addr,
+                from: sarg("from"),
+                wait: narg("wait", 12, 60) as u64,
+                stun: sarg("stun"),
+                session: None,
+                // json 只影响 CLI 的输出格式；MCP 靠 quiet=true 静默，这里给什么值都一样。
+                json: false,
+            };
+            let v = crate::p2p::check_flow(cfg, &a, true)?;
+            Ok(text(clip(&crate::p2p::render_check(&v))))
+        })()),
+
+        "ncc_p2p_node" => ok_or_text((|| {
+            // /api/p2p/self 只存在于内网 ncc-registry 节点（云端只有控制面：信令/票据/ICE）。
+            let meta = capability::probe(cfg);
+            if meta.kind == "hub" {
+                anyhow::bail!(
+                    "当前目标是云端控制面（{}）：它只提供 P2P 控制面（信令/票据/ICE），没有节点侧画像。\n  要看内网节点那台机器的条件：切到节点目标（`ncc target use <节点名>`）再调；\n  要看**本机**条件：用 ncc_p2p_probe。",
+                    cfg.base_url()
+                );
+            }
+            let tok = token
+                .clone()
+                .context("看节点画像需要登录：先运行 `ncc login`（或 `ncc registry login`），或配置 API-Key")?;
+            let v = crate::registryp2p::self_json(cfg, &tok)?;
+            Ok(text(clip(&render_p2p_node(&v))))
+        })()),
+
         // ---- 对外服务（NCC Service）----
         "ncc_match_services" => ok_or_text((|| {
             let intent = sarg("intent")
@@ -904,6 +999,81 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
 }
 
 /* ---------------- 小工具 ---------------- */
+
+/// 节点侧画像的人读文本（MCP 专用：与 `ncc registry p2p self` 的信息一致，
+/// 但改成适合模型快速抓要点的排布）。
+fn render_p2p_node(v: &Value) -> String {
+    let s = |p: &str| v.pointer(p).and_then(|x| x.as_str()).unwrap_or("");
+    let n = |p: &str| v.pointer(p).and_then(|x| x.as_u64()).unwrap_or(0);
+    let p = v.get("profile").cloned().unwrap_or(Value::Null);
+    let serve = v.get("serve").cloned().unwrap_or(Value::Null);
+    let mut out = format!(
+        "目标节点 {}（{} · {}{}）\n",
+        s("/node/id"),
+        s("/node/name"),
+        s("/node/role"),
+        if s("/node/region").is_empty() {
+            String::new()
+        } else {
+            format!(" · {}", s("/node/region"))
+        },
+    );
+    out.push_str(&format!(
+        "  本机出网 IP {}（{}）· UDP 本地端口 {}\n  公网映射 {}\n",
+        s("/profile/localIpv4"),
+        s("/profile/localAddrKind"),
+        n("/profile/localPort"),
+        if s("/profile/mapped").is_empty() { "（没探到）" } else { s("/profile/mapped") },
+    ));
+    out.push_str(&format!(
+        "  STUN 可达 {}/{} · 映射 {}（{}）· 过滤 {}（{}）\n  结论 {}\n  建议：{}\n",
+        n("/profile/serversReached"),
+        n("/profile/serversTried"),
+        s("/profile/mappingBehavior"),
+        s("/profile/mappingMethod"),
+        s("/profile/filteringBehavior"),
+        s("/profile/filteringMethod"),
+        s("/profile/verdict"),
+        s("/profile/advice"),
+    ));
+    let servers = p
+        .get("servers")
+        .and_then(|x| x.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "  STUN 列表：{}\n",
+        if servers.is_empty() { "（未配置，用内置默认）" } else { &servers }
+    ));
+    if serve.get("on").and_then(|x| x.as_bool()) == Some(true) {
+        let peers = serve
+            .get("peers")
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  可被打洞入口：已开 —— 对端应发往 {} · 已应答 {} 次 · 收到对端回包 {} 次\n",
+            if s("/serve/mapped").is_empty() { "-" } else { s("/serve/mapped") },
+            n("/serve/requestsTaken"),
+            n("/serve/responsesSeen"),
+        ));
+        out.push_str(&format!(
+            "    反向打洞对端：{}\n",
+            if peers.is_empty() { "无（对方可能打不进：地址/端口相关过滤的 NAT 必须双方同时发）" } else { &peers }
+        ));
+        if !s("/serve/note").is_empty() {
+            out.push_str(&format!("    提示：{}\n", s("/serve/note")));
+        }
+    } else {
+        out.push_str("  可被打洞入口：关（别人打不进来；要开得由用户在节点上跑 `ncc registry p2p serve --on`）\n");
+    }
+    out
+}
 
 /// 文本类制品的粗略判定（决定是直接把内容给模型，还是只给下载地址）。
 fn is_texty(url: &str) -> bool {

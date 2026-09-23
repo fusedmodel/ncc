@@ -9,7 +9,7 @@
       "requires": ["ncc"]
     },
     "protocols": ["mcp"],
-    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、读团队托管配置、按角色找人。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化。",
+    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、读团队托管配置、按角色找人，以及判断跨局域网直连（P2P）条件。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化。",
     "tools": [
       "ncc_list_kinds",
       "ncc_search_catalog",
@@ -30,14 +30,18 @@
       "ncc_discover_nodes",
       "ncc_region_profile",
       "ncc_recommend_nodes",
-      "ncc_list_grants"
+      "ncc_list_grants",
+      "ncc_p2p_probe",
+      "ncc_p2p_check",
+      "ncc_p2p_node"
     ],
     "inputs": [
       { "name": "connection", "type": "string", "description": "连接目标名（ncc target list）；缺省用当前目标。云端 hub / 内网节点如 office" },
       { "name": "ref", "type": "string", "description": "引用：制品 @namespace/slug 或 R-… / 服务 @提供方/标识 / 配置 @命名空间/slug（旧名 target 仍兼容）" },
       { "name": "query", "type": "string", "description": "检索关键词" },
       { "name": "kind", "type": "string", "description": "制品类型过滤" },
-      { "name": "intent", "type": "string", "description": "服务匹配：一句人话意图（如「帮我订杭州的酒店」）" }
+      { "name": "intent", "type": "string", "description": "服务匹配：一句人话意图（如「帮我订杭州的酒店」）" },
+      { "name": "addr", "type": "string", "description": "P2P：对端映射地址 ip:port（直连对打时用，通常来自对端 ncc_p2p_node 的 mapped）" }
     ],
     "outputs": [
       { "name": "content", "type": "text", "description": "文本结果（检索列表 / 元数据 JSON / 制品正文）" }
