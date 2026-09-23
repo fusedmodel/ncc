@@ -15,6 +15,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/fusedmodel/ncc/ncc-registry/internal/config"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/model"
+	"github.com/fusedmodel/ncc/ncc-registry/internal/p2p"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/secretbox"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/storage"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/store"
@@ -39,6 +41,11 @@ type Server struct {
 	// Box 配置内容的静态加密器（secret=true 的配置）。密钥由节点密钥派生，
 	// 换节点/丢数据目录就打不开 —— 这是设计意图，不是缺陷。
 	Box *secretbox.Box
+
+	// p2pResponder 可选的「可被打洞」入口（NCCR_P2P_SERVE / p2p.serve 打开）。
+	// 它只应答 STUN Binding 请求，不接收任何业务字节。
+	p2pMu        sync.Mutex
+	p2pResponder *p2p.Responder
 }
 
 // AuthInfo 认证上下文（JWT 会话 / 节点令牌 / API-Key）。
@@ -184,6 +191,7 @@ var DefaultScopes = []string{
 	"registry:read", "registry:download", "registry:publish",
 	"nodes:read", "nodes:write", "grants:read", "grants:write",
 	"config:read", "config:write",
+	"p2p:read", "p2p:write",
 }
 
 // NodeTicketScopes 接入票据兑换出的节点令牌默认作用域：
@@ -199,6 +207,7 @@ var AllScopes = []string{
 	"nodes:read", "nodes:write",
 	"grants:read", "grants:write",
 	"config:read", "config:write",
+	"p2p:read", "p2p:write",
 	"keys:write",
 }
 

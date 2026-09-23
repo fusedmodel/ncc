@@ -56,6 +56,13 @@ type Config struct {
 	// 注册门禁：留空 = 内网开放注册（默认）；设了值 = 必须带邀请码。
 	InviteCode string
 
+	// P2P：跨局域网直连的**判断与被打洞**（不搬运业务字节；见平台 prd/ncc-p2p-data.md）。
+	// STUN 可以多台（判 NAT 映射行为要靠「同一本地端口对不同目标是否一致」）；
+	// TURN 必须是客户自托管的（NCC 不提供默认数据面 relay）。
+	P2PSTUN  []string
+	P2PTURN  []string
+	P2PServe bool // 开一个 UDP 入口应答打洞请求（等别人打进来）
+
 	CORSOrigins string
 }
 
@@ -96,6 +103,21 @@ func envBool(key string, def bool) bool {
 		return false
 	}
 	return def
+}
+
+// envList 逗号分隔列表（去空、去空白）；未设置时返回 nil。
+func envList(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, v := range strings.Split(raw, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // Load 读取配置。会确保各目录存在，并落盘 node-id / jwt-secret，
@@ -164,6 +186,10 @@ func Load() (*Config, error) {
 
 		InviteCode:  strings.TrimSpace(os.Getenv("NCCR_INVITE_CODE")),
 		CORSOrigins: os.Getenv("NCCR_CORS_ORIGINS"),
+
+		P2PSTUN:  envList("NCCR_P2P_STUN"),
+		P2PTURN:  envList("NCCR_P2P_TURN"),
+		P2PServe: envBool("NCCR_P2P_SERVE", false),
 	}
 
 	// 身份与密钥：缺省落盘，保证重启后不变。

@@ -5,11 +5,13 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/fusedmodel/ncc/ncc-registry/internal/config"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/model"
+	"github.com/fusedmodel/ncc/ncc-registry/internal/p2p"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/secretbox"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/storage"
 	"github.com/fusedmodel/ncc/ncc-registry/internal/store"
@@ -30,6 +32,15 @@ func NewRouter(cfg *config.Config, st *store.Store, blob storage.Storage) *gin.E
 	s := &Server{Cfg: cfg, St: st, Blob: blob}
 	s.hub = newClusterHub(cfg, st)
 	s.hub.start()
+	// P2P 可被打洞入口：默认关（它会在 UDP 上对外应答）；NCCR_P2P_SERVE=1 时随服务启动。
+	if cfg.P2PServe {
+		if r, err := p2p.StartResponder(cfg.P2PSTUN, 3*time.Second); err == nil {
+			s.p2pResponder = r
+			logf("p2p.serve 随服务开启 listen=%s mapped=%s", r.Addr(), r.MappedAddr())
+		} else {
+			logf("p2p.serve 启动失败（打洞入口不可用，其余功能不受影响）: %v", err)
+		}
+	}
 	// 配置内容的静态加密（secret=true 的配置）。密钥由节点密钥派生；
 	// 构造失败只影响「存敏感配置」，其余功能照常 —— 不因一个可选能力把服务启动卡死。
 	if box, err := secretbox.New(cfg.JWTSecret); err == nil {
@@ -145,6 +156,13 @@ func NewRouter(cfg *config.Config, st *store.Store, blob storage.Storage) *gin.E
 	// 接入短链落地页（secret 在 URL fragment，服务端看不到）。
 	r.GET("/j/:key", s.joinPage)
 
+	// P2P：判断本节点打不打得到、可选开一个可被打洞的入口。
+	// 与云端 ncc-platform 的 /api/p2p/* 互补：那边是信令/票据，这边是「本机 NAT 状况 + 真实对打」。
+	api.GET("/p2p/self", requireScope("p2p:read"), s.p2pSelf)
+	api.POST("/p2p/check", requireScope("p2p:write"), s.p2pCheck)
+	api.GET("/p2p/serve", requireScope("p2p:read"), s.p2pServeGet)
+	api.POST("/p2p/serve", requireScope("p2p:write"), s.p2pServeSet)
+
 	// 制品分享链接：/api/shares 管自己的；/s/:token 是**公开**的领取入口（不用登录）。
 	// 与接入短链刻意同形：/j/<key> 换一个节点身份，/s/<token> 换一次读取权。
 	sh := api.Group("/shares")
@@ -249,7 +267,7 @@ func (s *Server) meta(c *gin.Context) {
 		// capabilities 是**声明**（命令面按它放行），features 是给人读的一句话。
 		// 本地节点将来声明 services / profile 时，CLI 的同名命令会直接生效，不用改客户端。
 		"capabilities": []string{
-			"registry", "config", "share", "nodes", "grants", "access", "cluster", "admin",
+			"registry", "config", "share", "nodes", "grants", "access", "cluster", "admin", "p2p",
 		},
 		"counts": gin.H{
 			"artifacts": artifacts, "hostedNodes": nodes, "users": users,
@@ -275,6 +293,7 @@ func (s *Server) meta(c *gin.Context) {
 			"grants: explicit access grants (connect != authorize)",
 			"access: join by key/secret or one-click intranet link",
 			"cluster: master/worker multi-node, routing, replicate & revoke",
+			"p2p: NAT profile + real hole-punch check between nodes (no business bytes relayed)",
 		},
 		"console": s.Cfg.PublicURL + "/",
 		"auth": gin.H{

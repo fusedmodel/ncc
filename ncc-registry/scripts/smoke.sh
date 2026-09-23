@@ -81,6 +81,7 @@ say "0. 构建 + 启动两节点（master:${PORT_M} · worker:${PORT_W}）"
 NCCR_PORT="${PORT_M}" NCCR_DATA_DIR="${TMP}/m" NCCR_NODE_NAME="smoke-master" \
   NCCR_NODE_REGION="测试-内网" \
   NCCR_BLOB_DIR="${TMP}/blobs-master" NCCR_DB_PATH="${TMP}/db/master.sqlite" \
+  NCCR_P2P_STUN="127.0.0.1:9" \
   "${TMP}/ncc-registry" >"${TMP}/master.log" 2>&1 &
 PID_M=$!
 
@@ -570,6 +571,46 @@ check "meta：admins" "1" "$(printf '%s' "${META}" | jval counts.admins)"
 check "meta：有可用 admin 凭据" "True" "$(printf '%s' "${META}" | jval auth.adminKey)"
 check "meta：features 含 admin" "1" "$(printf '%s' "${META}" | jval features | grep -c 'admin:' || true)"
 check "meta：features 含 share" "1" "$(printf '%s' "${META}" | jval features | grep -c 'share:' || true)"
+check "meta：features 含 p2p" "1" "$(printf '%s' "${META}" | jval features | grep -c 'p2p:' || true)"
+
+say "13. 节点侧 P2P：画像 / 真实对打 / 可被打洞入口"
+# 13.1 画像：在哪台机器上跑就看哪台（含入口状态与 ICE 配置）。STUN 指向一个没人听的端口，
+#     让它按超时快速收场，不依赖外网。
+check_code "未登录看画像被拒" 401 "${MASTER}/api/p2p/self"
+PSELF="$(curlv "${MASTER}/api/p2p/self" -H "Authorization: Bearer ${TOK_M}")"
+check "画像带结论字段" "1" "$(printf '%s' "${PSELF}" | jval profile.verdict | grep -c . || true)"
+check "入口默认关" "False" "$(printf '%s' "${PSELF}" | jval serve.on)"
+check "画像带 STUN 列表" "1" "$(printf '%s' "${PSELF}" | jval ice.stun | grep -c . || true)"
+
+# 13.2 入口开关（只应答 STUN，不接收业务字节）
+SERVE_ON="$(curlv -X POST "${MASTER}/api/p2p/serve" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"on":true}')"
+check "开入口" "True" "$(printf '%s' "${SERVE_ON}" | jval serve.on)"
+check "入口报出监听地址" "1" "$(printf '%s' "${SERVE_ON}" | jval serve.listen | grep -c ':' || true)"
+check "入口报出对端回包计数（反向打洞可见）" "0" "$(printf '%s' "${SERVE_ON}" | jval serve.responsesSeen)"
+SERVE_PEER="$(curlv -X POST "${MASTER}/api/p2p/serve" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"on":true,"peer":"127.0.0.1:9"}')"
+check "指定反向打洞对端" "127.0.0.1:9" "$(printf '%s' "${SERVE_PEER}" | jval serve.peers.0)"
+check "纯 --on 不会抹掉已配对端" "127.0.0.1:9" \
+  "$(curlv -X POST "${MASTER}/api/p2p/serve" -H "Authorization: Bearer ${TOK_M}" \
+     -H 'Content-Type: application/json' -d '{"on":true}' | jval serve.peers.0)"
+check_code "peer 格式不对（400）" 400 -X POST "${MASTER}/api/p2p/serve" -H "Authorization: Bearer ${TOK_M}" \
+  -H 'Content-Type: application/json' -d '{"on":true,"peer":"不是地址"}'
+check "关入口" "False" \
+  "$(curlv -X POST "${MASTER}/api/p2p/serve" -H "Authorization: Bearer ${TOK_M}" \
+     -H 'Content-Type: application/json' -d '{"on":false}' | jval serve.on)"
+
+# 13.3 从节点侧真实对打：不传业务字节；拿不到自身映射时应报 503（p2p_probe_failed）而不是 500。
+CHECK_CODE="$(curl -sS -o "${TMP}/p2p-check.json" -w '%{http_code}' -X POST "${MASTER}/api/p2p/check" \
+  -H "Authorization: Bearer ${TOK_M}" -H 'Content-Type: application/json' \
+  -d '{"peer":"127.0.0.1:9","waitSec":1}')"
+if [[ "${CHECK_CODE}" == "200" || "${CHECK_CODE}" == "503" ]]; then
+  good "真实对打返回 200（可用）/ 503（本地拿不到映射），不是 500"
+else
+  bad "真实对打返回 ${CHECK_CODE}（期望 200 或 503）"
+fi
+check "真实对打结果里有 ok 或明确失败码" "1" \
+  "$(grep -c '"ok":\|p2p_probe_failed' "${TMP}/p2p-check.json" || true)"
 
 printf '\n\033[1m结果：%d 项通过，%d 项失败\033[0m\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]] || {

@@ -26,6 +26,7 @@ NCCR_PORT=8282 ./dist/ncc-registry          # → http://localhost:8282
 | **分享链接** | 把一条制品变成**临时下载地址**发出去：对方不用登录、不用装 CLI；可限次 / 限时 / 撤销 | `/api/shares*`、`/s/:token` |
 | **节点管理（admin）** | 节点管理员管**用户 / 节点 / 服务**（禁用启停、重置密码、摘除、归档），每个动作都进审计 | `/api/admin/*` |
 | **多节点（master/worker）** | worker 注册 + 心跳上报本地目录；master 聚合目录、做能力路由、代理字节，还能把制品**分发**到 worker 并在下架时**回收** | `/api/cluster*` |
+| **打洞条件（P2P）** | 在**这台机器**上判断跨网可不可达：NAT 画像 + 与对端映射真实对打（0 字节）；可选开一个**只应答 STUN** 的可被打洞入口 | `/api/p2p/self`、`/api/p2p/check`、`/api/p2p/serve` |
 
 ## 架构
 
@@ -396,6 +397,9 @@ ncc registry rm @alice/x --yes                                         # 下架 
 | `NCCR_NODE_TTL` | `60s` | 托管节点/worker 的在线判定窗口（master 按 `4×` 清理 worker） |
 | `NCCR_INVITE_CODE` | 空 | 空 = 内网开放注册；设了则注册必须带邀请码（逗号分隔多个） |
 | `NCCR_CONSOLE` | `true` | 是否托管内置 Web 控制台 |
+| `NCCR_P2P_SERVE` | `false` | 随服务开启**可被打洞入口**（一个 UDP socket，只应答 STUN Binding；默认关） |
+| `NCCR_P2P_STUN` | 内置多台 | STUN 列表（逗号分隔）—— 用自己的可达 STUN，NAT 画像与打洞都靠它 |
+| `NCCR_P2P_TURN` | 空 | 自托管 TURN 列表。**红线**：TURN 必须客户自托管，NCC 不中转业务字节 |
 | `NCCR_CORS_ORIGINS` | 空 | 跨域白名单（逗号分隔，`*` 全放行） |
 
 > 约定：`NCCR_*` 与平台的 `NCC_*` 互不干扰，两套服务可以并排跑在同一台机器上。
@@ -406,7 +410,7 @@ ncc registry rm @alice/x --yes                                         # 下架 
 
 | 方法/路径 | 说明 |
 |---|---|
-| `GET /api/health` · `GET /api/meta` | 存活与本节点自述（角色 / 节点 id / 规模 / 控制台地址） || `GET /api/meta` 的 `kind` 与 `capabilities` | **节点声明自己的能力**（`node`；`registry` / `config` / `share` / `nodes` / `grants` / `access` / `cluster` / `admin`）。CLI / MCP 按这份清单放行命令 —— 声明了 `services` / `profile` 那天，同名命令在本节点上就直接可用 || `GET /api/registry/kinds` | 制品类型与数量 |
+| `GET /api/health` · `GET /api/meta` | 存活与本节点自述（角色 / 节点 id / 规模 / 控制台地址） || `GET /api/meta` 的 `kind` 与 `capabilities` | **节点声明自己的能力**（`node`；`registry` / `config` / `share` / `nodes` / `grants` / `access` / `cluster` / `admin` / `p2p`）。CLI / MCP 按这份清单放行命令 —— 声明了 `services` / `profile` 那天，同名命令在本节点上就直接可用 || `GET /api/registry/kinds` | 制品类型与数量 |
 | `GET /api/registry?q=&kind=&tag=&namespace=&page=&size=` | 目录检索（本节点权威） |
 | `GET /api/registry/<@ns/slug\|A-…>` | 制品详情 |
 | `GET /api/registry/<ref>/download` | 下载元数据（`url` / `sha256` / `size` / `via`） |
@@ -450,6 +454,15 @@ ncc registry rm @alice/x --yes                                         # 下架 
 | `POST /api/configs/<ref>/rollback` | 回滚到某一版（作为新版本写回，历史不改写） |
 | `GET /api/configs/bundle?namespace=&env=&kind=&tag=&secrets=1&reveal=1` | 成组拉取（`env` 命中 `prod` 与 `any`；默认跳过 `secret`） |
 | `POST /api/shares` · `GET /api/shares[?mine=1\|all=1]` · `DELETE /api/shares/:id` | 建 / 列 / 撤销分享链接（`all=1` 需管理员；只能撤自己的，管理员可撤任意） |
+
+打洞条件（P2P；判断面，**不搬运业务字节**，需登录）：
+
+| 方法/路径 | 说明 |
+|---|---|
+| `GET /api/p2p/self` | 本节点 NAT 画像 + 结论 + ICE 配置 + 入口状态（在哪台机器上跑就看哪台） |
+| `POST /api/p2p/check` `{peer, waitSec}` | 与一个已知映射地址真实对打（0 字节）；本地拿不到映射时返回 `503 p2p_probe_failed` |
+| `GET /api/p2p/serve` | 可被打洞入口状态（`mapped` / `requestsTaken` / `responsesSeen` / `peers`） |
+| `POST /api/p2p/serve` `{on, peer?}` | 开/关入口；`peer`（`ip:port`，可逗号分隔）是**反向打洞**对端，纯 `{on:true}` 不覆盖已配的 `peer` |
 
 需**节点管理员**（会话管理员账号，或 `X-NCC-Admin-Key` + `X-NCC-Admin-Secret`）：
 
@@ -529,6 +542,14 @@ bash scripts/smoke.sh      # 自带启停：master + worker 两节点，端口 1
 
 - **制品签名与版本锁定**：目前是 `sha256` 校验 + 版本号，未做发布者签名。
 - **字节面增强**：本地磁盘 → S3 兼容对象存储（Ceph RGW / MinIO）；worker 侧缓存策略与失效。
-- **跨网互联**：目前是同内网直连 HTTP；跨网需要打洞/中继（属于 Gateway 范畴，见平台 prd）。
+- **跨网互联**：目前是同内网直连 HTTP；跨网需要打洞/中继。选型与实测已收敛：
+  `pion/webrtc` + 控制面信令 + 客户自托管 TURN，见 `ncc-platform/prd/ncc-p2p-data.md`
+  （实验装置 `spike/p2p-transport/`，本机实测直连建连 ~90ms / ~50 MB/s、relay-only 建连 ~2s）。
+  **本节点已具备 P2P 判断面**：`/api/p2p/self|check|serve`（CLI：`ncc registry p2p self|check|serve`，
+  `NCCR_P2P_SERVE=1` 随服务开入口）—— 在这台机器上出 NAT 画像、与对端映射真实对打、并可选开一个
+  只应答 STUN 的可被打洞入口。**注意**：入口的 `peer`（对端映射）必须由信令下发才可长期可用
+  （每个 socket 的映射都不同）；手写 `ncc registry p2p serve --peer ip:port` 只用于演示排障。
+  实测结论：本机 NAT 过滤为 `address_and_port_dependent` 时**纯被动应答收不到任何包**，必须双方同时发。
+  字节面（真正的传输）尚未接上，见 PRD 的 P2.2。
 - **票据的可观测性**：票据使用记录（谁、何时、哪台机器兑换）目前只记最后使用时间与次数，
   没有逐次审计；节点令牌无法单独吊销（改票据作用域或换密钥需重签）。
