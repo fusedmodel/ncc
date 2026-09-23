@@ -544,7 +544,7 @@ bash scripts/smoke.sh      # 自带启停：master + worker 两节点，端口 1
 - **字节面增强**：本地磁盘 → S3 兼容对象存储（Ceph RGW / MinIO）；worker 侧缓存策略与失效。
 - **跨网互联**：目前是同内网直连 HTTP；跨网需要打洞/中继。选型与实测已收敛：
   `pion/webrtc` + 控制面信令 + 客户自托管 TURN，见 `ncc-platform/prd/ncc-p2p-data.md`
-  （实验装置 `spike/p2p-transport/`，本机实测直连建连 ~90ms / ~50 MB/s、relay-only 建连 ~2s）。
+  （实验装置 `ncc-platform/spike/p2p-transport/`，本机实测直连建连 ~90ms / ~50 MB/s、relay-only 建连 ~2s）。
   **本节点已具备 P2P 判断面**：`/api/p2p/self|check|serve`（CLI：`ncc registry p2p self|check|serve`，
   `NCCR_P2P_SERVE=1` 随服务开入口）—— 在这台机器上出 NAT 画像、与对端映射真实对打、并可选开一个
   只应答 STUN 的可被打洞入口。**注意**：入口的 `peer`（对端映射）必须由信令下发才可长期可用
