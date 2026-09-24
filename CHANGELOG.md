@@ -1,14 +1,33 @@
 # 更新日志（CHANGELOG）
 
-本仓库同时维护两个可分发物，条目里用 **粗体** 标明归属：
+本仓库维护一个可分发物：**`ncc`** —— 命令行客户端（`cli/`，Rust，bin: `ncc`）
++ npm 包装（`packages/ncc-cli/`，`@fusedmodel/ncc-cli`）。
 
-- **`ncc`** —— 命令行客户端（`cli/`，Rust，bin: `ncc`）+ npm 包装（`packages/ncc-cli/`，`@fusedmodel/ncc-cli`）
-- **`ncc-registry`** —— 内网托管节点（`ncc-registry/`，Go 单二进制）
+> **`ncc-registry` 已独立**（2026-09-24）：内网托管节点搬到了
+> [`fusedmodel/ncc-registry`](https://github.com/fusedmodel/ncc-registry)，
+> 并**从那边的 `v0.1.0` 起走自己的版本线** —— 它的变更历史看那个仓库的 CHANGELOG。
+> 这里以 git submodule（`ncc-registry/`）引入；**下面 `[未发布]` 及更早版本里**
+> **属于 `ncc-registry` 的条目保留原样**，只作历史记录，不再更新。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 「怎么用」看 `README.zh-CN.md` 与各组件 README；**本文件只回答「这一版比上一版多了什么」**。
 
 ## [未发布]
+
+### 变更 · **`ncc-registry`** 独立成库，本仓库改用 submodule 引入
+
+- 内网托管节点搬到 [`fusedmodel/ncc-registry`](https://github.com/fusedmodel/ncc-registry)，
+  module 路径 `github.com/fusedmodel/ncc/ncc-registry` → `github.com/fusedmodel/ncc-registry`。
+  原来所有代码都在 `internal/` 下，模块外 import 不到任何一个包 —— 拆出来时把
+  `config` / `model` / `storage` / `store` / `httpapi` 提到顶层成为**公开包**，
+  `p2p` / `secretbox` 留在 `internal/`。
+- 那个仓库同时发布了二进制（`cmd/ncc-registry` —— 顺带修好了一个一直存在的缺口：
+  本仓库的 `README` / `ncc-registry/deploy/Dockerfile` / `scripts/smoke.sh` 一直在
+  `go build ./cmd/ncc-registry`，但这个入口**从来没有被提交过**）与库本身，
+  **从那边的 `v0.1.0` 起走自己的版本线**，变更历史见那个仓库的 CHANGELOG。
+- 本仓库路径 `ncc-registry/` 现在是 **git submodule**：直接 `git clone` 该目录为空，
+  需要 `--recurse-submodules` 或 `git submodule update --init`。CLI（`cli/`）与
+  npm 包不受影响 —— `ncc registry …` 走的是 HTTP 契约，不依赖源码在同一仓库里。
 
 ### 新增 · **`ncc`**：`ncc p2p`（跨局域网节点直连）
 

@@ -644,9 +644,14 @@ To distribute your own builds through either path, set `NCC_RELEASE_BASE` to the
 
 ### Inside a private network: `ncc-registry`
 
-[`ncc-registry`](ncc-registry/) is a self-contained intranet node — a single Go binary that hosts
-**artifacts**, hosts **nodes** (your agents and services), and lets them **discover and connect to each
-other**. It scales out as one `master` plus any number of `worker` edge nodes:
+[`ncc-registry`](https://github.com/fusedmodel/ncc-registry) is a self-contained intranet node — a single
+Go binary (also an importable Go library) that hosts **artifacts**, hosts **nodes** (your agents and
+services), and lets them **discover and connect to each other**. It scales out as one `master` plus any
+number of `worker` edge nodes.
+
+It lives in its own repository and is vendored here as a **git submodule** (`ncc-registry/`), so a plain
+clone leaves that directory empty — use `git clone --recurse-submodules`, or `git submodule update --init`
+in an existing checkout:
 
 ```bash
 cd ncc-registry && go build -o dist/ncc-registry ./cmd/ncc-registry
@@ -774,7 +779,8 @@ Prebuilt targets: `darwin` (x86_64, arm64), `linux` (x86_64, arm64), `windows` (
 ```
 cli/                 Rust crate (bin: ncc)
 packages/ncc-cli/    npm wrapper (@fusedmodel/ncc-cli) — launcher + binary downloader
-ncc-registry/        Self-hosted intranet node (Go, single binary): artifacts + nodes + master/worker cluster
+ncc-registry/        Self-hosted intranet node — git submodule → github.com/fusedmodel/ncc-registry
+                     (Go: single binary + importable library): artifacts + nodes + master/worker cluster
 agent/               Agent integration pack (MCP config, SKILL.md, harness manifest)
 release/bin/         Checked-in prebuilt binaries + checksums.txt
 scripts/             build-release.sh (cross-compile + checksums)

@@ -1,0 +1,3 @@
+[submodule "ncc-registry"]
+	path = ncc-registry
+	url = git@github.com:fusedmodel/ncc-registry.git

@@ -660,9 +660,12 @@ ncc me
 
 ### 内网形态：`ncc-registry`
 
-[`ncc-registry`](ncc-registry/) 是一个自包含的内网节点：单个 Go 二进制，同时**托管制品**、
-**托管节点**（你的 Agent 与服务），并让它们**互相发现、连起来**。它可以按「一个 `master` +
-任意多个 `worker` 边缘节点」铺开：
+[`ncc-registry`](https://github.com/fusedmodel/ncc-registry) 是一个自包含的内网节点：单个 Go 二进制
+（同时也是一个可 `go get` 的 Go 库），同时**托管制品**、**托管节点**（你的 Agent 与服务），
+并让它们**互相发现、连起来**。它可以按「一个 `master` + 任意多个 `worker` 边缘节点」铺开。
+
+它有自己的仓库，在这里以 **git submodule**（`ncc-registry/`）的形式引入 —— 所以直接 clone 的话
+那个目录是空的：用 `git clone --recurse-submodules`，或在已有检出里跑 `git submodule update --init`：
 
 ```bash
 cd ncc-registry && go build -o dist/ncc-registry ./cmd/ncc-registry
@@ -788,7 +791,10 @@ bash scripts/build-release.sh --all    # 交叉编译全部目标（需 `rustup 
 
 ```
 cli/                 Rust crate（bin: ncc）
-packages/ncc-cli/    npm 包装（@fusedmodel/ncc-cli）—— 启动器 + 二进制下载ncc-registry/        内网自托管节点（Go 单二进制）：制品托管 + 节点托管 + master/worker 多节点agent/               Agent 接入包（MCP 配置、SKILL.md、harness 契约）
+packages/ncc-cli/    npm 包装（@fusedmodel/ncc-cli）—— 启动器 + 二进制下载
+ncc-registry/        内网自托管节点 —— git submodule → github.com/fusedmodel/ncc-registry
+                     （Go：单二进制 + 可 import 的库）：制品托管 + 节点托管 + master/worker 多节点
+agent/               Agent 接入包（MCP 配置、SKILL.md、harness 契约）
 release/bin/         入库的预编译二进制 + checksums.txt
 scripts/             build-release.sh（交叉编译 + 校验和）
 ```
