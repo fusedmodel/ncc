@@ -245,6 +245,7 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc terminal [status\|setup]` | 打开能力命令台 / 查看 POSIX 运行时 |
 | `ncc upgrade` | 把 CLI 二进制就地升级到最新发布版（`--check` 只检查不下载，`--force` 强制重装）|
 | `ncc mcp` | 以 **MCP server**（stdio）启动，让任意 Agent 驱动 NCC |
+| `ncc gateway init` / `check` / `run` / `status` / `audit` | **NCC Gateway（S2a）**：固定路由的白名单代理 —— 提供出口（`accept`）或借对端出口（`forward`）。调用方**不能指定目标地址**；出站凭据只来自配置 `inject`（调用方的 `Authorization` 不透传）；本地 JSONL 审计只记元数据 |
 | `ncc help <command>` | 查看任意命令的自动生成帮助 |
 
 全局参数：

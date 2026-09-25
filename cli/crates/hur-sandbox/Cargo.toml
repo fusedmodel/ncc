@@ -1,0 +1,29 @@
+# `hur` 的 L1 执行引擎（wasmtime 沙箱）。
+#
+# 2026-09-25 从 harnessuse（`agent/src-tauri/crates/hur-sandbox`）**整包搬入本仓**：
+# `ncc` 是 harness-use 事实上的执行引擎，执行侧留在另一个仓库只会让
+# 「计划在 ncc、执行在客户端」变成两套要同步的实现。搬过来时**一行逻辑未改**，
+# 连它那 10 个安全保证测试（死循环 / 内存炸弹 / 越权工具 / 越权外呼…）一起带过来。
+#
+# 它不认识 hur 的包结构，只吃「入口字节 + 限额 + 宿主能力桥」三样东西 ——
+# 所以能被单测，也只能做一件事：把策略算出来的限额**如实执行**。
+[package]
+name = "hur-sandbox"
+version = "0.1.0"
+edition = "2021"
+description = "hur 的 L1 执行引擎：wasmtime 沙箱（fuel + epoch + 内存上限 + 能力白名单）"
+# 与 hur-core 同一口径：本仓整体 Apache-2.0，这两个 crate 保留 MIT
+license = "MIT"
+repository = "https://github.com/fusedmodel/ncc"
+publish = false
+
+[lib]
+name = "hur_sandbox"
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 关掉默认特性：不要 component-model / async / pooling / cache / gc，把体积与编译时间压下来
+wasmtime = { version = "36", default-features = false, features = ["cranelift", "runtime", "std", "wat"] }

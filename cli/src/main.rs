@@ -3,7 +3,12 @@ mod api;
 mod capability;
 mod config;
 mod configs;
+mod gateway;
 mod hur;
+// 本机执行（`ncc hur run --exec`）。只在带 sandbox feature 时编译进来
+// （默认开；`--no-default-features` 得到不含 wasmtime 的瘦身构建）。
+#[cfg(feature = "sandbox")]
+mod hurrun;
 mod mcp;
 mod nodes;
 mod p2p;
@@ -69,8 +74,10 @@ enum Cmd {
     },
     /// 登录
     Login {
-        #[arg(long)] email: String,
-        #[arg(long)] password: String,
+        #[arg(long, default_value = "")] email: String,
+        #[arg(long, default_value = "")] password: String,
+        /// 直接拿一个 API-Key 当登录态（机器人 / 桌面端绑定用，不必知道密码）
+        #[arg(long, default_value = "")] api_key: String,
     },
     /// 登出
     Logout,
@@ -122,8 +129,9 @@ enum Cmd {
     Upgrade(upgrade::UpgradeArgs),
     /// hur 制品工具链：ncc hur verify | pack | sign | key | run | publish
     ///
-    /// 本地能力（verify/pack/sign/key）**全程离线**；只有 publish 联网，且只上传"已经打完包的字节"。
-    /// 真执行不在 ncc（不内置沙箱运行时）：`ncc hur run` 只出可审计划。
+    /// 本地能力（verify/pack/sign/key）**全程离线**；只有 `publish`（上传产物）与
+    /// `attach`（只上传签名文件与公钥）联网。
+    /// 执行：默认只出可审计划；`--exec` 在本机 wasm 沙箱里真跑（限额来自策略）
     #[command(subcommand)]
     Hur(hur::HurCmd),
     /// API-Key：ncc key create --label ci | ncc key list | ncc key revoke <id>
@@ -135,6 +143,12 @@ enum Cmd {
     Profile(ProfileArgs),
     /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
     Nodes(NodesArgs),
+    /// NCC Gateway：固定路由的白名单代理（S2a）—— 提供出口（accept）/ 借用出口（forward）
+    ///
+    /// **纯本地**：不向 NCC 上报任何东西，数据面只在 A↔B 之间直连。
+    /// 调用方**不能指定目标地址**，只能给「路由名 + 路由内的路径」。
+    #[command(subcommand)]
+    Gateway(GatewayCmd),
     /// NCC Service：对外服务（服务提供方打包的多条业务）—— 匹配找服务 / 声明自己的服务
     ///
     /// 需要目标声明 `services` 能力（云端 ncc.ai 已声明；内网节点将来也可以声明，
@@ -169,11 +183,13 @@ struct NodesArgs {
 /// 按节点模型组织：节点声明自己是什么，连接是我这边的清单。
 #[derive(Subcommand)]
 enum NodesCmd {
-    /// 我的节点 + 我连接的节点（--kind / --q 过滤）
+    /// 我的节点 + 我连接的节点（--kind / --q / --can 过滤）
     List(nodes::ListArgs),
     /// 节点类型目录（上报时用 `ncc living --kind` 声明）
     Kinds,
-    /// 发现本 NCC 实例上可连接的节点（--kind / --region / --q）
+    /// 节点「提供能力」词表（上报用 --capabilities，检索用 --can）
+    Offers,
+    /// 发现本 NCC 实例上可连接的节点（--kind / --region / --q / --can）
     Discover(nodes::DiscoverArgs),
     /// 连接节点：ncc nodes link @命名空间/节点slug --label "我给它的名字"
     Link(nodes::LinkArgs),
@@ -185,6 +201,28 @@ enum NodesCmd {
     Region,
     /// 按区域推荐可连接的节点（Agent 面，同区域优先）
     Recommend(nodes::RecommendArgs),
+}
+
+#[derive(Subcommand)]
+enum GatewayCmd {
+    /// 写一份示例配置到 ~/.ncc/gateway.json（--force 覆盖）
+    Init {
+        #[arg(long)]
+        force: bool,
+    },
+    /// 只校验配置（不启动）：能启动但不安全的配置会在这里被拒
+    Check,
+    /// 启动网关（常驻；Ctrl+C 停止）
+    Run,
+    /// 看配置摘要 + 是否在跑
+    Status,
+    /// 看本地审计（只读；只记元数据，不含载荷）
+    Audit {
+        #[arg(long, default_value_t = 20)]
+        tail: usize,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -353,7 +391,10 @@ struct LivingArgs {
     /// 对外地址 url（可选，便于他人直连）
     #[arg(long)]
     url: Option<String>,
-    /// 本设备可提供的能力 kind，逗号分隔（如 mcp,api）
+    /// 本设备可提供的能力（提供能力），逗号分隔；取值见 `ncc nodes offers`
+    ///
+    /// 规范 id 形如 run:wasm / egress:llm / serve:mcp；历史短名（mcp,api,wasm,llm…）照旧可用。
+    /// 别人按这些能力找你：`ncc nodes discover --can egress:llm`。
     #[arg(long)]
     capabilities: Option<String>,
 }
@@ -436,6 +477,11 @@ fn main() {
     };
 
     let mut cfg = config::load();
+    // 告诉 hur-core「这个二进制里有什么执行引擎」：注册之后 `ncc hur run` 的计划才会
+    // 说 engine=wasm 且 engine_ready=true（否则计划如实标注本机没有该引擎，
+    // `--exec` 也就无从跑起）。放在这里是因为 CLI 与 `ncc mcp` 都要看到同一份事实。
+    #[cfg(feature = "sandbox")]
+    hur_core::policy::register_engines(hur_sandbox::ENGINES);
     // 先判定协议模式，再决定提示走哪个流：resolve_target 里的提示也算。
     if matches!(cli.cmd, Cmd::Mcp) {
         PROTOCOL_STDOUT.store(true, Ordering::Relaxed);
@@ -547,6 +593,8 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         | Cmd::Download { .. }
         | Cmd::Install { .. } => Some("registry"),
         Cmd::Living(_) => Some("living"),
+        // 纯本地：打洞预检一样不依赖 NCC 服务端。
+        Cmd::Gateway(_) => None,
         Cmd::Profile(_) => Some("profile"),
         Cmd::Nodes(_) => Some("nodes"),
         Cmd::Services(_) => Some("services"),
@@ -595,7 +643,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
     }
     match cmd {
         Cmd::Register { email, password, name, invite } => cmd_register(cfg, email, password, name.as_deref(), invite.as_deref()),
-        Cmd::Login { email, password } => cmd_login(cfg, email, password),
+        Cmd::Login { email, password, api_key } => cmd_login(cfg, email, password, api_key),
         Cmd::Logout => {
             let name = cfg.current_name();
             config::clear_session(cfg)?;
@@ -634,6 +682,14 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         Cmd::Hur(h) => hur::run(cfg, h),
         Cmd::Key(k) => cmd_key(cfg, k),
         Cmd::Living(a) => cmd_living(cfg, a),
+        // Gateway 是纯本地命令（不需要服务器）：不查能力面，也不读写 NCC 配置。
+        Cmd::Gateway(g) => match g {
+            GatewayCmd::Init { force } => gateway::init(*force),
+            GatewayCmd::Check => gateway::check(),
+            GatewayCmd::Run => gateway::run(),
+            GatewayCmd::Status => gateway::status(),
+            GatewayCmd::Audit { tail, json } => gateway::audit_cmd(*tail, *json),
+        },
         Cmd::Profile(p) => match &p.action {
             None | Some(ProfileCmd::Show { username: None }) => profile::show(cfg, None),
             Some(ProfileCmd::Show { username: Some(u) }) => profile::show(cfg, Some(u.as_str())),
@@ -643,9 +699,10 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Some(ProfileCmd::Work(cmd)) => profile::work(cfg, cmd),
         },
         Cmd::Nodes(n) => match &n.action {
-            None => nodes::list(cfg, &nodes::ListArgs { kind: None, q: None }),
+            None => nodes::list(cfg, &nodes::ListArgs { kind: None, q: None, can: Vec::new() }),
             Some(NodesCmd::List(a)) => nodes::list(cfg, a),
             Some(NodesCmd::Kinds) => nodes::kinds(cfg),
+            Some(NodesCmd::Offers) => nodes::offers(cfg),
             Some(NodesCmd::Discover(a)) => nodes::discover(cfg, a),
             Some(NodesCmd::Link(a)) => nodes::link(cfg, a),
             Some(NodesCmd::Label(a)) => nodes::label(cfg, a),
@@ -737,7 +794,29 @@ fn cmd_register(cfg: &mut CliConfig, email: &str, password: &str, name: Option<&
     Ok(())
 }
 
-fn cmd_login(cfg: &mut CliConfig, email: &str, password: &str) -> anyhow::Result<()> {
+fn cmd_login(cfg: &mut CliConfig, email: &str, password: &str, api_key: &str) -> anyhow::Result<()> {
+    // API-Key 直接当 token 存进当前目标的登录态：机器人 / 桌面端绑定用，不必知道密码。
+    // 身份（email/name）尽力用 /api/auth/me 补全，取不到也不影响用。
+    if !api_key.trim().is_empty() {
+        let token = api_key.trim().to_string();
+        let (mail, name) = match api::get(cfg, "/api/auth/me", Some(&token)) {
+            Ok(d) => (
+                d["user"]["email"].as_str().unwrap_or(email).to_string(),
+                d["user"]["name"].as_str().unwrap_or("").to_string(),
+            ),
+            Err(_) => (email.to_string(), String::new()),
+        };
+        save_session(cfg, &token, &mail, &name)?;
+        println!(
+            "✅ 已用 API-Key 登录{}（token 已保存到 {}）",
+            if mail.is_empty() { "（身份未取到）".to_string() } else { format!("：{mail}") },
+            config::config_path().display()
+        );
+        return Ok(());
+    }
+    if email.trim().is_empty() || password.is_empty() {
+        anyhow::bail!("请给 `--email` + `--password`，或直接 `--api-key <key>`");
+    }
     let body = json!({ "email": email, "password": password });
     let data = api::post_json(cfg, "/api/auth/login", None, &body)?;
     let token = data["token"].as_str().context("响应缺少 token")?;
@@ -953,14 +1032,9 @@ fn cmd_download(cfg: &CliConfig, target: &str, out: Option<&str>) -> anyhow::Res
 }
 
 /* ---------------- 安装（把条目装进本地包目录） ---------------- */
-/// 本地包根目录：$NCC_PACKAGES_DIR 或 ~/.ncc/packages
+/// 本地包根目录（= `~/.ncc/packages`）：与 `ncc hur` 共用同一个实现 —— 两个入口装出来的包必须互相可见
 fn packages_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("NCC_PACKAGES_DIR") {
-        return PathBuf::from(p);
-    }
-    // 走 config::home_dir() 而不是直接读 $HOME —— 后者在原生 Windows shell 上是空的，
-    // 会算成相对路径 ./.ncc/packages（见 config::home_dir 的说明）。
-    config::ncc_dir().join("packages")
+    hur_core::cfg::packages_dir()
 }
 
 /// 从存储 URL 推断文件扩展名（如 .md / .json），无则返回空串
@@ -1170,6 +1244,24 @@ fn default_device_name() -> String {
         .unwrap_or_else(|| format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH))
 }
 
+/// 本机**能自证**的提供能力：**只能由硬事实推导，运营者填的不算**。
+///
+/// 今天唯一能自证的是 `run:wasm` —— 这个二进制真的编进了 wasm 沙箱
+/// （`--no-default-features` 编的瘦身版没有，所以它自证不出任何执行能力）。
+/// 其余一律无法自证：
+/// - `egress:*` 要真实网络可达性（需要显式探活，不能默认发请求），
+/// - `run:remote` 要有一个真的在接活的远程执行服务（今天只到「登记环境」），
+/// - `serve:*` / 托管类要看该节点是否真在对外服务。
+///
+/// 宁少不假：自证少了只是搜不到，自证多了就会让别人的请求转到一个跑不了的节点。
+fn verified_offers() -> Vec<String> {
+    if cfg!(feature = "sandbox") {
+        vec!["run:wasm".to_string()]
+    } else {
+        Vec::new()
+    }
+}
+
 fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
     let token = config::require_token(cfg)?;
     let name = a.name.clone().unwrap_or_else(default_device_name);
@@ -1177,6 +1269,15 @@ fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
         .as_deref()
         .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
         .unwrap_or_default();
+    let verified = verified_offers();
+    // 声明了 run:wasm 但二进制里没编进沙箱：不报错，但要说清楚它不会被算作自证。
+    let claims_wasm = caps.iter().any(|c| {
+        let c = c.trim().to_ascii_lowercase();
+        c == "run:wasm" || c == "wasm"
+    });
+    if claims_wasm && verified.is_empty() {
+        println!("⚠ 你声明了 run:wasm，但这个二进制没编进沙箱（--no-default-features），因此不会被算作自证。");
+    }
     let body = json!({
         "name": name,
         "slug": a.slug.clone().unwrap_or_default(),
@@ -1186,18 +1287,22 @@ fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
         "arch": std::env::consts::ARCH,
         "version": env!("CARGO_PKG_VERSION"),
         "capabilities": caps,
+        "offersVerified": verified,
     });
     let report = || -> anyhow::Result<()> {
         let data = api::post_json(cfg, "/api/namespaces/living", Some(&token), &body)?;
         let node = &data["node"];
+        let declared = node["capabilities"].as_array().map(|a| a.len()).unwrap_or(0);
+        let proved = node["capabilitiesVerified"].as_array().map(|a| a.len()).unwrap_or(0);
         println!(
-            "⬆ [{}/{}] {} · {}/{} · 能力 {} · lastSeen {}",
+            "⬆ [{}/{}] {} · {}/{} · 声明 {} · 自证 {} · lastSeen {}",
             node["slug"].as_str().unwrap_or("?"),
             node["status"].as_str().unwrap_or("?"),
             node["name"].as_str().unwrap_or("?"),
             node["os"].as_str().unwrap_or("?"),
             node["arch"].as_str().unwrap_or("?"),
-            node["capabilities"].as_array().map(|a| a.len()).unwrap_or(0),
+            declared,
+            proved,
             node["lastSeen"].as_str().unwrap_or("?"),
         );
         Ok(())

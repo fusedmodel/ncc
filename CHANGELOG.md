@@ -14,8 +14,85 @@
 
 ## [未发布]
 
+### 新增 · `ncc gateway`：固定路由的白名单代理（S2a）
+
+网关的第一块真代码：一个**人配置过的转发 + 强制执行点**（`ncc-platform/prd/ncc-gateway-prd.md` §16）。
+**纯本地** —— 不向 NCC 上报任何东西，数据面只在 A↔B 之间。
+
+- `ncc gateway init | check | run | status | audit`；配置 `~/.ncc/gateway.json`。
+- 同一进程两个方向：`accept`（我这台机器提供出口）/ `forward`（借对端出口）。
+- **调用方永远不能指定目标地址** —— 只能给「路由名 + 路由内的一条路径」；上游地址与凭据全在 B 的配置里
+  （`inject`），调用方自带的 `Authorization` **绝不透传**（只透传 `content-type` / `accept`）。
+- 默认拒绝：路径不在白名单 → 403 **且请求不发出**；方法不允许 → 405；令牌不对 → 401；超配额 → 429；
+  路径含 `..` / `%` / 反斜杠 / 空段 → 403；body 超上限 → 413。
+- **不跟随重定向**（跟随 = 3xx 能把请求带去别的域，白名单形同虚设）。
+- 两侧 JSONL 审计，**只记元数据**（无载荷、无凭据）。
+- 不安全的配置**拒绝启动**：accept 无令牌 / 空白名单 / 空 methods；非 loopback 监听未显式承担风险；
+  非 loopback 的明文 `http://` 出站。
+- 不引新依赖：HTTP 服务端用 `std::net` 手写（约 200 行，只支持定长 body），出站用已有的 `ureq`。
+- 13 个单测（时间格式化、路径穿越拒绝、白名单精确匹配、target 解析、令牌常量时间比较、每条启动闸、配额）。
+
+实测（假上游 + A 网关 + B 网关）：允许路径 → 200，上游看到的是 **B 的**凭据与调用方载荷，
+调用方自己的凭据从未到达；白名单外的路径 → 403 且上游日志证明**没发出**；令牌错 → 401；
+`%2e%2e` 与空段 → 403；一分钟内第 3 次 → 429；两侧审计文件里 grep 不到载荷与凭据；
+停掉 B 后 A 回 502 **不降级**，B 回来后自动恢复。
+
+本次不含（S2b/S3/S4）：把路由绑到装好的 HUR 包、P2P 那一跳、审计摘要上报控制面、计量计费。
+
+### 新增 · **`ncc hur run --exec`**：本机执行（`ncc` 成为 harness-use 的执行引擎）
+
+用户口径：「harnessuse 的 hur sandbox 功能也需要在 ncc 中实施，**ncc-cli 是一个事实的 harness-use 的执行引擎**」。
+
+- **`hur-sandbox` 从 harnessuse 整包搬入本仓**（`cli/crates/hur-sandbox`，wasmtime 36）：
+  逻辑**一行未改**，连它那 12 个安全保证测试（死循环 / 内存炸弹 / 越权工具 / 越权外呼 / ABI 缺失…）一起带过来，在 ncc 的 CI 里跑。保留 **MIT**。
+- **执行接线** `cli/src/hurrun.rs`：宿主能力桥（`repo_search` 只在包目录内检索 · `task.create` 写 `~/.harnessuse/tasks/` · `kb.search` 如实回答）+ 限额映射 + 留痕。
+  与搬之前的关键区别：**不再需要 shell 出 `ncc hur run --json` 拿计划** —— 计划在同一进程里由 `hur-core::policy` 算，"策略怎么判"与"按策略怎么跑"是同一份代码。
+- **引擎注册**：启动时 `policy::register_engines(hur_sandbox::ENGINES)`（CLI 与 `ncc mcp` 看到同一份事实）；于是 `ncc hur run` 的计划里 `engine=wasm` 且 `engine_ready=true`，`ncc hur sandbox` 如实显示"本二进制托管 wasm"。
+- **默认开启、可关**：`sandbox` feature 默认开（release 二进制 ~12MB）；`--no-default-features` 得到不含 wasmtime 的瘦身版（~5.3MB），**不注册任何引擎**，`--exec` 如实拒绝并指路。
+- **出网开关**：`hur.http_get` 先过包的 `permissions.network` 白名单与次数上限（越权拦下整次运行），再过生效策略的 `exec.local_only`（默认档为真 = 数据不出设备，一个包外字节都不发）。
+- **留痕修正**：trace 文件名改为 `{时间戳}-{包 id}-{序号:02}.json`，序号**总是**带上 —— 修掉两个真 bug：
+  ① 同秒连跑两次会互相覆盖（"跑过必留痕"落空）；② 旧命名 `…-01.json` 的字典序排在 `….json` 前面，`retain` 裁剪反而删掉**最新**那条（`retain=1` 会留下最旧的）。`ncc hur task inspect <文件名>` 改为按**真实文件名**匹配，不再靠猜。
+- 实测（隔离实例）：正常包 ✅ 跑通并留痕；死循环 ✅ `[fuel] 指令预算耗尽`（退出码 1，留痕照写）；未声明域名外呼 ✅ 拦下且**没真的发出请求**；同秒两次 ✅ 两条留痕都能 `task ls` 看到。
+- **`--exec --json` 只输出一份 JSON**：原先会先打印「计划」JSON、再打印「执行结果」JSON，两份连在一起
+  没有任何机器能解析 —— 而 `--exec --json` 恰恰是桌面端/脚本委派要用的形式。现在执行结果里自带完整的 `plan`
+  （含 `checks` / `reasons`，即「为什么允许跑、按什么限额」）。
+- **发布脚本可出瘦身变体**：`scripts/build-release.sh --slim`（或 `NCC_SLIM=1`）→ `--no-default-features`，
+  产物名带 `-slim` 后缀，与常规产物共存。输出目录可用 `NCC_RELEASE_OUT` 覆盖
+  （默认的 `release/bin/*` 是被 git 跟踪的已发布产物，验证脚本时别误盖）。CI（`release.yml`）不用这个脚本
+  （它要「要么全出、要么明确失败」，且是各平台原生构建），要在发布里加瘦身变体得改 workflow 矩阵。
+- **跨平台构建已核实**：CI 是各平台原生构建（macos / ubuntu / windows 各自 runner），唯一的同 OS
+  交叉案例 `x86_64-apple-darwin` 已在本地实跑通过（`Mach-O 64-bit executable x86_64`）。
+  release 体积：含沙箱 12MB（arm64）/ 15MB（x86_64），瘦身 5.3MB。
+- **修掉另一个仓库外的坑**：`scripts/build-release.sh` 里 `$os/$arch（target 不可用）` 之类的写法在 macOS 自带
+  bash 3.2 下会把中文吞进变量名 → `set -u` 报 `unbound variable`（`--all` 分支原本就中招：本该打印「跳过」却直接崩）。
+  全仓脚本已扫描并改为 `${VAR}`（扫描剩余数为 0）。
+
+### 新增 · **`ncc hur attach`**：把本机签名附到**已发布**条目上
+
+补上「事后加签」这条路：发布时没签、或换了签名，现在不必重发新版本。
+
+- `ncc hur attach [path] [--ref @命名空间/slug] [--sign]`：
+  - 按**包 id**（工程的稳定身份，不是 slug —— slug 是发布时自定的）在自己名下找条目；
+    引用用 `--ref` 而非位置参数：两个位置参数都有默认值时 clap 按顺序填充，
+    `ncc hur attach .` 里的 `.` 会被当成引用（实测踩到）。
+  - `--sign`：本机还没签名时先签一次。
+  - **本地工程改过就拒**：附着前核对「本机产物摘要 == 签名覆盖的摘要」，不一致要求重签
+    —— 旧签名属于旧的字节，贴到新产物上不是「加签」。
+  - **只上传签名文件与公钥**，包内容一个字节都不传（与 `publish` 的离线铁律一致；
+    故 `sign`/`verify`/`pack` 仍然从不联网）。
+- 服务端配套：平台 `PUT /api/registry/:id/signature`（已发布）；内网节点同路径，
+  额外支持 `@ns/slug` 两段引用，且**副本只能到源头节点加签**。
+- `ncc hur trust` 在条目没签名时的提示改为指向 `ncc hur attach --ref …`。
+- 参数与 `ncc hur sign` 对齐：`--key`（签名私钥）/ `--password` / `--pub-key`（核对用公钥）。
+  用**非本机**密钥签时尤其需要 `--pub-key` —— 否则 `check_dir` 找不到配对公钥，结论是「有签名但不可核对」而拒绝。
+
 
 ### 新增 · **`ncc`**：`ncc hur`（hur 制品工具链内嵌进客户端）
+
+> ⚠️ 本节写于 **sandbox 搬入之前**：其中「只出计划 / 不内置沙箱运行时 / wasmtime 不进 ncc /
+> 托管仍在客户端」的表述已被本文件**更上方**同日条目
+> 「**`ncc hur run --exec`：本机执行（`ncc` 成为 harness-use 的执行引擎）**」取代
+> （用户二次改判：ncc-cli 就是执行引擎）。下面保留原文，作为当时的决策记录。
 
 - **`hur-core` 从 harnessuse 迁入本仓**：`cli/crates/hur-core`（制品规范 `harness-use-package/v1`：R1~R9 校验 / 确定性打包 / 安全策略与执行计划 / Minisign 签名 / 互操作导出 / MCP）。`cli/` 现在是 Cargo 工作区根（`members = ["crates/hur-core"]`），**`cli/target` 与 `scripts/build-release.sh`、`.github/workflows/release.yml` 的路径一行未改**。crate 保留 **MIT**（本仓整体 Apache-2.0，此 crate 例外）。纯 Rust、无 C 依赖；**不含 wasmtime**。
 - **`ncc hur` 子命令**（薄壳，能力全在 hur-core）：
@@ -26,6 +103,50 @@
   - 新模块 **`hur-core::dep`**；`pack::local_dep_hash()` 抽出来给锁与对账**共用同一算法**（否则 drift 判断就是猜）。
 - 三条边界写进文档与实现：离线铁律 · 身份一次到底但不复制账号（用 ncc 登录态，签名私钥仍在本机 `~/.harnessuse/keys`）· wasmtime 不进 ncc。设计见 `ncc-platform/prd/ncc-hur.md`。
 - 实测（本地隔离实例）：`init → verify → key gen → sign → verify(✔ 签名有效) → pack → run --exec(拒绝) → publish(--sign) → search --kind hur → info`，条目 manifest 里能看到 `signature.keynum`。
+
+### 新增 · **`ncc hur`**：导出 / 信任条目 / 策略 / MCP / 安装 / 互操作（P-23）
+
+把 `ncc hur` 补成**完整**的 hur 工具链，目标只有一个：**客户端不必再自带一份 `hur-core`**。
+
+- **`ncc hur export`**：导出可分发产物 —— `.hur` + `.minisig` + `.sha256` + **公钥** + `export.json`
+  （说明书：清单 / 入口 / 权限面 / 安全策略 / 签名指纹 / 当时生效策略 / R1~R9 结论）。
+  离线；先自己验一遍，不过就拒绝导出（`--allow-issues` 可明确覆盖）。
+- **`ncc hur trust <条目>`**：信任一个**已发布条目**的签名公钥，顺序是**先核对再信任** ——
+  下载条目里的产物与 `.minisig`、比 sha256、验签名（要求 `SigOutcome::Verified` **且**待信任公钥的
+  keynum 与签名一致），通过才写进 `~/.harnessuse/trusted-keys.json`。
+  实测拒绝：换错公钥 / 公钥文本非法 / 条目未签名 / **产物字节被换过**。`--force` 可跳过，
+  但会在信任表里留下「未核对」的证据。
+- **`ncc hur policy show|check|path|presets|set`**：`set` 只动显式给了的字段，写完**重新解析**
+  并逐项对照「你要的 → 实际生效的」，被上层更严的层挡回去的标 ⚠。
+- **`ncc hur mcp`**：把 hur **治理面**做成 MCP 工具面（stdio，9 个**只读**工具）。
+  `mcp.rs` 抽出 `serve_face`，与 `ncc mcp` 共用同一套 JSON-RPC 收发 —— 协议细节只写一遍。
+  `--list-tools` 只把工具表（含 `server/command/args/instructions/tools`）打成 JSON 就退出，
+  给客户端（如 harness-use GUI）生成 `.mcp.json` 提示用 —— 免得工具名在客户端再拄一份。
+- **`ncc hur install|uninstall|list`**：落点与桌面端**同一个** `~/.harnessuse/packages/<id>/`
+  （`HUR_HOME` 可覆盖）并登记桌面 `config.json`。远端安装要求 sha256 相符；**条目带签名时
+  签名也必须相符**（本机认不认识那把钥匙只提醒，不拦）。
+- **`ncc hur interop`**：渲染成 Claude / Cursor / Cline / Codex / MCP 能直接用的产物（默认只预览）。
+- **`publish` 上传 `.minisig` + 公钥**：以前条目只留 keynum（自述的指纹，不是证据）。现在签名
+  字节复用同一个 `/api/registry/uploads` 存起来（**服务端零改动**），公钥进 `manifest.hur.signature`。
+- 顺带修掉一个会吓人的语义（`hur-core::policy::resolve`）：工程/机器层写的策略 `id` 与包内请求的
+  具名策略**同名**时，原先算作「宿主已选定 → 请求不叠加」，等于「只写了一行 id 就把请求的整套规则
+  悄悄顶掉」；现在同名即同一策略，照常叠加。
+
+### 变更 · **包落点归位到 `~/.ncc/packages`**（P-24）
+
+- **落点**：`install` / `ncc hur install|write|list|uninstall` 的包目录从 `~/.harnessuse/packages` 改为
+  **`~/.ncc/packages`**（`NCC_PACKAGES_DIR` 直接覆盖；`NCC_HOME` 当 HOME 用，与 `ncc` 其它路径一致）。
+  与顶层 `ncc install` 共用同一个实现（`hur-core::cfg::packages_dir`），两个入口装出来的包必须互相可见。
+  `~/.harnessuse` 保留的是**本机工具状态**：签名密钥 `keys/`、`trusted-keys.json`、`environments.json`、
+  `security.json`（机器层策略）、`tasks/`、桌面端 `config.json`（含 `packages[]` 索引）。
+- 新增 **`ncc hur write [path]`**：把工程目录写进包落点并登记（桌面端「写入本机」用的就是这一步，不产包）；
+  **`ncc hur pack`** 在目录已是本机包（有 `_install.json`）时**顺手刷新登记里的产物 sha256**。
+- 新增 **`ncc hur publish --update`**：slug 已存在时改为更新（只改版本 / 产物地址 / 状态；
+  **清单里的签名与权限面不会变**，命令会明确提醒 —— 改过签名请重发）。
+- 新增 **`ncc login --api-key <key>`**：直接拿 API-Key 当登录态（机器人 / 桌面端绑定用，不必知道密码）；
+  `--email/--password` 因此变成可选。
+- 新增 **`ncc hur mcp --list-tools`**：只把工具表打成 JSON 就退出（客户端据此生成 `.mcp.json` 提示，
+  免得工具名在客户端再抄一份）。
 
 ### 修复 · **`ncc`**：`ncc info <id | @org/slug>` 一直不可用
 

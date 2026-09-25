@@ -1,0 +1,26 @@
+[package]
+name = "hur-core"
+version = "0.1.0"
+edition = "2021"
+description = "HUR 制品规范与实现（harness-use-package/v1：校验 / 打包 / 签名 / 发布 / 安装）"
+# 保留原许可（MIT）；本仓（ncc-cli）整体是 Apache-2.0，此 crate 例外。
+license = "MIT"
+
+# 自 2026-09-25 起**代码归属 NCC**（用户拍板）：NCC 侧是引擎（`ncc hur` 直接内嵌它），
+# harness-use（桌面 Agent）与独立 `hur` 二进制都只是调用方（见 ncc-platform/prd/ncc-hur.md）。
+[lib]
+name = "hur_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
+sha2 = "0.10"
+hex = "0.4"
+# 只读 deflate（兼容别人用普通 zip 工具重打的包），写一律 Stored 以保证确定性
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+# 制品签名：Minisign 格式（ed25519）—— 用「别人也能验」的格式，而不是自造信封：
+# 第三方拿 `minisign -V -p hur.pub -m x.hur` 就能独立核对，不必信 hur 自己。
+minisign = "0.10"

@@ -2,7 +2,7 @@
 # hur-core 从 harnessuse 迁到本仓（2026-09-25 拍板）。工作区根故意放在 `cli/`：
 # target 仍是 `cli/target/`，scripts/build-release.sh 与 .github/workflows/release.yml
 # 里那些硬编码路径**一行都不用改**。
-members = ["crates/hur-core"]
+members = ["crates/hur-core", "crates/hur-sandbox"]
 
 [package]
 name = "ncc"
@@ -19,6 +19,17 @@ categories = ["command-line-utilities", "development-tools"]
 name = "ncc"
 path = "src/main.rs"
 
+[features]
+# `ncc` 是 harness-use 事实上的执行引擎：默认带上本机 wasm 沙箱，
+# 于是 `ncc hur run --exec` 直接可用（不需要另装 hur / 桌面 Agent）。
+# 想要瘦身构建（不含 wasmtime）用 `--no-default-features`：
+# 那时 `--exec` 会如实拒绝并指路，其余命令照旧。
+#
+# 为什么可选：wasmtime 会让二进制大几 MB、编译明显变慢。默认开是因为
+# 「能跑」是主路径；关掉是给镜像/受限环境留的口子。
+default = ["sandbox"]
+sandbox = ["dep:hur-sandbox"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
@@ -26,6 +37,8 @@ serde_json = "1"
 ureq = { version = "2.10", default-features = false, features = ["tls"] }
 # hur 制品规范与实现（`ncc hur` 用的就是它，见 src/hur.rs）
 hur-core = { path = "crates/hur-core" }
+# 本机执行引擎（可选：见 [features]；执行接线在 src/hurrun.rs）
+hur-sandbox = { path = "crates/hur-sandbox", optional = true }
 anyhow = "1"
 # `ncc upgrade` 用它比对 release 里的 checksums.txt —— 校验不过就拒绝替换。
 # 纯 Rust、无 C 依赖，不影响交叉编译。

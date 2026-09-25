@@ -227,6 +227,7 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc p2p ticket create` / `list` / `verify` / `revoke` | P2P tickets: which node may pull which resource from you |
 | `ncc registry p2p self` / `check --peer <ip:port>` | NAT profile **on the node machine** / real UDP punch against a peer mapping (0 bytes) |
 | `ncc registry p2p serve` `[--on] [--peer <ip:port>]` | Node's punchable UDP entry (STUN replies only); `--peer` sets the reverse-punch peer |
+| `ncc gateway init` / `check` / `run` / `status` / `audit` | Gateway (S2a): a fixed-route allow-listed proxy — provide egress (`accept`) or borrow a peer's (`forward`). Callers can never choose the target; outbound credentials come from config `inject`; local JSONL audit records metadata only |
 | `ncc registry add` | Join a self-hosted `ncc-registry` with a one-click intranet link, or key/secret |
 | `ncc registry login` / `join` | Sign in to that node, or host this machine as a node (register + heartbeat) |
 | `ncc registry status` / `nodes` | That node and its cluster (master/worker) / discover nodes on the instance |

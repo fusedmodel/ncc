@@ -25,6 +25,9 @@ pub struct ListArgs {
     /// 关键词（Name 标签 / 节点名 / 用户名）
     #[arg(long)]
     pub q: Option<String>,
+    /// 按「提供能力」过滤，可重复；要与全部匹配（如 --can run:wasm --can egress:llm）
+    #[arg(long)]
+    pub can: Vec<String>,
 }
 
 #[derive(clap::Args)]
@@ -59,6 +62,9 @@ pub struct DiscoverArgs {
     pub region: Option<String>,
     #[arg(long)]
     pub q: Option<String>,
+    /// 按「提供能力」过滤，可重复；要与全部匹配（如 --can run:wasm --can egress:llm）
+    #[arg(long)]
+    pub can: Vec<String>,
     #[arg(long, default_value_t = 30)]
     pub limit: u32,
 }
@@ -69,6 +75,9 @@ pub struct RecommendArgs {
     pub region: Option<String>,
     #[arg(long)]
     pub kind: Option<String>,
+    /// 按「提供能力」过滤，可重复；要与全部匹配（如 --can run:wasm）
+    #[arg(long)]
+    pub can: Vec<String>,
     #[arg(long, default_value_t = 20)]
     pub limit: u32,
 }
@@ -95,6 +104,13 @@ fn kind_cn(k: &str) -> &str {
         "agent" => "个人 Agent",
         "assigned" => "被分配的 Agent",
         other => other,
+    }
+}
+
+/// 把 `--can` 拼成查询串（服务端也会按逗号再切一次，两种写法都行）。
+fn push_can(qs: &mut Vec<String>, can: &[String]) {
+    for c in can.iter().map(|x| x.trim()).filter(|x| !x.is_empty()) {
+        qs.push(format!("can={}", api::urlenc(c)));
     }
 }
 
@@ -138,6 +154,7 @@ pub fn list(cfg: &CliConfig, a: &ListArgs) -> Result<()> {
     if let Some(q) = a.q.as_deref().filter(|x| !x.is_empty()) {
         qs.push(format!("q={}", api::urlenc(q)));
     }
+    push_can(&mut qs, &a.can);
     let path = if qs.is_empty() {
         "/api/nodes".to_string()
     } else {
@@ -177,7 +194,35 @@ pub fn kinds(cfg: &CliConfig) -> Result<()> {
     for k in d["kinds"].as_array().cloned().unwrap_or_default() {
         println!("  {:<10} {:<18} {}", s(&k, "id"), s(&k, "zh"), s(&k, "descZh"));
     }
-    println!("\n用法：ncc living --name my-agent --kind agent --capabilities mcp,api");
+    println!("\n用法：ncc living --name my-agent --kind agent --capabilities run:wasm,serve:mcp");
+    println!("可选的提供能力：ncc nodes offers（历史短名 mcp,api 照旧可用）");
+    Ok(())
+}
+
+/// `ncc nodes offers` —— 节点「提供能力」词表（上报与检索的取值来源）。
+///
+/// 与 `ncc nodes kinds` 并列：kinds 回答「它是什么」，offers 回答「它能提供什么」。
+pub fn offers(cfg: &CliConfig) -> Result<()> {
+    let t = token(cfg)?;
+    let d = api::get(cfg, "/api/nodes/offers", Some(&t))?;
+    println!("节点提供能力（上报用 --capabilities，检索用 --can）");
+    for o in d["offers"].as_array().cloned().unwrap_or_default() {
+        println!("  {:<16} {:<16} {}", s(&o, "id"), s(&o, "zh"), s(&o, "descZh"));
+    }
+    let aliases = d["aliases"].as_array().cloned().unwrap_or_default();
+    if !aliases.is_empty() {
+        let pairs: Vec<String> = aliases
+            .iter()
+            .map(|a| format!("{}→{}", s(a, "from"), s(a, "to")))
+            .collect();
+        println!("\n历史短名（照旧可用，读出来会归一成上面的 id）");
+        println!("  {}", pairs.join(" · "));
+    }
+    println!("\n上报：ncc living --name x --kind service --capabilities run:wasm,egress:llm");
+    println!("检索：ncc nodes discover --can run:wasm --can egress:llm（两个都得具备）");
+    println!("自证：ncc nodes discover --can run:wasm@verified —— 只要**自证**具备该能力的节点。");
+    println!("      自证不由人填，而是由本机硬事实推导（如二进制真编进了沙箱），目前能自证的只有 run:wasm；");
+    println!("      egress / run:remote 今天都无法自证，一律只算「声明」。can=X 也会匹配只把 X 放在自证里的节点。");
     Ok(())
 }
 
@@ -194,11 +239,13 @@ pub fn discover(cfg: &CliConfig, a: &DiscoverArgs) -> Result<()> {
     if let Some(q) = a.q.as_deref().filter(|x| !x.is_empty()) {
         qs.push(format!("q={}", api::urlenc(q)));
     }
+    push_can(&mut qs, &a.can);
     let d = api::get(cfg, &format!("/api/nodes/discover?{}", qs.join("&")), Some(&t))?;
     let rows = d["nodes"].as_array().cloned().unwrap_or_default();
     if rows.is_empty() {
-        println!("本实例上没有可连接的新节点（都是你自己的、已连过的，或没有公开节点）。");
+        println!("本实例上没有可连接的新节点（都是你自己的、已连过的，或不满足筛选条件）。");
         println!("提示：节点要用公共可见性上报才能被连接：ncc living --name x --kind service");
+        println!("      按能力找时先看可选值：ncc nodes offers");
         return Ok(());
     }
     println!("可连接 {} 个节点", rows.len());
@@ -297,6 +344,7 @@ pub fn recommend(cfg: &CliConfig, a: &RecommendArgs) -> Result<()> {
     if let Some(k) = a.kind.as_deref().filter(|x| !x.is_empty()) {
         qs.push(format!("kind={}", api::urlenc(k)));
     }
+    push_can(&mut qs, &a.can);
     let d = api::get(cfg, &format!("/api/nodes/recommend?{}", qs.join("&")), Some(&t))?;
     let rows = d["nodes"].as_array().cloned().unwrap_or_default();
     if rows.is_empty() {
@@ -367,7 +415,7 @@ pub fn fetch_region_profile(cfg: &CliConfig) -> Result<Value> {
     api::get(cfg, "/api/nodes/region-profile", Some(&t))
 }
 
-pub fn fetch_recommend(cfg: &CliConfig, region: &str, kind: &str, limit: u32) -> Result<Value> {
+pub fn fetch_recommend(cfg: &CliConfig, region: &str, kind: &str, can: &str, limit: u32) -> Result<Value> {
     let t = config::token_opt(cfg).ok_or_else(|| need_login("查看节点推荐"))?;
     let mut qs = vec![format!("limit={limit}")];
     if !region.is_empty() {
@@ -376,14 +424,20 @@ pub fn fetch_recommend(cfg: &CliConfig, region: &str, kind: &str, limit: u32) ->
     if !kind.is_empty() {
         qs.push(format!("kind={}", api::urlenc(kind)));
     }
+    if !can.is_empty() {
+        qs.push(format!("can={}", api::urlenc(can)));
+    }
     api::get(cfg, &format!("/api/nodes/recommend?{}", qs.join("&")), Some(&t))
 }
 
-pub fn fetch_discover(cfg: &CliConfig, kind: &str, limit: u32) -> Result<Value> {
+pub fn fetch_discover(cfg: &CliConfig, kind: &str, can: &str, limit: u32) -> Result<Value> {
     let t = config::token_opt(cfg).ok_or_else(|| need_login("发现节点"))?;
     let mut qs = vec![format!("limit={limit}")];
     if !kind.is_empty() {
         qs.push(format!("kind={}", api::urlenc(kind)));
+    }
+    if !can.is_empty() {
+        qs.push(format!("can={}", api::urlenc(can)));
     }
     api::get(cfg, &format!("/api/nodes/discover?{}", qs.join("&")), Some(&t))
 }

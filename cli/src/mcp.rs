@@ -358,24 +358,26 @@ fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "ncc_list_nodes",
-            "description": "列出当前账号的 NCC Node：mine = 我自己注册的节点（service 服务 / agent 为人服务的 Agent / assigned 被分配的 Agent，带在线状态与能力），links = 我连接的别人的节点（带我给它的 Name 标签）。这是**节点连接表**，不是通讯录；连接只代表「找得到」，不代表能取对方数据。需要登录/API-Key；属于本人数据，不要向无关第三方转发。",
+            "description": "列出当前账号的 NCC Node：mine = 我自己注册的节点（service 服务 / agent 为人服务的 Agent / assigned 被分配的 Agent，带在线状态与提供能力），links = 我连接的别人的节点（带我给它的 Name 标签）。这是**节点连接表**，不是通讯录；连接只代表「找得到」，不代表能取对方数据。需要登录/API-Key；属于本人数据，不要向无关第三方转发。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "kind": { "type": "string", "description": "按类型过滤：service | agent | assigned" },
-                    "q": { "type": "string", "description": "关键词（Name 标签 / 节点名 / 用户名）" }
+                    "q": { "type": "string", "description": "关键词（Name 标签 / 节点名 / 用户名）" },
+                    "can": { "type": "string", "description": "按**提供能力**过滤（逗号分隔，要与全部匹配）。取值：run:wasm, run:js, run:process, run:container, run:remote, egress:llm, egress:internet, serve:http, serve:mcp, artifact, directory, config, share；历史短名 mcp/api/wasm/llm 也认" }
                 },
                 "additionalProperties": false
             }
         }),
         json!({
             "name": "ncc_discover_nodes",
-            "description": "发现**同一个 NCC 实例**上可连接的节点（公开 + 不是我的 + 我还没连）。想连某个能力/服务/Agent 时先用它找到节点引用（@命名空间/节点slug），再让用户跑 `ncc nodes link` 建立连接。",
+            "description": "发现**同一个 NCC 实例**上可连接的节点（公开 + 不是我的 + 我还没连）。想连某个能力/服务/Agent 时先用它找到节点引用（@命名空间/节点slug），再让用户跑 `ncc nodes link` 建立连接。注意：只用 `can` 过滤返回的是**节点**，不代表对方已授权你调用它 —— 取数据仍要对方 grant。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "kind": { "type": "string", "description": "按类型过滤：service | agent | assigned" },
                     "region": { "type": "string", "description": "按节点归属者所在地筛选，如 杭州" },
+                    "can": { "type": "string", "description": "按**提供能力**过滤（逗号分隔，要与全部匹配），例如 run:wasm（能跑沙箱）、egress:llm（有模型 API 出口）。取值见 ncc_list_nodes 的 can 说明" },
                     "limit": { "type": "integer", "description": "返回条数，默认 30，最大 60" }
                 },
                 "additionalProperties": false
@@ -394,6 +396,7 @@ fn tools() -> Vec<Value> {
                 "properties": {
                     "region": { "type": "string", "description": "按区域筛选，如 杭州" },
                     "kind": { "type": "string", "description": "按类型筛选：service | agent | assigned" },
+                    "can": { "type": "string", "description": "按**提供能力**过滤（逗号分隔，要与全部匹配），如 run:wasm / egress:llm；取值见 ncc_list_nodes 的 can 说明" },
                     "limit": { "type": "integer", "description": "返回条数，默认 20，最大 50" }
                 },
                 "additionalProperties": false
@@ -821,7 +824,8 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         "ncc_list_nodes" => ok_or_text((|| {
             let kind = sarg("kind").unwrap_or_default();
             let q = sarg("q").unwrap_or_default();
-            let v = if kind.is_empty() && q.is_empty() {
+            let can = sarg("can").unwrap_or_default();
+            let v = if kind.is_empty() && q.is_empty() && can.is_empty() {
                 crate::nodes::fetch_nodes(cfg)?
             } else {
                 let mut qs: Vec<String> = Vec::new();
@@ -831,6 +835,9 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                 if !q.is_empty() {
                     qs.push(format!("q={}", urlenc(&q)));
                 }
+                if !can.is_empty() {
+                    qs.push(format!("can={}", urlenc(&can)));
+                }
                 let path = format!("/api/nodes?{}", qs.join("&"));
                 api::get(cfg, &path, config::token_opt(cfg).as_deref())?
             };
@@ -838,9 +845,11 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         })()),
 
         "ncc_discover_nodes" => ok_or_text((|| {
+            let can = sarg("can").unwrap_or_default();
             let v = crate::nodes::fetch_discover(
                 cfg,
                 sarg("kind").unwrap_or_default().as_str(),
+                &can,
                 narg("limit", 30, 60) as u32,
             )?;
             let region = sarg("region").unwrap_or_default();
@@ -852,6 +861,7 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     cfg,
                     &region,
                     sarg("kind").unwrap_or_default().as_str(),
+                    &can,
                     narg("limit", 30, 60) as u32,
                 )?;
                 Ok(text(clip(&crate::nodes::render_recommend(&r))))
@@ -867,6 +877,7 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                 cfg,
                 sarg("region").unwrap_or_default().as_str(),
                 sarg("kind").unwrap_or_default().as_str(),
+                &sarg("can").unwrap_or_default(),
                 narg("limit", 20, 50) as u32,
             )?;
             Ok(text(clip(&crate::nodes::render_recommend(&v))))
