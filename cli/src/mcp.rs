@@ -71,13 +71,27 @@ fn tool_capability(tool: &str) -> Option<&'static str> {
     }
 }
 
+/// 一个 MCP 工具面（名字 + 说明书 + 工具表）。
+/// 把「协议怎么收发」和「你有哪些工具」分开：`ncc mcp`（registry）与 `ncc hur mcp`（hur 治理）
+/// 共用同一套收发实现 —— 协议细节只写一遍，才不会两边各错一种。
+pub struct Face {
+    pub name: &'static str,
+    pub instructions: String,
+    pub tools: Vec<Value>,
+}
+
 /// `ncc mcp`：在 stdin/stdout 上跑 MCP server，直到 stdin 关闭。
 pub fn serve(cfg: &CliConfig) -> Result<()> {
-    let stdin = std::io::stdin();
-    let mut out = std::io::stdout();
-    // 启动时探测一次目标：把「你现在连的是谁、它声明了什么」写进日志与 tools/list 提示，
+    // 启动时探测一次目标：把「你现在连的是谁、它声明了什么」写进日志与 initialize 说明，
     // 避免 Agent 把云端工具打到内网节点（或反过来）。
     let meta = capability::probe(cfg);
+    let header = format!(
+        "当前目标：{}（{} · {}）\n它声明了能力：{}\n不在其中的工具会明确报错，而不是静默失败。\n\n",
+        cfg.current_name(),
+        if meta.product.is_empty() { "未知服务端" } else { &meta.product },
+        cfg.base_url(),
+        meta.capability_line()
+    );
     let target_line = format!(
         "【当前目标】{} · {} · {} · 能力：{}",
         cfg.current_name(),
@@ -86,6 +100,19 @@ pub fn serve(cfg: &CliConfig) -> Result<()> {
         meta.capability_line()
     );
     eprintln!("[ncc-mcp] ready · {target_line} · 等待 MCP 客户端握手");
+    serve_face(
+        Face { name: "ncc-registry", instructions: format!("{header}{INSTRUCTIONS}"), tools: tools() },
+        |params| call_tool(cfg, params),
+    )
+}
+
+/// 跑一个工具面：逐行 JSON-RPC 2.0，直到 stdin 关闭。
+/// 通用部分（initialize / ping / tools.list / tools.call / 错误码）都在这儿；
+/// `call` 只管「这个名字 + 这些参数 → 结果」。
+pub fn serve_face(face: Face, mut call: impl FnMut(Option<&Value>) -> Result<Value>) -> Result<()> {
+    let stdin = std::io::stdin();
+    let mut out = std::io::stdout();
+    let tag = face.name;
 
     for line in stdin.lock().lines() {
         let line = line?;
@@ -110,57 +137,48 @@ pub fn serve(cfg: &CliConfig) -> Result<()> {
             continue;
         }
 
-        let resp = match method.as_str() {
-            "initialize" | "ping" | "tools/list" | "tools/call" => {
-                match handle(cfg, &method, req.get("params")) {
-                    Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": r }),
-                    Err(e) => json!({
-                        "jsonrpc": "2.0", "id": id,
-                        "error": { "code": -32603, "message": format!("{e:#}") }
-                    }),
-                }
-            }
-            _ => json!({
+        let params = req.get("params");
+        // 未知方法按 JSON-RPC 规范回 -32601，而不是 -32603（内部错误）
+        if !matches!(method.as_str(), "initialize" | "ping" | "tools/list" | "tools/call") {
+            let resp = json!({
                 "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32601, "message": format!("未知方法: {method}") }
+            });
+            writeln!(out, "{}", serde_json::to_string(&resp)?)?;
+            out.flush()?;
+            continue;
+        }
+
+        let res = match method.as_str() {
+            "initialize" => {
+                let pv = params
+                    .and_then(|p| p.get("protocolVersion"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(PROTOCOL_VERSION);
+                Ok(json!({
+                    "protocolVersion": pv,
+                    "capabilities": { "tools": {} },
+                    "serverInfo": { "name": face.name, "version": env!("CARGO_PKG_VERSION") },
+                    "instructions": face.instructions,
+                }))
+            }
+            "ping" => Ok(json!({})),
+            "tools/list" => Ok(json!({ "tools": face.tools })),
+            "tools/call" => call(params),
+            _ => unreachable!("上面已过滤未知方法"),
+        };
+        let resp = match res {
+            Ok(r) => json!({ "jsonrpc": "2.0", "id": id, "result": r }),
+            Err(e) => json!({
+                "jsonrpc": "2.0", "id": id,
+                "error": { "code": -32603, "message": format!("{e:#}") }
             }),
         };
         writeln!(out, "{}", serde_json::to_string(&resp)?)?;
         out.flush()?;
     }
-    eprintln!("[ncc-mcp] stdin 关闭，退出");
+    eprintln!("[{tag}] stdin 关闭，退出");
     Ok(())
-}
-
-fn handle(cfg: &CliConfig, method: &str, params: Option<&Value>) -> Result<Value> {
-    match method {
-        "initialize" => {
-            let pv = params
-                .and_then(|p| p.get("protocolVersion"))
-                .and_then(|v| v.as_str())
-                .unwrap_or(PROTOCOL_VERSION);
-            // 告诉 Agent「你现在连的是谁」：工具面按目标能力变化（云端有服务/名片，
-            // 内网节点有配置/治理），说清楚比让它们打到 404 强。
-            let meta = capability::probe(cfg);
-            let header = format!(
-                "当前目标：{}（{} · {}）\n它声明了能力：{}\n不在其中的工具会明确报错，而不是静默失败。\n\n",
-                cfg.current_name(),
-                if meta.product.is_empty() { "未知服务端" } else { &meta.product },
-                cfg.base_url(),
-                meta.capability_line()
-            );
-            Ok(json!({
-                "protocolVersion": pv,
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "ncc-registry", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": format!("{header}{INSTRUCTIONS}"),
-            }))
-        }
-        "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tools() })),
-        "tools/call" => call_tool(cfg, params),
-        _ => unreachable!("serve 已过滤未知方法"),
-    }
 }
 
 /* ---------------- 工具定义 ---------------- */

@@ -100,6 +100,33 @@ pub fn urlenc(s: &str) -> String {
     }
     out
 }
+/// 取原始字节。`path_or_url` 既可以是相对本目标的路径，也可以是**绝对地址**
+/// （storage 直链 —— 下载产物与签名文件时用得上，那些地址不属于 API）。
+pub fn get_bytes(cfg: &CliConfig, path_or_url: &str, token: Option<&str>) -> anyhow::Result<Vec<u8>> {
+    let url = if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+        path_or_url.to_string()
+    } else {
+        format!("{}{}", cfg.base_url().trim_end_matches('/'), path_or_url)
+    };
+    let mut req = agent().request("GET", &url);
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    match req.call() {
+        Ok(r) => {
+            let mut buf = Vec::new();
+            use std::io::Read;
+            r.into_reader().read_to_end(&mut buf)?;
+            Ok(buf)
+        }
+        Err(ureq::Error::Status(status, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            bail!("{}", err_of(status, &body))
+        }
+        Err(e) => bail!("网络错误: {e}"),
+    }
+}
+
 pub fn post_json(cfg: &CliConfig, path: &str, token: Option<&str>, body: &Value) -> anyhow::Result<Value> {
     request(cfg, "POST", path, token, Some(body), None, &[])
 }
