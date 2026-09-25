@@ -10,6 +10,24 @@
 
 ## [未发布]
 
+### 新增 · **`ncc`**：`ncc hur`（hur 制品工具链内嵌进客户端）
+
+- **`hur-core` 从 harnessuse 迁入本仓**：`cli/crates/hur-core`（制品规范 `harness-use-package/v1`：R1~R9 校验 / 确定性打包 / 安全策略与执行计划 / Minisign 签名 / 互操作导出 / MCP）。`cli/` 现在是 Cargo 工作区根（`members = ["crates/hur-core"]`），**`cli/target` 与 `scripts/build-release.sh`、`.github/workflows/release.yml` 的路径一行未改**。crate 保留 **MIT**（本仓整体 Apache-2.0，此 crate 例外）。纯 Rust、无 C 依赖；**不含 wasmtime**。
+- **`ncc hur` 子命令**（薄壳，能力全在 hur-core）：
+  - 本地/离线：`init`（生成合规工程 + `hur.lock`）· `build` · `pack` · `sign` · `key gen|show|pub|trust|trusted|untrust` · `verify`（R1~R9，含签名）· `inspect` · `ls`
+  - `run`：只出**可审执行计划**；`--exec` 如实拒绝并指路（`ncc` 不内置沙箱运行时 —— wasmtime 不进这个二进制，执行属客户端）
+  - `publish`：本地 `verify` → `pack`（确定性字节）→ 策略要求或 `--sign` 时签名 → 走 **ncc 的 registry 条目模型**（`kind=hur` + `manifest.hur` 带包元数据与签名指纹）。**离线铁律**：只有这一步联网，且只上传"已经打完包的字节"。
+  - **沙箱治理（同日追加）**：`sandbox`（治理视图：认识的引擎 / 本二进制托管了什么（现在=无）/ **各引擎托管归属表** / 生效策略与限额 / 已登记环境 / 留痕条数）· `dep`（依赖对账：声明 ↔ `hur.lock` ↔ 实际字节，六状态 `ok/unlocked/missing/drift/unresolved/stale`，有缺失或漂移退出码 1）· `env ls|show|use|add|rm`（沙箱环境登记与证明，非法登记照拒）· `task ls|inspect`（执行留痕 `audit.trace_dir` ＋ 投递任务 `~/.harnessuse/tasks/`；`inspect latest|序号|文件名` 显示当时的限额快照/宿主调用/用量/错误）。**沙箱拆两面**：治理归 NCC（这些命令，不执行代码），托管仍在客户端（`ncc` 不链接 wasmtime）；将来节点托管只需改那张托管归属表。
+  - 新模块 **`hur-core::dep`**；`pack::local_dep_hash()` 抽出来给锁与对账**共用同一算法**（否则 drift 判断就是猜）。
+- 三条边界写进文档与实现：离线铁律 · 身份一次到底但不复制账号（用 ncc 登录态，签名私钥仍在本机 `~/.harnessuse/keys`）· wasmtime 不进 ncc。设计见 `ncc-platform/prd/ncc-hur.md`。
+- 实测（本地隔离实例）：`init → verify → key gen → sign → verify(✔ 签名有效) → pack → run --exec(拒绝) → publish(--sign) → search --kind hur → info`，条目 manifest 里能看到 `signature.keynum`。
+
+### 修复 · **`ncc`**：`ncc info <id | @org/slug>` 一直不可用
+
+- 顶层 `--target` 是 `global = true`，而 `Cmd::Info` 的位置参数**字段名也叫 `target`** → clap 的 arg id 撞车，位置参数的值被当成"目标名"，任何 `ncc info R-…` / `ncc info @ns/slug` 都报「没有名为 … 的目标」。
+  位置参数改名 `reference`（对命令行用户不可见）后恢复正常。
+
+
 ### 新增 · **`ncc`**：`ncc p2p`（跨局域网节点直连）
 
 - `ncc p2p probe`：**纯本地**打洞条件预检（不需要服务器）——同一本地 UDP socket 向多台 STUN

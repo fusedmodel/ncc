@@ -3,6 +3,7 @@ mod api;
 mod capability;
 mod config;
 mod configs;
+mod hur;
 mod mcp;
 mod nodes;
 mod p2p;
@@ -85,7 +86,11 @@ enum Cmd {
     /// 条目详情：ncc info <id | @org/slug>
     Info {
         /// 条目引用：R-… 或 @org/slug
-        target: String,
+        ///
+        /// ⚠️ 这个位置参数的字段名**不能**叫 `target`：顶层 `--target` 是
+        /// `global = true`，两者 arg id 相同时 clap 会把位置参数的值塞进全局项，
+        /// 于是 `ncc info R-…` 会报「没有名为 R-… 的目标」（已实测的坑）。
+        reference: String,
     },
     /// 下载条目字节：ncc download <id | @org/slug> [-o 文件]
     Download {
@@ -115,6 +120,12 @@ enum Cmd {
     /// `update` 是隐藏别名，老文档与脚本里的 `ncc update` 仍可用（但不再出现在 help 里）。
     #[command(alias = "update")]
     Upgrade(upgrade::UpgradeArgs),
+    /// hur 制品工具链：ncc hur verify | pack | sign | key | run | publish
+    ///
+    /// 本地能力（verify/pack/sign/key）**全程离线**；只有 publish 联网，且只上传"已经打完包的字节"。
+    /// 真执行不在 ncc（不内置沙箱运行时）：`ncc hur run` 只出可审计划。
+    #[command(subcommand)]
+    Hur(hur::HurCmd),
     /// API-Key：ncc key create --label ci | ncc key list | ncc key revoke <id>
     #[command(subcommand)]
     Key(KeyCmd),
@@ -529,6 +540,7 @@ fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::R
 /// 只声明「明确属于某个能力」的命令；账号类（register/login/me/ns/key）两边都有，不管。
 fn required_capability(cmd: &Cmd) -> Option<&'static str> {
     match cmd {
+        Cmd::Hur(h) => h.capability(),
         Cmd::Publish(_)
         | Cmd::Search(_)
         | Cmd::Info { .. }
@@ -594,13 +606,9 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         Cmd::Ns(n) => cmd_ns(cfg, n),
         Cmd::Publish(a) => cmd_publish(cfg, a),
         Cmd::Search(a) => cmd_search(cfg, a),
-        Cmd::Info { target } => {
+        Cmd::Info { reference } => {
             let token = config::require_token(cfg).ok();
-            let path = if target.starts_with("R-") {
-                format!("/api/registry/{}", target)
-            } else {
-                format!("/api/registry/{}", target)
-            };
+            let path = format!("/api/registry/{}", reference);
             let data = api::get(cfg, &path, token.as_deref())?;
             println!("{}", serde_json::to_string_pretty(&data["item"])?);
             Ok(())
@@ -623,6 +631,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             }
         },
         Cmd::Upgrade(a) => upgrade::run(a),
+        Cmd::Hur(h) => hur::run(cfg, h),
         Cmd::Key(k) => cmd_key(cfg, k),
         Cmd::Living(a) => cmd_living(cfg, a),
         Cmd::Profile(p) => match &p.action {
