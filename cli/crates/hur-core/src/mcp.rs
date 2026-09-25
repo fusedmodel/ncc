@@ -78,7 +78,7 @@ fn tools() -> Value {
         },
         {
             "name": "hur_verify",
-            "description": "离线校验一个包目录或 .hur 产物（R1~R9：规范/版本/入口/依赖/权限面/摘要一致性/Agent 声明/制品签名），返回结构化结论。装包或信任一个包之前先跑它。",
+            "description": "离线校验一个包目录或 .hur 产物（R1~R10：规范/版本/入口/依赖/权限面/摘要一致性/Agent 声明/制品签名），返回结构化结论。装包或信任一个包之前先跑它。",
             "inputSchema": { "type": "object", "properties": { "path": s("包目录或 .hur 文件") }, "required": ["path"] }
         },
         {
@@ -638,6 +638,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("skills")).unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let pkg = HurPackage {
+            egress: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),
             id: "A-hotel-front-desk-abc123".into(),

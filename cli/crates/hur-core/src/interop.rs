@@ -906,6 +906,7 @@ mod tests {
 
     fn pkg_with_agent() -> HurPackage {
         HurPackage {
+            egress: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),
             id: "A-hotel-front-desk-abc123".into(),

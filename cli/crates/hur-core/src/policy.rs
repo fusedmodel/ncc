@@ -897,7 +897,7 @@ pub fn plan(pkg: &HurPackage, policy: &SecurityPolicy, sources: &[String], verif
     let errors = verify_issues.iter().filter(|i| i.level == Level::Error).count() as u32;
     let warns = verify_issues.iter().filter(|i| i.level == Level::Warn).count() as u32;
     if e.verify_required {
-        checks.push(format!("verify 前置：必须过 R1~R9（当前 {errors} 错 / {warns} 提醒）"));
+        checks.push(format!("verify 前置：必须过 R1~R10（当前 {errors} 错 / {warns} 提醒）"));
         if errors > e.max_errors {
             reasons.push(format!("verify 未通过：{errors} 个错误 > 策略允许的 {} 个", e.max_errors));
         }
@@ -1129,7 +1129,7 @@ pub fn validate_security(pkg: &HurPackage, dir: &Path, known_policy: Option<bool
     out
 }
 
-/* ---------------- 跑之前先把该验的验完（R1~R9） ---------------- */
+/* ---------------- 跑之前先把该验的验完（R1~R10） ---------------- */
 
 /// **一次把该做的检查都做了**：R1~R8（`spec::validate`）+ R9（制品签名，按生效策略的
 /// `verify.require_signature`）。CLI 与 GUI 都走这里 —— 少一个调用点忘了核签名，
@@ -1231,6 +1231,7 @@ mod tests {
 
     fn pkg(sec: Option<SecurityReq>) -> HurPackage {
         HurPackage {
+            egress: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),
             id: "A-hotel-front-desk-abc123".into(),

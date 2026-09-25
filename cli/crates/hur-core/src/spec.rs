@@ -159,6 +159,49 @@ pub struct HurPackage {
     /// 安全策略声明（R8）：本包希望用哪套策略 + 进一步收紧自己
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<crate::policy::SecurityReq>,
+    /// 出口声明（R10）：本包可以充当哪几条「出网通道」。
+    /// 网关的 accept 路由必须由它**背书**（配置只能比声明更窄）—— 见 `egress_covers`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<Egress>,
+}
+
+/// 出口声明（`egress{}`）：本包声明自己可以充当哪几条「出网通道」。
+///
+/// ⚠️ **只有声明，没有凭据** —— 包要能被签名、分发、公开检索，密钥永远不进包。
+/// `inject` 里只有**请求头名**，值由运行者（网关）的本地配置提供。
+///
+/// 为什么值得做成清单里的声明：这样「提供出口」不再是一份手写 JSON，而是
+/// 一份**可签名、可分发、可被第三方核对**的包声明（S2b，PRD §16.3 的硬约束 3）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Egress {
+    #[serde(default)]
+    pub provides: Vec<EgressRoute>,
+}
+
+impl Egress {
+    pub fn is_empty(&self) -> bool {
+        self.provides.is_empty()
+    }
+}
+
+/// 一条出口通道声明。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EgressRoute {
+    /// 路由名（出现在网关 URL 里：`/v1/<name>/<路径>`）
+    #[serde(default)]
+    pub name: String,
+    /// 上游基址。必须 `https://`；`http://` 只允许 loopback（本地联调）
+    #[serde(default)]
+    pub target: String,
+    /// 允许的上游路径（**精确匹配**，不带查询串）
+    #[serde(default)]
+    pub paths: Vec<String>,
+    /// 允许的方法（如 POST）
+    #[serde(default)]
+    pub methods: Vec<String>,
+    /// 运行者需要注入的**请求头名**（只有名字，没有值）
+    #[serde(default)]
+    pub inject: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,7 +235,7 @@ pub enum Level {
     Info,
 }
 
-/// 一条检查结论（R1~R9 共用）。可序列化：CLI 的 `--json` 与 GUI 都要原样转出去。
+/// 一条检查结论（R1~R10 共用）。可序列化：CLI 的 `--json` 与 GUI 都要原样转出去。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     pub rule: String,
@@ -345,6 +388,152 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 
 pub fn sha256_file(p: &Path) -> Result<String> {
     Ok(sha256_hex(&std::fs::read(p)?))
+}
+
+/// 一个已解析的 HTTP 目标。egress 声明与网关（`src/gateway.rs`）**共用同一份**解析，
+/// 免得两边对“什么是合法的 target”理解不一致。
+pub struct HttpTarget {
+    pub scheme: String,
+    /// host[:port]
+    pub authority: String,
+    pub host: String,
+    /// 基路径，无尾斜杠（可能是空串）
+    pub base: String,
+}
+
+impl HttpTarget {
+    /// 拼上一条（已归一的）子路径。
+    pub fn join(&self, sub: &str) -> String {
+        format!("{}://{}{}/{}", self.scheme, self.authority, self.base, sub)
+    }
+}
+
+/// 解析 `https://host[:port][/base]`。不接受用户信息、控制字符、空格；scheme 只认 http/https。
+///
+/// 基路径也走 `normalize_egress_path`（同一份规则）—— 否则 `https://host/a b`、
+/// `https://host/a%2fb`、`https://host/../x` 这类写法会从这里溜进白名单比较。
+pub fn parse_http_target(raw: &str) -> Option<HttpTarget> {
+    let raw = raw.trim();
+    let (scheme, rest) = raw.split_once("://")?;
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    let (authority, raw_base) = match rest.split_once('/') {
+        Some((a, p)) => (a, Some(p)),
+        None => (rest, None),
+    };
+    if authority.is_empty() || authority.contains(['\r', '\n', ' ', '@']) {
+        return None;
+    }
+    let host = authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority).to_string();
+    if host.is_empty() || host.contains(['\r', '\n', ' ', '@', '/']) {
+        return None;
+    }
+    let base = match raw_base {
+        None => String::new(),
+        Some(p) => {
+            let trimmed = p.trim_matches('/');
+            if trimmed.is_empty() {
+                String::new()
+            } else {
+                normalize_egress_path(trimmed).map(|n| format!("/{n}"))?
+            }
+        }
+    };
+    Some(HttpTarget { scheme: scheme.to_string(), authority: authority.to_string(), host, base })
+}
+
+/// host 是不是本机（localhost / 127.0.0.1 / ::1）。
+pub fn is_loopback_host(h: &str) -> bool {
+    let h = h.trim_start_matches('[').trim_end_matches(']');
+    if h == "localhost" {
+        return true;
+    }
+    h.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+}
+
+/// egress / 网关路由名：`[a-z0-9._-]`，长度 1~64。
+pub fn valid_egress_name(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+}
+
+/// HTTP 头名（用于 `inject`）：字母数字与 `-`/`_`。
+pub fn valid_header_name(s: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+/// 归一化一条 egress / 网关路径：去首尾斜杠，拒绝一切可能跑出白名单的写法。
+///
+/// 与网关共用（`src/gateway.rs` 直接调它）。这里**不做百分号解码**而是直接拒 `%`：
+/// 解码正是 `%2e%2e` 绕过的来源，而固定路由代理的上游路径都是字面量。
+/// `..` / 反斜杠 / 空段 / `?` / `#` / 空格 / 控制字符一律拒。
+pub fn normalize_egress_path(p: &str) -> Option<String> {
+    let p = p.trim().trim_matches('/');
+    if p.is_empty() || p.len() > 512 {
+        return None;
+    }
+    if p.contains(['%', '\\', '?', '#'])
+        || p.chars().any(|c| c.is_control() || c == ' ')
+        || p.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
+    {
+        return None;
+    }
+    Some(p.to_string())
+}
+
+/// S2b：网关的 accept 路由是否**完全落在**某条 egress 声明的范围内。
+///
+/// 返回所有「配置比声明更宽」的问题（空 = 合规）。方向只有一个：
+/// **配置只能比包声明更窄，不能更宽** —— 包的声明是上限。
+pub fn egress_covers(
+    decl: &EgressRoute,
+    target: &str,
+    paths: &[String],
+    methods: &[String],
+    inject: &[String],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if decl.target.trim() != target.trim() {
+        out.push(format!(
+            "target 必须与声明一致：「{}」，配置写的是「{}」",
+            decl.target.trim(),
+            target.trim()
+        ));
+    }
+    for p in paths {
+        let Some(n) = normalize_egress_path(p) else {
+            out.push(format!("路径「{p}」不合法"));
+            continue;
+        };
+        if !decl.paths.iter().any(|d| normalize_egress_path(d).as_deref() == Some(n.as_str())) {
+            out.push(format!(
+                "路径「{p}」超出声明的范围（声明里只有：{}）",
+                decl.paths.join(", ")
+            ));
+        }
+    }
+    for m in methods {
+        if !decl.methods.iter().any(|d| d.eq_ignore_ascii_case(m)) {
+            out.push(format!(
+                "方法「{m}」不在声明里（声明里只有：{}）",
+                decl.methods.join(", ")
+            ));
+        }
+    }
+    for h in inject {
+        if !decl.inject.iter().any(|d| d.eq_ignore_ascii_case(h)) {
+            out.push(format!(
+                "注入头「{h}」不在声明里（声明里只有：{}）",
+                if decl.inject.is_empty() { "（无）".to_string() } else { decl.inject.join(", ") }
+            ));
+        }
+    }
+    out
 }
 
 /// 从源码/技能文件里粗略抽取外呼域名（用于 R5 权限面核对）
@@ -580,6 +769,89 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
     // R8 安全策略声明（`security{}`）：引擎名、执行入口、network 档位、远程+签名搭配
     out.extend(crate::policy::validate_security(pkg, dir, None));
 
+    // R10 出口声明（`egress{}`）：声明本包可以充当哪几条出网通道。
+    // 抽成独立函数是因为**网关也要用同一份判定**（它拿这个当路由的上限）：
+    // 「提供出口」是不是合法，只应该有一个答案。
+    out.extend(validate_egress(pkg));
+
+    out
+}
+
+/// R10：校验包的出口声明（`egress{}`）。
+///
+/// 要点不是“声明的对不对”，而是**声明本身要有边界**：target 必须 https（本机除外）、
+/// paths/methods 不能为空（空 = 放行一切）、要出网就得在 `permissions.network` 里出现。
+/// 网关 `accept` 路由拿它当上限（见 `egress_covers`）。
+pub fn validate_egress(pkg: &HurPackage) -> Vec<Issue> {
+    let mut out = Vec::new();
+    match pkg.egress.as_ref() {
+        Some(eg) if !eg.is_empty() => {
+            let mut seen: Vec<String> = Vec::new();
+            for r in &eg.provides {
+                if !valid_egress_name(&r.name) {
+                    out.push(Issue::err(
+                        "R10",
+                        format!("egress.provides 的路由名「{}」不合法（只允许 [a-z0-9._-]，≤64）", r.name),
+                    ));
+                } else if seen.contains(&r.name) {
+                    out.push(Issue::err("R10", format!("egress 路由名「{}」重复", r.name)));
+                } else {
+                    seen.push(r.name.clone());
+                }
+
+                match parse_http_target(&r.target) {
+                    None => out.push(Issue::err(
+                        "R10",
+                        format!("egress「{}」的 target「{}」不合法（要 https://主机[:端口][/基路径]）", r.name, r.target),
+                    )),
+                    Some(t) => {
+                        if t.scheme == "http" && !is_loopback_host(&t.host) {
+                            out.push(Issue::err(
+                                "R10",
+                                format!("egress「{}」的 target 是明文 http 且非本机 —— 出站必须 https", r.name),
+                            ));
+                        }
+                        if pkg.permissions.network.is_empty() {
+                            out.push(Issue::err(
+                                "R10",
+                                format!("egress「{}」要出网，但 permissions.network 是空的 —— 声明出口前先声明权限面", r.name),
+                            ));
+                        } else if !host_allowed(&t.host, &pkg.permissions.network) {
+                            out.push(Issue::warn(
+                                "R10",
+                                format!("egress「{}」的域名「{}」不在 permissions.network 里（建议补齐，否则与 R5 不一致）", r.name, t.host),
+                            ));
+                        }
+                    }
+                }
+
+                if r.paths.is_empty() {
+                    out.push(Issue::err(
+                        "R10",
+                        format!("egress「{}」没声明 paths —— 空白名单会放行该上游下的一切路径", r.name),
+                    ));
+                }
+                for p in &r.paths {
+                    if normalize_egress_path(p).is_none() {
+                        out.push(Issue::err("R10", format!("egress「{}」的路径「{p}」不合法", r.name)));
+                    }
+                }
+                if r.methods.is_empty() {
+                    out.push(Issue::err("R10", format!("egress「{}」没声明 methods（空 = 拒绝一切）", r.name)));
+                }
+                for h in &r.inject {
+                    if !valid_header_name(h) {
+                        out.push(Issue::err("R10", format!("egress「{}」的 inject 头名「{h}」不合法", r.name)));
+                    }
+                }
+            }
+        }
+        Some(_) => out.push(Issue::warn(
+            "R10",
+            "egress{} 存在但 provides 为空 —— 等于没有声明出口（网关不会从它拿到任何路由）",
+        )),
+        None => {}
+    }
     out
 }
 
@@ -597,6 +869,7 @@ mod tests {
 
     fn base(kind: &str, id: &str) -> HurPackage {
         HurPackage {
+            egress: None,
             spec: PKG_SPEC.into(),
             kind: kind.into(),
             id: id.into(),
@@ -806,5 +1079,225 @@ mod tests {
         pkg.deps.skill = vec!["./skills/missing.md".into()];
         let issues = validate(&pkg, &dir, None, false);
         assert!(issues.iter().any(|i| i.rule == "R4"), "{issues:?}");
+    }
+
+    /* ---------------- R10：出口声明 ---------------- */
+
+    fn eg_route(name: &str, target: &str, paths: &[&str], methods: &[&str], inject: &[&str]) -> EgressRoute {
+        EgressRoute {
+            name: name.into(),
+            target: target.into(),
+            paths: paths.iter().map(|s| s.to_string()).collect(),
+            methods: methods.iter().map(|s| s.to_string()).collect(),
+            inject: inject.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// 跑一遍 R1~R10，只要 R10 的结论。
+    fn r10(pkg: &HurPackage, dir: &Path) -> Vec<Issue> {
+        validate(pkg, dir, None, false).into_iter().filter(|i| i.rule == "R10").collect()
+    }
+
+    #[test]
+    fn r10_accepts_a_well_formed_declaration() {
+        let dir = temp_pkg("r10-ok");
+        let mut p = base("harness", "A-r10-ok-000001");
+        p.permissions.network = vec!["api.openai.com".into()];
+        p.egress = Some(Egress {
+            provides: vec![eg_route(
+                "llm",
+                "https://api.openai.com/v1",
+                &["chat/completions"],
+                &["POST"],
+                &["Authorization"],
+            )],
+        });
+        let out = r10(&p, &dir);
+        assert!(out.is_empty(), "合规声明不该有问题：{out:?}");
+    }
+
+    #[test]
+    fn r10_absent_egress_is_fine() {
+        let dir = temp_pkg("r10-none");
+        let p = base("harness", "A-r10-none-000001");
+        assert!(r10(&p, &dir).is_empty());
+    }
+
+    #[test]
+    fn r10_rejects_open_or_plaintext_or_credentialed_declarations() {
+        let dir = temp_pkg("r10-bad");
+        let cases: Vec<(&str, Vec<EgressRoute>, Vec<String>, bool)> = vec![
+            // 空 paths：空白名单会放行该上游下的一切路径
+            (
+                "空白名单",
+                vec![eg_route("llm", "https://api.openai.com/v1", &[], &["POST"], &[])],
+                vec!["api.openai.com".into()],
+                true,
+            ),
+            // 空 methods
+            (
+                "空方法",
+                vec![eg_route("llm", "https://api.openai.com/v1", &["chat/completions"], &[], &[])],
+                vec!["api.openai.com".into()],
+                true,
+            ),
+            // 明文 http 且非本机
+            (
+                "明文出站",
+                vec![eg_route("llm", "http://api.example.com/v1", &["x"], &["POST"], &[])],
+                vec!["api.example.com".into()],
+                true,
+            ),
+            // 要出网但 permissions.network 空
+            (
+                "没有权限面",
+                vec![eg_route("llm", "https://api.openai.com/v1", &["chat/completions"], &["POST"], &[])],
+                vec![],
+                true,
+            ),
+            // 路径穿越 / 百分号编码
+            (
+                "路径带穿越",
+                vec![eg_route("llm", "https://api.openai.com/v1", &["../etc/passwd"], &["POST"], &[])],
+                vec!["api.openai.com".into()],
+                true,
+            ),
+            (
+                "路径带编码",
+                vec![eg_route("llm", "https://api.openai.com/v1", &["a%2fb"], &["POST"], &[])],
+                vec!["api.openai.com".into()],
+                true,
+            ),
+            // 路由名不合法 / 重名
+            (
+                "名字非法",
+                vec![eg_route("LLM Main", "https://api.openai.com/v1", &["x"], &["POST"], &[])],
+                vec!["api.openai.com".into()],
+                true,
+            ),
+            (
+                "重名",
+                vec![
+                    eg_route("llm", "https://api.openai.com/v1", &["x"], &["POST"], &[]),
+                    eg_route("llm", "https://api.openai.com/v1", &["y"], &["POST"], &[]),
+                ],
+                vec!["api.openai.com".into()],
+                true,
+            ),
+            // 注入头名不合法
+            (
+                "注入头名非法",
+                vec![eg_route("llm", "https://api.openai.com/v1", &["x"], &["POST"], &["Bad Header"])],
+                vec!["api.openai.com".into()],
+                true,
+            ),
+        ];
+        for (label, provides, network, want_problem) in cases {
+            let mut p = base("harness", "A-r10-bad-000001");
+            p.permissions.network = network;
+            p.egress = Some(Egress { provides });
+            let out = r10(&p, &dir);
+            assert!(
+                out.iter().any(|i| i.is_problem()) == want_problem,
+                "「{label}」的 R10 结论不符合预期：{out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn r10_allows_loopback_http_for_local_dev() {
+        let dir = temp_pkg("r10-loopback");
+        let mut p = base("harness", "A-r10-loop-000001");
+        p.permissions.network = vec!["127.0.0.1".into()];
+        p.egress = Some(Egress {
+            provides: vec![eg_route("llm", "http://127.0.0.1:8899/v1", &["chat/completions"], &["POST"], &[])],
+        });
+        let out = r10(&p, &dir);
+        assert!(out.iter().all(|i| i.level != Level::Error), "本机 http 应当允许：{out:?}");
+    }
+
+    #[test]
+    fn egress_declares_but_never_carries_credentials() {
+        // 结构上就没有“放值”的位置：inject 只存头名。
+        // 反证：一个想把密钥写进 inject 的包，会因为头名合法性被拒。
+        let dir = temp_pkg("r10-secret");
+        let mut p = base("harness", "A-r10-secret-000001");
+        p.permissions.network = vec!["api.openai.com".into()];
+        p.egress = Some(Egress {
+            provides: vec![eg_route(
+                "llm",
+                "https://api.openai.com/v1",
+                &["x"],
+                &["POST"],
+                &["Authorization: Bearer sk-x"],
+            )],
+        });
+        assert!(r10(&p, &dir).iter().any(|i| i.is_problem()), "把值塞进 inject 必须被拒");
+    }
+
+    /* ---------------- S2b：配置只能比声明更窄 ---------------- */
+
+    #[test]
+    fn egress_covers_only_narrows_never_widens() {
+        let decl = eg_route(
+            "llm",
+            "https://api.openai.com/v1",
+            &["chat/completions", "models"],
+            &["POST", "GET"],
+            &["Authorization"],
+        );
+
+        // 完全一致 → 合规
+        assert!(egress_covers(
+            &decl,
+            "https://api.openai.com/v1",
+            &["chat/completions".into()],
+            &["POST".into()],
+            &["Authorization".into()]
+        )
+        .is_empty());
+
+        // 更窄（只留一条路径 / 一个方法）→ 合规
+        assert!(egress_covers(&decl, "https://api.openai.com/v1", &["models".into()], &["GET".into()], &[]).is_empty());
+
+        // 更宽 → 必须逐条报出来
+        let bad = egress_covers(
+            &decl,
+            "https://api.openai.com/v2",
+            &["chat/completions".into(), "files".into()],
+            &["POST".into(), "DELETE".into()],
+            &["Authorization".into(), "X-Api-Key".into()],
+        );
+        assert_eq!(bad.len(), 4, "target/路径/方法/注入头 各一条：{bad:?}");
+        assert!(bad[0].contains("target"));
+        assert!(bad.iter().any(|m| m.contains("files")));
+        assert!(bad.iter().any(|m| m.contains("DELETE")));
+        assert!(bad.iter().any(|m| m.contains("X-Api-Key")));
+    }
+
+    #[test]
+    fn egress_covers_compares_paths_after_normalization() {
+        let decl = eg_route("llm", "https://api.openai.com/v1", &["chat/completions"], &["POST"], &[]);
+        // 前导斜杠 / 尾随斜杠都算同一条
+        assert!(egress_covers(&decl, "https://api.openai.com/v1", &["/chat/completions/".into()], &["post".into()], &[]).is_empty());
+        // 但穿越写法不因为“看起来像”就放行
+        assert!(!egress_covers(&decl, "https://api.openai.com/v1", &["../chat/completions".into()], &["POST".into()], &[]).is_empty());
+    }
+
+    #[test]
+    fn normalize_egress_path_is_the_shared_rule() {
+        assert_eq!(normalize_egress_path("/chat/completions/").as_deref(), Some("chat/completions"));
+        for bad in ["", "/", "..", "a/../b", "a//b", "%2e%2e/x", "a\\b", "a?x=1", "a#f", "a b"] {
+            assert!(normalize_egress_path(bad).is_none(), "应拒绝：{bad}");
+        }
+    }
+
+    #[test]
+    fn parse_http_target_rejects_the_dangerous_shapes() {
+        assert!(parse_http_target("https://api.openai.com/v1").is_some());
+        assert!(parse_http_target("http://127.0.0.1:8899").is_some());
+        for bad in ["api.openai.com", "ftp://x/y", "https://", "https://user@host/x", "https://host/a b"] {
+            assert!(parse_http_target(bad).is_none(), "应拒绝：{bad}");
+        }
     }
 }

@@ -29,7 +29,7 @@ use crate::mcp;
 
 #[derive(Subcommand)]
 pub enum HurCmd {
-    /// 校验包目录或 .hur 产物（R1~R9，全程离线；R9 = 制品签名）
+    /// 校验包目录或 .hur 产物（R1~R10，全程离线；R9 = 制品签名）
     Verify(HurVerifyArgs),
     /// 读包：清单 / 依赖 / 权限面 / 安全策略 / 签名状态
     Inspect {
@@ -282,7 +282,7 @@ pub struct HurExportArgs {
     /// 要求产物带**可核对**签名（不给则跟随生效策略）
     #[arg(long)]
     pub require_signature: bool,
-    /// 有错也导出（默认不：R1~R9 不过就拒绝）
+    /// 有错也导出（默认不：R1~R10 不过就拒绝）
     #[arg(long)]
     pub allow_issues: bool,
     #[arg(long)]
@@ -326,7 +326,7 @@ pub enum HurPolicyCmd {
         #[arg(long)]
         json: bool,
     },
-    /// 按生效策略跑 R1~R9（= verify 的策略视角）
+    /// 按生效策略跑 R1~R10（= verify 的策略视角）
     Check {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -584,7 +584,7 @@ pub struct HurPublishArgs {
     /// slug 已存在时改为**更新**（改版本/产物地址/状态；清单里的签名与权限面不会变，会提醒）
     #[arg(long)]
     pub update: bool,
-    /// 有错也发（默认不：R1~R9 不过就拒绝）
+    /// 有错也发（默认不：R1~R10 不过就拒绝）
     #[arg(long)]
     pub allow_issues: bool,
     #[arg(long)]
@@ -744,7 +744,7 @@ fn verify(a: HurVerifyArgs) -> Result<()> {
         }
     }
     if !ok {
-        bail!("校验未通过（R1~R9）");
+        bail!("校验未通过（R1~R10）");
     }
     Ok(())
 }
@@ -1511,7 +1511,7 @@ fn parse_bool(flag: &str, v: &str) -> Result<bool> {
 ///
 /// 为什么不是只给一个 `.hur`：收件人要能**自己**判断"这份字节是谁做的、有没有被换过"。
 /// 所以公钥、签名、摘要、当时的策略一起给（export.json 就是那张"说明书"，不用回来问你）。
-/// 全程离线；先自己按 R1~R9 验一遍，不过就拒绝导出（`--allow-issues` 可明确覆盖）。
+/// 全程离线；先自己按 R1~R10 验一遍，不过就拒绝导出（`--allow-issues` 可明确覆盖）。
 fn export(a: HurExportArgs) -> Result<()> {
     let dir = root_of(&a.path)?;
     let pkg = spec::read_pkg(&dir)?;
@@ -1937,7 +1937,7 @@ fn policy_cmd(a: HurPolicyArgs) -> Result<()> {
                     v.require_signature.unwrap_or(false)
                 );
                 if issues.is_empty() {
-                    println!("检查项     全部通过（R1~R9）");
+                    println!("检查项     全部通过（R1~R10）");
                 } else {
                     print_issues(&issues);
                 }
@@ -2196,7 +2196,7 @@ const HUR_MCP_INSTRUCTIONS: &str = "\
 `ncc hur mcp` 暴露的是 **hur 制品的治理面**（控制面），不是执行面。
 
 怎么用：
-1. 看清一个包：hur_inspect（清单 / 入口 / 权限面 / 依赖）→ hur_verify（R1~R9，含签名）→ hur_dep（声明↔锁↔实际字节）。
+1. 看清一个包：hur_inspect（清单 / 入口 / 权限面 / 依赖）→ hur_verify（R1~R10，含签名）→ hur_dep（声明↔锁↔实际字节）。
 2. 看清约束：hur_policy（生效策略 + 逐层来源 + 限额）；hur_plan（执行计划：允许不允许、用哪个引擎、什么限额、为什么）。
 3. 看清环境与留痕：hur_sandbox（引擎托管归属 / 已登记沙箱环境 / 留痕数）；hur_tasks（谁在什么限额下跑了什么、留痕详情）；hur_envs（登记的环境与证明）；hur_keys（本机密钥指纹 + 受信公钥）。
 
@@ -2227,7 +2227,7 @@ fn hur_mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "hur_verify",
-            "description": "按生效策略跑 R1~R9 校验（全程本地、不联网、不执行）：R9 是制品签名。返回错误/提醒/已核对项与签名状态（谁签的、可不可核对）。",
+            "description": "按生效策略跑 R1~R10 校验（全程本地、不联网、不执行）：R9 是制品签名。返回错误/提醒/已核对项与签名状态（谁签的、可不可核对）。",
             "inputSchema": json!({
                 "type": "object",
                 "properties": {
@@ -2723,7 +2723,7 @@ fn interop_cmd(a: HurInteropArgs) -> Result<()> {
 
 /* ---------------- 联网：发布（用 ncc 的身份与条目模型） ---------------- */
 
-/// `ncc hur publish` = 本地 verify(R1~R9) → pack（确定性）→ 可选 sign → 走 **ncc 的 registry 条目模型**。
+/// `ncc hur publish` = 本地 verify(R1~R10) → pack（确定性）→ 可选 sign → 走 **ncc 的 registry 条目模型**。
 ///
 /// 刻意与 `ncc publish` 共用同一条上传/建档路径（`/api/registry/uploads` + `/api/registry`），
 /// 只是 kind 固定为 `hur`、manifest 里带 hur 包元数据与签名指纹 —— 这样目录侧能显示"谁签的"。
@@ -2733,7 +2733,7 @@ fn publish(cfg: &CliConfig, a: HurPublishArgs) -> Result<()> {
     let r = policy::resolve(&dir, Some(&pkg))?;
     let e = policy::effective(&r.policy);
 
-    // ① 先校验（本地）：R1~R9。不过就不发（除非 --allow-issues，且错误数为 0 也不行）
+    // ① 先校验（本地）：R1~R10。不过就不发（除非 --allow-issues，且错误数为 0 也不行）
     let issues = policy::collect_issues(&dir, &pkg, &r.policy)?;
     let errs = issues.iter().filter(|i| i.level == spec::Level::Error).count();
     let warns = issues.iter().filter(|i| i.level == spec::Level::Warn).count();

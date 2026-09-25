@@ -255,6 +255,7 @@ mod tests {
 
     fn pkg_with(deps: Deps) -> HurPackage {
         HurPackage {
+            egress: None,
             spec: crate::spec::PKG_SPEC.into(),
             kind: "agent".into(),
             id: "A-dep-test-000001".into(),

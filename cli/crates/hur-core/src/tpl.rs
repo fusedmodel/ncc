@@ -91,6 +91,7 @@ pub fn build_package(input: &InitInput) -> HurPackage {
         input.short.trim().to_ascii_uppercase()
     };
     HurPackage {
+        egress: None,
         spec: PKG_SPEC.to_string(),
         kind: input.kind.clone(),
         id,

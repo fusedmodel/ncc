@@ -106,6 +106,15 @@ pub struct Route {
     /// `forward` 用来访问 peer 的令牌（= B 那条 accept 路由的 token）。
     #[serde(default)]
     pub peer_token: String,
+
+    // ---- accept 专用：出口的“出处” ----
+    /// 背书本路由的 HUR 包：写包目录，或直接写 hur.json。
+    ///
+    /// 「提供出口」必须是一份**可签名、可分发的包声明**（`hur.json` 的 `egress{}`），
+    /// 不能只写在这份本地 JSON 里 —— 否则没人能核对它、没人能给签名、
+    /// 也没法把“这个出口能干什么”发给另一个人。
+    #[serde(default)]
+    pub hur: String,
 }
 
 impl Route {
@@ -115,11 +124,14 @@ impl Route {
 }
 
 /// 启动时校验后的配置（把「配置错误」挡在启动前，而不是运行中）。
+#[derive(Debug)]
 pub struct Ready {
     pub cfg: GatewayConfig,
     pub listen: String,
     pub audit_dir: PathBuf,
     pub max_body: u64,
+    /// 每条 accept 路由背后那份包声明（`check` 会打出来，便于人工核对）
+    pub backing: Vec<Backing>,
 }
 
 fn ncc_dir() -> PathBuf {
@@ -178,6 +190,7 @@ pub fn prepare(cfg: GatewayConfig) -> Result<Ready> {
         bail!("配置里没有任何 routes —— 没有路由的网关没有意义，也不会启动。");
     }
     let mut seen: Vec<(String, String)> = Vec::new();
+    let mut backing: Vec<Backing> = Vec::new();
     for r in &cfg.routes {
         if !valid_route_name(&r.name) {
             bail!("路由名 {:?} 不合法（只允许 [a-z0-9._-]）", r.name);
@@ -220,6 +233,16 @@ pub fn prepare(cfg: GatewayConfig) -> Result<Ready> {
                 if r.methods.is_empty() {
                     bail!("accept 路由 {} 没配 methods（空 = 拒绝一切，等于不可用）", r.name);
                 }
+                // S2b：出口的定义来自包，不来自这份本地 JSON。
+                if r.hur.trim().is_empty() {
+                    bail!(
+                        "accept 路由 {} 没绑 HUR 包（缺 \"hur\"）——「提供出口」必须由一份可签名、可分发的包声明背书。\n\n在路由里加：\"hur\": \"/包目录或/hur.json\"，并在那个包的 hur.json 里声明：\n  \"egress\": {{ \"provides\": [ {{ \"name\": \"{}\", \"target\": \"{}\", \"paths\": [...], \"methods\": [...] }} ] }}",
+                        r.name,
+                        r.name,
+                        r.target
+                    );
+                }
+                backing.push(bind_hur(r)?);
             }
             "forward" => {
                 if r.peer_url.trim().is_empty() {
@@ -257,26 +280,23 @@ pub fn prepare(cfg: GatewayConfig) -> Result<Ready> {
         cfg,
         listen,
         audit_dir,
+        backing,
     })
 }
 
+/// 路由名：**同一份规则**（hur-core 的 `valid_egress_name`）—— 路由名就是 URL 里的那段，
+/// 而 egress 声明里的 `name` 也是同一段，两边不能有两套合法性。
 fn valid_route_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
+    hur_core::spec::valid_egress_name(s)
 }
 
 fn valid_header_name(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    hur_core::spec::valid_header_name(s)
 }
 
+/// 主机是不是本机：同一份规则（hur-core 的 `is_loopback_host`）。
 fn is_loopback_host(h: &str) -> bool {
-    h == "localhost"
-        || h.trim_start_matches('[').trim_end_matches(']')
-            .parse::<IpAddr>()
-            .map(|ip| ip.is_loopback())
-            .unwrap_or(false)
+    hur_core::spec::is_loopback_host(h)
 }
 
 /* ============================ 小工具 ============================ */
@@ -354,68 +374,125 @@ fn ct_eq(a: &str, b: &str) -> bool {
 
 /* ============================ 上游地址与路径 ============================ */
 
-struct Target {
-    scheme: String,
-    /// host[:port]，用于拼接
-    authority: String,
-    host: String,
-    /// 基路径，无尾斜杠（可能是空串）
-    base: String,
-}
+/// 上游地址解析**就用 hur-core 的那一份**（`HttpTarget`）。
+///
+/// 为什么不让两边各写一份：egress 声明与网关必须对「什么算合法 target」有一致理解，
+/// 否则「配置只能比声明更窄」根本无从判定。
+use hur_core::spec::{parse_http_target, HttpTarget as Target, Level};
 
 fn parse_target(raw: &str) -> Result<Target> {
-    let raw = raw.trim();
-    let (scheme, rest) = raw
-        .split_once("://")
-        .ok_or_else(|| anyhow!("缺少 scheme（要 http:// 或 https://）：{raw}"))?;
-    if scheme != "http" && scheme != "https" {
-        bail!("只支持 http / https，不支持 {scheme}://");
-    }
-    if rest.is_empty() {
-        bail!("缺少主机名：{raw}");
-    }
-    let (authority, base) = match rest.split_once('/') {
-        Some((a, p)) => (a, format!("/{}", p.trim_end_matches('/'))),
-        None => (rest, String::new()),
-    };
-    if authority.is_empty() {
-        bail!("缺少主机名：{raw}");
-    }
-    let host = authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority).to_string();
-    if host.contains(['\r', '\n', ' ', '@']) {
-        bail!("主机名不合法：{host}");
-    }
-    Ok(Target {
-        scheme: scheme.to_string(),
-        authority: authority.to_string(),
-        host,
-        base: if base == "/" { String::new() } else { base },
-    })
+    parse_http_target(raw)
+        .with_context(|| format!("地址不合法（要 http(s)://主机[:端口][/基路径]，不能带用户信息）：{}", raw.trim()))
 }
 
-impl Target {
-    fn join(&self, sub: &str) -> String {
-        format!("{}://{}{}/{}", self.scheme, self.authority, self.base, sub)
-    }
-}
-
-/// 归一化「路由内子路径」：去掉首尾斜杠，拒绝一切可能跑出白名单的写法。
-///
-/// 这里**不做百分号解码**，而是直接拒绝含 `%` 的路径 —— 固定路由代理的上游路径都是
-/// 字面量（如 `chat/completions`），解码只会把 `%2e%2e` 这类绕过口子引进来。
-/// `..`、反斜杠、空段、控制字符一律拒。
+/// 归一化「路由内子路径」：**同一份规则**（hur-core 的 `normalize_egress_path`）。
 fn normalize_sub_path(p: &str) -> Option<String> {
-    let p = p.trim().trim_matches('/');
-    if p.is_empty() || p.len() > 512 {
-        return None;
+    hur_core::spec::normalize_egress_path(p)
+}
+
+/// S2b：一条 accept 路由背后那份包声明。
+#[derive(Debug)]
+pub struct Backing {
+    pub route: String,
+    /// 包目录（人看的）
+    pub dir: String,
+    pub id: String,
+    pub version: String,
+    /// 从包声明里读到的范围（不是本地 JSON 里写的）
+    pub target: String,
+    pub paths: Vec<String>,
+    pub methods: Vec<String>,
+    pub inject: Vec<String>,
+}
+
+/// 把一条 accept 路由绑到包声明上：**包声明是上限，本地配置只能更窄**。
+///
+/// 这是 S2b 的全部要点：如果「提供出口」只写在这份本地 JSON 里，那么
+/// 没人能核对它、没人能给签名、也没法把它发给另一个人。绑到 `hur.json` 的 `egress{}`
+/// 之后，出口的定义变成一份**可签名、可分发的包声明**，网关只是它的执行器。
+fn bind_hur(r: &Route) -> Result<Backing> {
+    let raw = r.hur.trim();
+    let p = PathBuf::from(raw);
+    // 写包目录，或者直接写 hur.json 文件，都接受。
+    let (dir, text) = if p.is_file() {
+        let text = std::fs::read_to_string(&p)
+            .with_context(|| format!("路由 {} 的 hur 文件读不到：{}", r.name, p.display()))?;
+        (p.parent().map(|x| x.to_path_buf()).unwrap_or_else(|| PathBuf::from(".")), text)
+    } else {
+        let f = p.join(hur_core::spec::MANIFEST);
+        let text = std::fs::read_to_string(&f).with_context(|| {
+            format!(
+                "路由 {} 绑的包读不到：{} 既不是文件，里面也没有 {}\n（写包目录，或直接指到 hur.json）",
+                r.name,
+                p.display(),
+                hur_core::spec::MANIFEST
+            )
+        })?;
+        (p, text)
+    };
+    let pkg = hur_core::spec::parse(&text)
+        .with_context(|| format!("路由 {} 绑的包不是合法清单：{}", r.name, dir.display()))?;
+
+    // 声明自己得站得住（R10）——“出口的定义”首先得是一份**有边界**的声明。
+    let issues = hur_core::spec::validate_egress(&pkg);
+    let errs: Vec<String> = issues
+        .iter()
+        .filter(|i| i.level == Level::Error)
+        .map(|i| format!("[{}] {}", i.rule, i.msg))
+        .collect();
+    if !errs.is_empty() {
+        bail!(
+            "路由 {} 绑的包 {} 的出口声明不合法：\n  - {}",
+            r.name,
+            dir.display(),
+            errs.join("\n  - ")
+        );
     }
-    if p.contains(['%', '\\', '?', '#'])
-        || p.chars().any(|c| c.is_control() || c == ' ')
-        || p.split('/').any(|seg| seg.is_empty() || seg == "." || seg == "..")
-    {
-        return None;
+    for w in issues.iter().filter(|i| i.level == Level::Warn) {
+        eprintln!("⚠ 路由 {}：{} —— {}", r.name, w.rule, w.msg);
     }
-    Some(p.to_string())
+
+    let names: Vec<String> = pkg
+        .egress
+        .as_ref()
+        .map(|e| e.provides.iter().map(|p| p.name.clone()).collect())
+        .unwrap_or_default();
+    let decl = pkg
+        .egress
+        .as_ref()
+        .and_then(|e| e.provides.iter().find(|p| p.name == r.name))
+        .ok_or_else(|| {
+            anyhow!(
+                "路由 {} 在包 {} 里找不到同名出口声明：需要 hur.json 的 egress.provides 里有一条 name = {:?}。\n这个包里现有：{}",
+                r.name,
+                dir.display(),
+                r.name,
+                if names.is_empty() { "（无）".to_string() } else { names.join(", ") }
+            )
+        })?;
+
+    // 方向只有一个：配置 ≤ 声明。任何「配置比声明更宽」之处逐条列出。
+    let inject_names: Vec<String> = r.inject.keys().cloned().collect();
+    let problems = hur_core::spec::egress_covers(decl, &r.target, &r.paths, &r.methods, &inject_names);
+    if !problems.is_empty() {
+        bail!(
+            "路由 {} 的配置超出了包声明的范围（配置只能比声明更窄）：\n  - {}\n包：{}",
+            r.name,
+            problems.join("\n  - "),
+            dir.display()
+        );
+    }
+
+    Ok(Backing {
+        route: r.name.clone(),
+        dir: dir.display().to_string(),
+        id: pkg.id.clone(),
+        version: pkg.version.clone(),
+        target: decl.target.trim().to_string(),
+        paths: decl.paths.clone(),
+        methods: decl.methods.clone(),
+        inject: decl.inject.clone(),
+    })
 }
 
 /// 路径白名单：**精确匹配**（不做前缀魔法 —— 少一条隐含规则就少一个口子）。
@@ -1005,6 +1082,7 @@ pub fn init(force: bool) -> Result<()> {
             {
                 "name": "llm",
                 "mode": "accept",
+                "hur": "/path/to/egress-package",
                 "target": "https://api.openai.com/v1",
                 "paths": ["chat/completions"],
                 "methods": ["POST"],
@@ -1026,6 +1104,8 @@ pub fn init(force: bool) -> Result<()> {
     println!("✅ 已写入示例配置：{}", p.display());
     println!("   accept 路由 = 我这台机器提供出口（B 侧）；forward 路由 = 借对端的出口（A 侧）");
     println!("   改完先看一遍：ncc gateway check");
+    println!("   注意 accept 路由的 \"hur\"：出口的定义写在那个包的 hur.json（egress{{}}）里，");
+    println!("   不在本文件里 —— 这样“这个出口能干什么”是一份可签名、可分发的声明。");
     Ok(())
 }
 
@@ -1045,6 +1125,25 @@ pub fn check() -> Result<()> {
                 r.methods.join(","),
                 if r.quota_per_min == 0 { "不限".to_string() } else { r.quota_per_min.to_string() }
             );
+            // S2b：出口的定义来自包 —— 把「谁背书的」与「声明了多少」一并打出来，
+            // 好让运维一眼核对自己配的范围确实比包声明更窄。
+            if let Some(b) = ready.backing.iter().find(|b| b.route == r.name) {
+                println!("             背书包 {} {}（{}）", b.id, b.version, b.dir);
+                println!(
+                    "             声明范围 {} · 路径 {} · 方法 {} · 注入 {}",
+                    b.target,
+                    b.paths.join(","),
+                    b.methods.join(","),
+                    if b.inject.is_empty() { "（无）".to_string() } else { b.inject.join(",") }
+                );
+                println!(
+                    "             本配置用了声明里的 {}/{} 条路径 · {}/{} 个方法（只能更窄）",
+                    r.paths.len(),
+                    b.paths.len(),
+                    r.methods.len(),
+                    b.methods.len()
+                );
+            }
         } else {
             println!("   [forward] {:<12} → {} （路径 {}）", r.name, r.peer_url, if r.paths.is_empty() { "交给对端决定".into() } else { r.paths.join(",") });
         }
@@ -1274,11 +1373,20 @@ mod tests {
     }
 
     fn base_cfg() -> GatewayConfig {
+        let dir = tmp_pkg(
+            "base",
+            "llm",
+            "https://api.openai.com/v1",
+            &["chat/completions"],
+            &["POST"],
+            &["Authorization"],
+        );
         GatewayConfig {
             listen: "127.0.0.1:9810".into(),
             routes: vec![Route {
                 name: "llm".into(),
                 mode: "accept".into(),
+                hur: dir.display().to_string(),
                 target: "https://api.openai.com/v1".into(),
                 paths: vec!["chat/completions".into()],
                 methods: vec!["POST".into()],
@@ -1288,6 +1396,39 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// 造一个临时包目录，只写 `hur.json` —— 网关切的就是那份出口声明。
+    fn tmp_pkg(
+        tag: &str,
+        route: &str,
+        target: &str,
+        paths: &[&str],
+        methods: &[&str],
+        inject: &[&str],
+    ) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ncc-gw-test-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let host = target.split('/').nth(2).unwrap_or("");
+        let pkg = serde_json::json!({
+            "spec": "harness-use-package/v1",
+            "kind": "harness",
+            "id": "A-gw-test-000001",
+            "name": "gateway test package",
+            "version": "0.1.0",
+            "summary": "只为了给网关的 accept 路由背书",
+            "entry": "src/agent.ts",
+            "permissions": { "network": [host] },
+            "egress": { "provides": [ {
+                "name": route,
+                "target": target,
+                "paths": paths,
+                "methods": methods,
+                "inject": inject
+            } ] }
+        });
+        std::fs::write(dir.join("hur.json"), serde_json::to_string_pretty(&pkg).unwrap()).unwrap();
+        dir
     }
 
     #[test]
@@ -1322,10 +1463,105 @@ mod tests {
         let mut cfg = base_cfg();
         cfg.routes[0].target = "http://api.example.com/v1".into();
         assert!(prepare(cfg).is_err());
-        // loopback 的 http 允许（本地联调）
+        // loopback 的 http 允许（本地联调）—— 但要换成声明了本机 target 的那份包
         let mut cfg = base_cfg();
         cfg.routes[0].target = "http://127.0.0.1:8899/v1".into();
+        cfg.routes[0].hur = tmp_pkg(
+            "loopback",
+            "llm",
+            "http://127.0.0.1:8899/v1",
+            &["chat/completions"],
+            &["POST"],
+            &[],
+        )
+        .display()
+        .to_string();
         assert!(prepare(cfg).is_ok());
+    }
+
+    /* ---------------- S2b：accept 路由由包声明背书 ---------------- */
+
+    #[test]
+    fn accept_route_without_a_backing_package_is_refused() {
+        let mut cfg = base_cfg();
+        cfg.routes[0].hur = String::new();
+        let msg = format!("{}", prepare(cfg).unwrap_err());
+        assert!(msg.contains("没绑 HUR 包"), "{msg}");
+    }
+
+    #[test]
+    fn accept_route_wider_than_the_package_declaration_is_refused() {
+        // 多一条未声明的路径
+        let mut cfg = base_cfg();
+        cfg.routes[0].paths.push("models".into());
+        let msg = format!("{}", prepare(cfg).unwrap_err());
+        assert!(msg.contains("超出声明的范围"), "{msg}");
+        assert!(msg.contains("models"), "{msg}");
+
+        // 多一个未声明的方法
+        let mut cfg = base_cfg();
+        cfg.routes[0].methods.push("DELETE".into());
+        assert!(prepare(cfg).is_err());
+
+        // 换个域：配置不能把路由指向声明之外的地址
+        let mut cfg = base_cfg();
+        cfg.routes[0].target = "https://evil.example.com/v1".into();
+        assert!(prepare(cfg).is_err());
+
+        // 注入一个声明里没有的头：等于让网关带出一份没被声明过的凭据
+        let mut cfg = base_cfg();
+        cfg.routes[0].inject.insert("X-Api-Key".into(), "sk-x".into());
+        assert!(prepare(cfg).is_err());
+    }
+
+    #[test]
+    fn accept_route_must_match_a_declared_route_name() {
+        let mut cfg = base_cfg();
+        cfg.routes[0].hur = tmp_pkg(
+            "other-name",
+            "other",
+            "https://api.openai.com/v1",
+            &["chat/completions"],
+            &["POST"],
+            &[],
+        )
+        .display()
+        .to_string();
+        let msg = format!("{}", prepare(cfg).unwrap_err());
+        assert!(msg.contains("找不到同名出口声明"), "{msg}");
+    }
+
+    #[test]
+    fn backing_package_with_a_sloppy_declaration_is_refused() {
+        // 包自己就没边界（paths 为空 = 放行该上游下一切路径）→ 绑定时被 R10 拦下
+        let mut cfg = base_cfg();
+        cfg.routes[0].hur = tmp_pkg("sloppy", "llm", "https://api.openai.com/v1", &[], &["POST"], &[])
+            .display()
+            .to_string();
+        let msg = format!("{}", prepare(cfg).unwrap_err());
+        assert!(msg.contains("R10"), "{msg}");
+    }
+
+    #[test]
+    fn narrower_config_than_the_declaration_is_accepted() {
+        // 包声明两条路径 / 两个方法，配置只用其中一条 —— 合规，且声明范围原样带出来
+        let dir = tmp_pkg(
+            "narrow",
+            "llm",
+            "https://api.openai.com/v1",
+            &["chat/completions", "models"],
+            &["POST", "GET"],
+            &["Authorization"],
+        );
+        let mut cfg = base_cfg();
+        cfg.routes[0].hur = dir.display().to_string();
+        let ready = prepare(cfg).unwrap();
+        let b = &ready.backing[0];
+        assert_eq!(b.route, "llm");
+        assert_eq!(b.paths.len(), 2, "声明范围要原样带出来");
+        assert_eq!(b.methods.len(), 2);
+        assert_eq!(b.target, "https://api.openai.com/v1");
+        assert_eq!(b.inject, vec!["Authorization".to_string()]);
     }
 
     #[test]
