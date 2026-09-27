@@ -21,7 +21,7 @@ use clap::{Args, Subcommand};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-use hur_core::{dep, install, interop, pack, policy, sign, spec, tpl};
+use hur_core::{datapack, dep, install, interop, pack, policy, profile, sign, spec, tpl};
 
 use crate::api;
 use crate::config::{self, CliConfig};
@@ -29,7 +29,7 @@ use crate::mcp;
 
 #[derive(Subcommand)]
 pub enum HurCmd {
-    /// 校验包目录或 .hur 产物（R1~R10，全程离线；R9 = 制品签名）
+    /// 校验包目录或 .hur 产物（R1~R11，全程离线；R9 = 制品签名）
     Verify(HurVerifyArgs),
     /// 读包：清单 / 依赖 / 权限面 / 安全策略 / 签名状态
     Inspect {
@@ -61,6 +61,13 @@ pub enum HurCmd {
     Sign(HurSignArgs),
     /// 生成一个合规包工程
     Init(HurInitArgs),
+    /// 读包"是什么 / 要什么 / 给什么 / 怎么接"（profile），**带体检**；`--list` 列规范里的 profile
+    Profile(HurProfileArgs),
+    /// 按 profile / 宿主 / 能力在目录里找能用的包（**只读**，不改任何状态）
+    Match(HurMatchArgs),
+    /// 数据快照：把一份快照包灌进节点（默认只出计划，`--apply` 才真写）
+    #[command(subcommand)]
+    Data(HurDataCmd),
     /// 执行：默认只出可审计划；`--exec` 在本机 wasm 沙箱里真跑（限额来自策略，跑完留痕）
     Run {
         #[arg(default_value = ".")]
@@ -282,7 +289,7 @@ pub struct HurExportArgs {
     /// 要求产物带**可核对**签名（不给则跟随生效策略）
     #[arg(long)]
     pub require_signature: bool,
-    /// 有错也导出（默认不：R1~R10 不过就拒绝）
+    /// 有错也导出（默认不：R1~R11 不过就拒绝）
     #[arg(long)]
     pub allow_issues: bool,
     #[arg(long)]
@@ -326,7 +333,7 @@ pub enum HurPolicyCmd {
         #[arg(long)]
         json: bool,
     },
-    /// 按生效策略跑 R1~R10（= verify 的策略视角）
+    /// 按生效策略跑 R1~R11（= verify 的策略视角）
     Check {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -460,10 +467,70 @@ pub struct HurSignArgs {
     pub json: bool,
 }
 
+#[derive(clap::Subcommand)]
+pub enum HurDataCmd {
+    /// 把一份数据快照包灌进节点（kb-seed / mem-seed / ckpt-set / trace-set 各自认领）
+    Import(HurDataImportArgs),
+}
+
+#[derive(Args, Clone)]
+pub struct HurDataImportArgs {
+    /// 快照包目录（含 hur.json）
+    #[arg(long)]
+    pub package: String,
+    /// **真的写**。不给就是只出计划（这一步会改节点上的数据，不该悄悄发生）
+    #[arg(long)]
+    pub apply: bool,
+    /// 写进哪个命名空间（默认用当前用户的个人库；轨迹包例外，它进本机暂存）
+    #[arg(long, default_value = "")]
+    pub into: String,
+    /// 要求快照包带**可核对**的签名（灌生产数据时建议打开）
+    #[arg(long)]
+    pub require_signature: bool,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub struct HurProfileArgs {
+    /// 包目录、`.hur` 产物，或已发布条目的引用（`@命名空间/slug`）
+    #[arg(default_value = ".")]
+    pub path: String,
+    /// 列出规范里的全部 profile 就退出（不需要 path）
+    #[arg(long)]
+    pub list: bool,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
+pub struct HurMatchArgs {
+    /// 按 profile 找（`kb-seed` / `plugin` / …）；不给就是不限
+    #[arg(long, default_value = "")]
+    pub profile: String,
+    /// 只要能接进这个宿主的（`claude|cursor|cline|codex|mcp`）
+    #[arg(long, default_value = "")]
+    pub host: String,
+    /// 按能力串筛（`capabilities` / `agent.tools` 里出现即匹配）
+    #[arg(long, default_value = "")]
+    pub capability: String,
+    /// 关键词（走目录检索，与 `ncc search` 同一套）
+    #[arg(default_value = "")]
+    pub query: String,
+    /// 最多看多少条
+    #[arg(long, default_value_t = 50)]
+    pub limit: usize,
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Args, Clone)]
 pub struct HurInitArgs {
     #[arg(long, default_value = "agent", value_parser = ["agent", "harness", "repo"])]
     pub kind: String,
+    /// 这份包**是什么**（profile）。不给就按 kind 推导；给了就写进清单，且**决定必填项**
+    #[arg(long, default_value = "")]
+    pub profile: String,
     #[arg(long, default_value = "My Agent")]
     pub name: String,
     #[arg(long, default_value = "")]
@@ -584,7 +651,7 @@ pub struct HurPublishArgs {
     /// slug 已存在时改为**更新**（改版本/产物地址/状态；清单里的签名与权限面不会变，会提醒）
     #[arg(long)]
     pub update: bool,
-    /// 有错也发（默认不：R1~R10 不过就拒绝）
+    /// 有错也发（默认不：R1~R11 不过就拒绝）
     #[arg(long)]
     pub allow_issues: bool,
     #[arg(long)]
@@ -626,6 +693,11 @@ pub fn run(cfg: &CliConfig, a: &HurCmd) -> Result<()> {
         HurCmd::Pack { path, json } => pack_cmd(path, *json),
         HurCmd::Sign(s) => sign_cmd(s.clone()),
         HurCmd::Init(i) => init(i.clone()),
+        HurCmd::Profile(p) => profile_cmd(cfg, p.clone()),
+        HurCmd::Match(m) => match_cmd(cfg, m.clone()),
+        HurCmd::Data(d) => match d {
+            HurDataCmd::Import(i) => data_import(cfg, i.clone()),
+        },
         HurCmd::Run { path, exec, json } => run_plan(path, *exec, *json),
         HurCmd::Key(k) => key(k.clone()),
         HurCmd::Dep { path, strict, json } => dep_check(path.clone(), *strict, *json),
@@ -693,6 +765,11 @@ fn verify(a: HurVerifyArgs) -> Result<()> {
         tmp = Some(t);
         let pkg = spec::read_pkg(&dir)?;
         issues.extend(spec::validate(&pkg, &dir, spec::read_lock(&dir).as_ref(), false));
+        // 文件名里那段 profile 与清单对不上？**只提醒**：文件会被下载、改名、塞进压缩包、
+        // 被 IM 转发 —— 一个名字不该让包"校验不过"。判身份的是清单。
+        if let Some(note) = spec::name_mismatch_note(&file.to_string_lossy(), &pkg) {
+            issues.push(note);
+        }
         ctx = json!({ "archive": file, "sha256": sha, "id": id, "version": version, "files": files.len() });
     } else {
         dir = root_of(&a.path)?;
@@ -744,7 +821,7 @@ fn verify(a: HurVerifyArgs) -> Result<()> {
         }
     }
     if !ok {
-        bail!("校验未通过（R1~R10）");
+        bail!("校验未通过（R1~R11）");
     }
     Ok(())
 }
@@ -847,7 +924,11 @@ fn pack_cmd(path: &Path, json_out: bool) -> Result<()> {
     Ok(())
 }
 
-fn sign_cmd(a: HurSignArgs) -> Result<()> {
+/// 加签（包语义：签**规范打包字节**）。
+///
+/// `pub(crate)`：`ncc sign` 碰到包目录 / `.hur` 产物转交到这里 —— 包与非包两种
+/// 加签只能是**同一套实现**，否则两边会慢慢长歪。
+pub(crate) fn sign_cmd(a: HurSignArgs) -> Result<()> {
     let s = sign::store();
     let is_archive = a.path.extension().and_then(|e| e.to_str()) == Some("hur");
     let (artifact, pkg) = if is_archive {
@@ -903,6 +984,7 @@ fn sign_cmd(a: HurSignArgs) -> Result<()> {
 fn init(a: HurInitArgs) -> Result<()> {
     let input = tpl::InitInput {
         kind: a.kind.clone(),
+        profile: Some(a.profile.trim().to_string()).filter(|x| !x.is_empty()),
         name: a.name.clone(),
         role: a.role.clone(),
         domain: a.domain.clone(),
@@ -932,7 +1014,7 @@ fn init(a: HurInitArgs) -> Result<()> {
     }
     // 锁也顺手建好：签名/打包都要求它存在
     pack::build_lock(&dir)?;
-    println!("已生成 {}（{} v{} · {}）", dir.display(), pkg.id, pkg.version, pkg.kind);
+    println!("已生成 {}（{} v{} · {} · profile={}）", dir.display(), pkg.id, pkg.version, pkg.kind, pkg.profile_name());
     println!("  下一步    ncc hur verify . → ncc hur sign . → ncc hur publish");
     Ok(())
 }
@@ -1511,7 +1593,7 @@ fn parse_bool(flag: &str, v: &str) -> Result<bool> {
 ///
 /// 为什么不是只给一个 `.hur`：收件人要能**自己**判断"这份字节是谁做的、有没有被换过"。
 /// 所以公钥、签名、摘要、当时的策略一起给（export.json 就是那张"说明书"，不用回来问你）。
-/// 全程离线；先自己按 R1~R10 验一遍，不过就拒绝导出（`--allow-issues` 可明确覆盖）。
+/// 全程离线；先自己按 R1~R11 验一遍，不过就拒绝导出（`--allow-issues` 可明确覆盖）。
 fn export(a: HurExportArgs) -> Result<()> {
     let dir = root_of(&a.path)?;
     let pkg = spec::read_pkg(&dir)?;
@@ -1543,8 +1625,8 @@ fn export(a: HurExportArgs) -> Result<()> {
 
     let outdir = PathBuf::from(a.out.trim());
     std::fs::create_dir_all(&outdir).with_context(|| format!("创建 {} 失败", outdir.display()))?;
-    let base = format!("{}-{}", pkg.id, pkg.version);
-    let art_name = format!("{base}.hur");
+    // 导出的产物名与 `hur pack` 一致（带 profile 段）—— 一个包只有一种名字
+    let art_name = spec::artifact_name(&pkg);
     let dest = outdir.join(&art_name);
     std::fs::copy(&out.file, &dest).with_context(|| format!("复制 {} 失败", out.file.display()))?;
     std::fs::write(outdir.join(format!("{art_name}.sha256")), format!("{}  {art_name}\n", out.sha256))?;
@@ -1640,7 +1722,12 @@ fn find_mine_by_pkg(cfg: &CliConfig, token: &str, pkg_id: &str, version: &str) -
 }
 
 /// 按引用取条目：`@命名空间/slug[@版本]`（列命名空间再挑）或条目 id。
-fn fetch_item(cfg: &CliConfig, token: Option<&str>, reference: &str) -> Result<Value> {
+/// 按引用找条目（`@命名空间/slug[@版本]` 或条目 id）。
+///
+/// `pub(crate)`：`ncc sign --attach` / `ncc verify <引用>` 复用同一套解析与
+/// 报错文案 —— 引用怎么算，整个 CLI 里只该有**一个**答案（含"命名空间 slug 在
+/// 服务端是带 @ 的"这种本地知识）。
+pub(crate) fn fetch_item(cfg: &CliConfig, token: Option<&str>, reference: &str) -> Result<Value> {
     let r = reference.trim();
     if r.is_empty() {
         bail!("给个条目引用：@命名空间/slug（可带 @版本）或条目 id");
@@ -1937,7 +2024,7 @@ fn policy_cmd(a: HurPolicyArgs) -> Result<()> {
                     v.require_signature.unwrap_or(false)
                 );
                 if issues.is_empty() {
-                    println!("检查项     全部通过（R1~R10）");
+                    println!("检查项     全部通过（R1~R11）");
                 } else {
                     print_issues(&issues);
                 }
@@ -2196,7 +2283,7 @@ const HUR_MCP_INSTRUCTIONS: &str = "\
 `ncc hur mcp` 暴露的是 **hur 制品的治理面**（控制面），不是执行面。
 
 怎么用：
-1. 看清一个包：hur_inspect（清单 / 入口 / 权限面 / 依赖）→ hur_verify（R1~R10，含签名）→ hur_dep（声明↔锁↔实际字节）。
+1. 看清一个包：hur_inspect（清单 / 入口 / 权限面 / 依赖）→ hur_verify（R1~R11，含签名）→ hur_dep（声明↔锁↔实际字节）。
 2. 看清约束：hur_policy（生效策略 + 逐层来源 + 限额）；hur_plan（执行计划：允许不允许、用哪个引擎、什么限额、为什么）。
 3. 看清环境与留痕：hur_sandbox（引擎托管归属 / 已登记沙箱环境 / 留痕数）；hur_tasks（谁在什么限额下跑了什么、留痕详情）；hur_envs（登记的环境与证明）；hur_keys（本机密钥指纹 + 受信公钥）。
 
@@ -2227,7 +2314,7 @@ fn hur_mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "hur_verify",
-            "description": "按生效策略跑 R1~R10 校验（全程本地、不联网、不执行）：R9 是制品签名。返回错误/提醒/已核对项与签名状态（谁签的、可不可核对）。",
+            "description": "按生效策略跑 R1~R11 校验（全程本地、不联网、不执行）：R9 是制品签名。返回错误/提醒/已核对项与签名状态（谁签的、可不可核对）。",
             "inputSchema": json!({
                 "type": "object",
                 "properties": {
@@ -2723,7 +2810,7 @@ fn interop_cmd(a: HurInteropArgs) -> Result<()> {
 
 /* ---------------- 联网：发布（用 ncc 的身份与条目模型） ---------------- */
 
-/// `ncc hur publish` = 本地 verify(R1~R10) → pack（确定性）→ 可选 sign → 走 **ncc 的 registry 条目模型**。
+/// `ncc hur publish` = 本地 verify(R1~R11) → pack（确定性）→ 可选 sign → 走 **ncc 的 registry 条目模型**。
 ///
 /// 刻意与 `ncc publish` 共用同一条上传/建档路径（`/api/registry/uploads` + `/api/registry`），
 /// 只是 kind 固定为 `hur`、manifest 里带 hur 包元数据与签名指纹 —— 这样目录侧能显示"谁签的"。
@@ -2733,7 +2820,7 @@ fn publish(cfg: &CliConfig, a: HurPublishArgs) -> Result<()> {
     let r = policy::resolve(&dir, Some(&pkg))?;
     let e = policy::effective(&r.policy);
 
-    // ① 先校验（本地）：R1~R10。不过就不发（除非 --allow-issues，且错误数为 0 也不行）
+    // ① 先校验（本地）：R1~R11。不过就不发（除非 --allow-issues，且错误数为 0 也不行）
     let issues = policy::collect_issues(&dir, &pkg, &r.policy)?;
     let errs = issues.iter().filter(|i| i.level == spec::Level::Error).count();
     let warns = issues.iter().filter(|i| i.level == spec::Level::Warn).count();
@@ -2827,6 +2914,19 @@ fn publish(cfg: &CliConfig, a: HurPublishArgs) -> Result<()> {
         "storage": { "url": storage_url, "sha256": sha, "size": size },
         // 目录侧要看的 hur 元数据（规范 / 入口 / 权限面 / 产物摘要 / 签名指纹）
         "manifest": {
+            // profile 是"这份包是什么"，目录与别的 Agent 都靠它检索 —— 不写进清单，
+            // 别人就只看到一个笼统的 kind=hur（这正是加 profile 之前的问题）。
+            // `profileDeclared=false` 说明这是按包内 kind **推导**出来的，不是作者写的。
+            "profile": pkg.profile_name(),
+            "profileDeclared": pkg.profile.is_some(),
+            // ⚠️ 字段名跟着**包规范**（hur.json 是 snake_case），不在这里另造一套 camelCase ——
+            // 同一个东西两种拼法，迟早有一处读不到而且不报错。
+            "data": pkg.data.as_ref().map(|d| json!({
+                "source": d.source, "source_target": d.source_target, "snapshot_at": d.snapshot_at,
+                "privacy": d.privacy, "license": d.license, "payload": d.payload,
+                // 明细（每份文件的元数据）留在包里：目录只要知道"是什么、几份、能给谁看"
+                "docs_count": d.docs.len(),
+            })),
             "hur": {
                 "spec": spec::PKG_SPEC,
                 "id": pkg.id, "kind": pkg.kind, "entry": pkg.entry,
@@ -2906,10 +3006,709 @@ fn publish(cfg: &CliConfig, a: HurPublishArgs) -> Result<()> {
     Ok(())
 }
 
-/* ---------------- 联网：加签（给已发布条目补签名） ---------------- */
+/* ---------------- profile：这份包是什么、要什么、给什么、怎么接 ---------------- */
+
+/// `ncc hur profile` —— 读一份包的 profile。
+///
+/// 为什么值得一条**独立**命令（`inspect` 已经打了包/策略/签名）：那几个回答的是
+/// "这份包合不合规、签了没有"，而拿到一个包的人最先要问的是另外四个问题 ——
+/// **这是什么 / 要什么 / 给什么 / 怎么接**。答不上来，他就只能去翻源码，
+/// 而 profile 的全部意义就是让这件事**不用翻源码**。
+///
+/// 本地路径与已发布引用都支持：同一份渲染，不因为来源不同讲两套话。
+fn profile_cmd(cfg: &CliConfig, a: HurProfileArgs) -> Result<()> {
+    if a.list {
+        if a.json {
+            let rows: Vec<Value> = profile::PROFILES
+                .iter()
+                .map(|p| {
+                    json!({
+                        "profile": p.name, "summary": p.summary,
+                        "executable": p.executable, "data": p.data,
+                        "registryKinds": p.registry_kinds, "hosts": p.hosts,
+                        "requires": p.requires, "forbids": p.forbids,
+                        "matchBy": p.match_by,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&json!({ "spec": spec::PKG_SPEC, "profiles": rows }))?);
+            return Ok(());
+        }
+        println!("规范里的 profile（{} 个）：", profile::PROFILES.len());
+        for (name, desc) in profile::table() {
+            println!("  {name:<10} {desc}");
+        }
+        println!("\n包清单里写 `\"profile\": \"<名字>\"`；不写就按 kind 推导（老包照旧）。");
+        return Ok(());
+    }
+
+    let raw = a.path.trim();
+    let local = PathBuf::from(raw);
+    let is_local = local.exists();
+
+    // ① 拿到清单：本地读目录，远端读条目的 manifest
+    let (pkg, dir, origin, sig_line) = if is_local {
+        let dir = root_of(&local)?;
+        let pkg = spec::read_pkg(&dir)?;
+        let rep = sign::store().check_dir(&dir, &pkg, false, None);
+        let sig = if rep.summary.is_empty() { "未签名".to_string() } else { rep.summary.clone() };
+        (pkg, Some(dir), format!("本地 {}", local.display()), sig)
+    } else {
+        let token = config::token_opt(cfg);
+        let it = fetch_item(cfg, token.as_deref(), raw)?;
+        let full = format!(
+            "{}/{}@{}",
+            it["namespace"]["slug"].as_str().unwrap_or(""),
+            it["slug"].as_str().unwrap_or(""),
+            it["version"].as_str().unwrap_or("")
+        );
+        let manifest = it["manifest"].clone();
+        // 不一定每份制品都带一份**完整的** hur.json（skill / mcp 常年只有部分清单）——
+        // 解析不出来就如实说，而不是编一个 profile 出来。
+        let parsed: Option<spec::HurPackage> = serde_json::from_value(manifest["hur"].clone())
+            .ok()
+            .or_else(|| serde_json::from_value(manifest.clone()).ok());
+        let sig_line = match it.get("signature").filter(|v| !v.is_null()) {
+            Some(s) => format!(
+                "有签名（keynum {}，{}）—— 要认它请拿到公钥核一遍：ncc verify {} --pubkey <你确认过的公钥>",
+                s["keynum"].as_str().unwrap_or("?"),
+                s["signer"].as_str().unwrap_or("未署名"),
+                raw
+            ),
+            None => "未签名".to_string(),
+        };
+        let Some(pkg) = parsed else {
+            // 没有完整清单：只能报目录侧能说的（profile 字段 + 快照声明 + 产物摘要）
+            let prof = manifest["profile"]
+                .as_str()
+                .map(str::to_string)
+                .map(|p| profile::get(&p).map(|x| x.name).unwrap_or("harness").to_string())
+                .unwrap_or_else(|| profile::from_kind(it["kind"].as_str().unwrap_or("")).to_string());
+            if a.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "origin": full, "profile": prof, "complete": false,
+                        "note": "这份条目没有完整的 hur.json 清单（kind=… 的制品可以只带部分清单），只能报 profile 与目录信息",
+                        "itemKind": it["kind"], "storage": it["storage"], "signature": it["signature"],
+                    }))?
+                );
+            } else {
+                println!("{full}（目录记成 kind={}）", it["kind"].as_str().unwrap_or(""));
+                println!("  是什么   profile={prof} —— {}", profile::get(&prof).map(|p| p.summary).unwrap_or("（不在规范里的 profile）"));
+                // 数据快照：目录侧的声明（不含每份文件明细，那些在包里）
+                if let Some(dl) = manifest.get("data").filter(|v| !v.is_null()) {
+                    println!(
+                        "  要什么   快照：来源 {} · 时刻 {} · 隐私 {} · 许可 {}{} · {} 份",
+                        s_or_dash(&dl["source"]),
+                        s_or_dash(&dl["snapshot_at"]),
+                        s_or_dash(&dl["privacy"]),
+                        s_or_dash(&dl["license"]),
+                        dl.get("payload").and_then(|x| x.as_str()).map(|p| format!(" · payload {p}")).unwrap_or_default(),
+                        dl["docs_count"].as_i64().unwrap_or(0)
+                    );
+                }
+                println!("  给什么   产物 {}（{} 字节，sha256 {}）", it["storage"]["url"].as_str().unwrap_or(""), it["storage"]["size"].as_i64().unwrap_or(0), &it["storage"]["sha256"].as_str().unwrap_or("")[..12.min(it["storage"]["sha256"].as_str().unwrap_or("").len())]);
+                println!("  怎么接   {}", match profile::get(&prof).map(|p| p.data).unwrap_or(false) {
+                    true => "ncc hur data import --package <把包下下来> --apply".to_string(),
+                    false => "ncc install @命名空间/slug（看细节：ncc info）".to_string(),
+                });
+                if !manifest["profileDeclared"].as_bool().unwrap_or(false) {
+                    println!("  体检     ⚠️ profile 是按条目 kind 推导的（发布时清单里没写 profile），不是作者声明");
+                } else {
+                    println!("  体检     ⚠️ 这份条目没有完整的 hur.json 清单，逐份明细读不出来（要明细就下载产物）");
+                }
+            }
+            return Ok(());
+        };
+        (pkg, None, format!("目录 {full}"), sig_line)
+    };
+
+    let prof = pkg.profile_name();
+    let def = profile::get(prof);
+    let issues = match &dir {
+        Some(d) => spec::validate(&pkg, d, spec::read_lock(d).as_ref(), false),
+        // 远端：字节不在手里，只做**声明本身**的校验（文件存在性这类查不了）
+        None => {
+            let mut v = spec::validate_profile(&pkg, Path::new("."));
+            v.retain(|i| !i.msg.contains("在包里不存在"));
+            v
+        }
+    };
+    let errs = issues.iter().filter(|i| i.level == spec::Level::Error).count();
+    let warns = issues.iter().filter(|i| i.level == spec::Level::Warn).count();
+
+    if a.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "origin": origin,
+                "profile": prof,
+                "profileDef": def.map(|d| json!({
+                    "summary": d.summary, "executable": d.executable, "data": d.data,
+                    "registryKinds": d.registry_kinds, "hosts": d.hosts,
+                    "requires": d.requires, "forbids": d.forbids, "matchBy": d.match_by,
+                })),
+                "package": pkg,
+                "signature": sig_line,
+                "issues": issues,
+                "errors": errs, "warnings": warns,
+            }))?
+        );
+        return Ok(());
+    }
+
+    // ② 四问
+    let d = def.ok_or_else(|| anyhow!("profile「{prof}」不在规范里"))?;
+    let kind_tag = if d.data { "数据快照（不可执行）" } else if d.executable { "可执行" } else { "只读" };
+    println!("{origin}");
+    println!("  是什么   profile={prof} · {kind_tag}");
+    println!("           {}", d.summary);
+    println!(
+        "           目录会记成 kind={} · 宿主 {}{}",
+        d.registry_kinds.join("/"),
+        if d.hosts.is_empty() { "（不渲染宿主产物）".to_string() } else { d.hosts.join(" / ") },
+        if pkg.profile.is_none() { "（清单没写 profile，按 kind 推出来的）" } else { "" }
+    );
+
+    // 要什么
+    let dep_n = pkg.deps.iter().into_iter().filter(|(_, r)| !r.trim().is_empty()).count();    let net = if pkg.permissions.network.is_empty() { "无".to_string() } else { pkg.permissions.network.join(", ") };
+    let local_p = if pkg.permissions.local.is_empty() { "无".to_string() } else { pkg.permissions.local.join(", ") };
+    println!("  要什么   依赖 {dep_n} 条 · 权限：网络 [{net}] · 本地 [{local_p}]");
+    match pkg.state.as_ref().filter(|s| !s.is_empty()) {
+        Some(s) => println!(
+            "           状态：知识库 {} 条 / 记忆 {} / 检查点 {}",
+            s.kb.len(),
+            if s.memory.is_some() { "要" } else { "不要" },
+            if s.checkpoints.as_ref().map(|c| c.enabled).unwrap_or(false) { "要" } else { "不要" }
+        ),
+        None => println!("           状态：不声明（这个包不需要节点托管的数据）"),
+    }
+    if let Some(s) = pkg.state.as_ref().filter(|s| !s.stores.is_empty()) {
+        let items: Vec<String> = s
+            .stores
+            .iter()
+            .map(|r| {
+                let mode = match r.mode_norm() {
+                    "write" => "只写",
+                    "readwrite" => "读改",
+                    _ => "读",
+                };
+                let mut extra: Vec<&str> = Vec::new();
+                if !r.shape.trim().is_empty() {
+                    extra.push(r.shape.trim());
+                }
+                if !r.visibility.trim().is_empty() {
+                    extra.push(r.visibility.trim());
+                }
+                format!(
+                    "{}（{mode}{}）",
+                    r.collection.trim(),
+                    if extra.is_empty() { String::new() } else { format!(" · {}", extra.join(" · ")) }
+                )
+            })
+            .collect();
+        println!("           集合：{}", items.join(" · "));
+        for r in &s.stores {
+            if !r.reason.trim().is_empty() {
+                println!("                 · {} —— {}", r.collection.trim(), r.reason.trim());
+            }
+        }
+        // 模型面：声明直接决定「模型看得到什么、能不能改」。
+        // 写只有声明了写才给 —— 所以这里把结果算给作者看，别让他猜。
+        let reads: Vec<&str> = s
+            .stores
+            .iter()
+            .filter(|r| r.mode_norm() != "write")
+            .map(|r| r.collection.trim())
+            .collect();
+        let writes: Vec<&str> = s
+            .stores
+            .iter()
+            .filter(|r| r.writes())
+            .map(|r| r.collection.trim())
+            .collect();
+        let mut face: Vec<String> = Vec::new();
+        if !reads.is_empty() {
+            face.push(format!("读 {}", reads.join("/")));
+        }
+        if !writes.is_empty() {
+            face.push(format!("**写** {}", writes.join("/")));
+        }
+        println!(
+            "           模型面：ncc mcp --package . → {}",
+            if face.is_empty() {
+                "什么都不给（集合都是只写的读面没有内容）".to_string()
+            } else {
+                face.join(" · ")
+            }
+        );
+        if !writes.is_empty() {
+            println!("                    （声明了写 = 模型能改这些内容；只读的集合不给写口子，没声明的连名字都看不到）");
+        }
+    }
+    if let Some(dl) = pkg.data.as_ref() {
+        println!(
+            "           快照：来源 {} · 时刻 {} · 隐私 {} · 许可 {}{} · 共 {} 份",
+            if dl.source.trim().is_empty() { "（未声明）" } else { dl.source.trim() },
+            if dl.snapshot_at.trim().is_empty() { "（未声明）" } else { dl.snapshot_at.trim() },
+            if dl.privacy.trim().is_empty() { "（未声明）" } else { dl.privacy.trim() },
+            if dl.license.trim().is_empty() { "（未声明）" } else { dl.license.trim() },
+            dl.payload.as_deref().map(|p| format!(" · payload {p}")).unwrap_or_default(),
+            dl.docs.len()
+        );
+    }
+    for r in pkg.egress.as_ref().map(|e| e.provides.as_slice()).unwrap_or(&[]) {
+        println!("           出口：{} → {}（{} 条路径）", r.name, r.target, r.paths.len());
+    }
+
+    // 给什么
+    println!(
+        "  给什么   入口 {}{}",
+        if pkg.entry.trim().is_empty() { "（无 —— 这份包不执行代码）".to_string() } else { pkg.entry.trim().to_string() },
+        if pkg.capabilities.is_empty() { String::new() } else { format!(" · 能力 {}", pkg.capabilities.join(",")) }
+    );
+    if let Some(ag) = pkg.agent.as_ref().filter(|x| !x.is_empty()) {
+        println!(
+            "           声明：提示词 {} 字 · 工具 {} · 技能 {} 份 · 打算接 {}",
+            ag.system_prompt.chars().count(),
+            ag.tools.len(),
+            ag.skills.len(),
+            if ag.adapters.is_empty() { "（未声明）".to_string() } else { ag.adapters.join("/") }
+        );
+    }
+
+    // 怎么接
+    println!("  怎么接   {}", render_hookup(&pkg, dir.as_deref(), &d.hosts));
+    if !d.requires.is_empty() {
+        println!("           这个 profile 必填：{}", d.requires.join("；"));
+    }
+    if !d.forbids.is_empty() {
+        println!("           这个 profile 禁止：{}", d.forbids.join("；"));
+    }
+
+    // ③ 体检：分开说，不合成一个"通过"
+    println!(
+        "  体检     {}{}{}",
+        if errs == 0 { "✔ 结构" } else { "✖ 结构" },
+        if errs == 0 { " ✔ 自洽" } else { " ✖ 自洽" },
+        match sig_line.contains("未签名") {
+            true => " ⚪ 签名（未签名）".to_string(),
+            false => " ✔ 签名（本机可核对）".to_string(),
+        }
+    );
+    for i in issues.iter().filter(|i| i.level != spec::Level::Info).take(6) {
+        println!("           [{} {}] {}", i.rule, if i.level == spec::Level::Error { "错误" } else { "提醒" }, i.msg);
+    }
+    if errs == 0 && warns == 0 {
+        // 下一步要按 profile 说：数据包不接宿主，它要的是"灌进节点"
+        if d.data {
+            println!("           下一步：ncc hur data import --package <这个目录>（默认只出计划，--apply 才写）");
+        } else if !d.hosts.is_empty() {
+            println!(
+                "           下一步：ncc hur interop . --target {} --write（渲染成宿主能用的产物）",
+                d.hosts.first().copied().unwrap_or("claude")
+            );
+        }
+    }
+    Ok(())
+}
+
+/// "怎么接"这一行：把 interop 渲染出来的落点列出来（**用同一份实现**，不另写一套路径规则）。
+fn render_hookup(pkg: &spec::HurPackage, dir: Option<&Path>, hosts: &[&str]) -> String {
+    let files: Vec<(String, String)> = match dir {
+        Some(d) => {
+            let mut v = Vec::new();
+            for f in spec::content_files(d) {
+                if let Ok(text) = std::fs::read_to_string(&f) {
+                    v.push((spec::rel(d, &f), text));
+                }
+            }
+            v
+        }
+        None => Vec::new(),
+    };
+    let declared: Vec<String> = pkg
+        .agent
+        .as_ref()
+        .map(|a| a.adapters.iter().filter(|x| interop::valid_target(x)).cloned().collect())
+        .unwrap_or_default();
+    let targets: Vec<String> = if declared.is_empty() {
+        hosts.iter().map(|s| s.to_string()).take(2).collect()
+    } else {
+        declared.into_iter().take(3).collect()
+    };
+    if targets.is_empty() {
+        return match pkg.is_data() {
+            true => "数据包：不接宿主，用 `ncc hur data import --package <目录>` 灌进节点".to_string(),
+            false => "没有可渲染的宿主（`ncc hur interop --target <宿主>` 可手指定）".to_string(),
+        };
+    }
+    let mut parts = Vec::new();
+    for t in targets {
+        match interop::render_target(pkg, &files, &t) {
+            Ok(arts) => {
+                let paths: Vec<&str> = arts.iter().map(|a| a.path.as_str()).take(2).collect();
+                parts.push(format!("{t} → {}", if paths.is_empty() { "（无落点）".to_string() } else { paths.join(" , ") }));
+            }
+            Err(_) => parts.push(format!("{t} → {}", interop::install_hint(pkg, &t))),
+        }
+    }
+    parts.join("；")
+}
+
+/// `ncc hur match` —— 按 profile / 宿主 / 能力在目录里找能用的包。
+///
+/// **只读**：它不改任何状态、不下载任何字节。为什么需要它：`ncc search` 是按关键词，
+/// 而拿到一份需求时的问题往往是"有没有能接进 Cursor 的插件""有没有能当知识库种子的包"，
+/// 这问的是 **profile 与声明**，不是名字。
+///
+/// 已知限制（如实说）：目录只按 `kind` 检索得到，**profile 是清单里的字段**，所以这里
+/// 先按目录 kind 拉一批、再按 `manifest.profile` 过滤 —— 拿不到 profile 的条目（发布时
+/// 没带清单）会被标成"profile 未知"，而不是被悄悄算作匹配。
+fn match_cmd(cfg: &CliConfig, a: HurMatchArgs) -> Result<()> {
+    if !a.profile.trim().is_empty() && profile::get(a.profile.trim()).is_none() {
+        bail!(
+            "profile「{}」不在规范里（可选：{}）—— 用 `ncc hur profile --list` 看全部",
+            a.profile.trim(),
+            profile::names().join(" / ")
+        );
+    }
+    if !a.host.trim().is_empty() && !interop::valid_target(a.host.trim()) {
+        bail!("宿主「{}」不认识（可选：{}）", a.host.trim(), interop::TARGETS.join(" / "));
+    }
+
+    let token = config::token_opt(cfg);
+    let mut qs: Vec<String> = vec![format!("size={}", a.limit.clamp(1, 200))];
+    if !a.query.trim().is_empty() {
+        qs.push(format!("q={}", api::urlenc(a.query.trim())));
+    }
+    // 按 profile 找时先让目录侧收窄一次（多对一：几个 profile 可能共用同一个 kind）
+    if let Some(d) = profile::get(a.profile.trim()) {
+        if d.registry_kinds.len() == 1 {
+            qs.push(format!("kind={}", api::urlenc(d.registry_kinds[0])));
+        }
+    }
+    let data = api::get(cfg, &format!("/api/registry?{}", qs.join("&")), token.as_deref())?;
+    let items = data["items"].as_array().cloned().unwrap_or_default();
+
+    let want_prof = a.profile.trim();
+    let want_host = a.host.trim();
+    let want_cap = a.capability.trim();
+    let mut hits: Vec<(Value, String, String)> = Vec::new(); // (item, profile, 为什么)
+    let mut unknown = 0usize;
+    for it in items {
+        // profile：清单里写了就用它；没写就按 kind 推导（与校验同一份规则）
+        let manifest = it["manifest"].clone();
+        // `profileDeclared=false`（或老条目没有字段）= 这是按 kind 推的，不是作者写的 ——
+        // 如实数出来，不把它混进"匹配上了"
+        let known = manifest["profileDeclared"].as_bool().unwrap_or(false);
+        let prof = manifest["profile"]
+            .as_str()
+            .or_else(|| manifest["hur"]["profile"].as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| profile::of(None, it["kind"].as_str().unwrap_or("")).to_string());
+        if !known {
+            unknown += 1;
+        }
+        if !want_prof.is_empty() && prof != want_prof {
+            continue;
+        }
+        let mut why: Vec<String> = Vec::new();
+        if !want_prof.is_empty() {
+            why.push(format!("profile={prof}"));
+        }
+        let caps: Vec<String> = manifest["capabilities"]
+            .as_array()
+            .map(|v| v.iter().filter_map(|x| x.as_str()).map(str::to_string).collect())
+            .or_else(|| {
+                manifest["hur"]["capabilities"]
+                    .as_array()
+                    .map(|v| v.iter().filter_map(|x| x.as_str()).map(str::to_string).collect())
+            })
+            .unwrap_or_default();
+        let adapters: Vec<String> = manifest["agent"]["adapters"]
+            .as_array()
+            .or_else(|| manifest["hur"]["agent"]["adapters"].as_array())
+            .map(|v| v.iter().filter_map(|x| x.as_str()).map(str::to_string).collect())
+            .unwrap_or_default();
+        if !want_host.is_empty() {
+            // 宿主匹配看两处：profile 自带的宿主面 + 清单里声明的 adapters
+            let by_profile = profile::get(&prof).map(|p| p.hosts.contains(&want_host)).unwrap_or(false);
+            let by_decl = adapters.iter().any(|x| x == want_host);
+            if !by_profile && !by_decl {
+                continue;
+            }
+            why.push(format!("能接 {want_host}（{}）", if by_decl { "清单声明" } else { "profile 宿主面" }));
+        }
+        if !want_cap.is_empty() {
+            let hit = caps.iter().any(|c| c.contains(want_cap))
+                || manifest["agent"]["tools"]
+                    .as_array()
+                    .or_else(|| manifest["hur"]["agent"]["tools"].as_array())
+                    .map(|v| v.iter().filter_map(|x| x.as_str()).any(|t| t.contains(want_cap)))
+                    .unwrap_or(false);
+            if !hit {
+                continue;
+            }
+            why.push(format!("能力含「{want_cap}」"));
+        }
+        if why.is_empty() {
+            why.push("按要求列出".to_string());
+        }
+        hits.push((it, prof, why.join(" · ")));
+    }
+
+    if a.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "items": hits.iter().map(|(it, prof, why)| json!({
+                    "ref": format!("{}/{}@{}",
+                        it["namespace"]["slug"].as_str().unwrap_or(""),
+                        it["slug"].as_str().unwrap_or(""),
+                        it["version"].as_str().unwrap_or("")),
+                    "id": it["id"], "kind": it["kind"], "profile": prof,
+                    "why": why,
+                    "name": it["name"], "summary": it["summary"],
+                    "storage": it["storage"], "signature": it["signature"],
+                })).collect::<Vec<_>>(),
+                "scanned": items_len(&data),
+                "profileUnknown": unknown,
+                "note": "目录不索引 profile，这里先按 kind 拉一批再按清单位过滤；清单没写 profile 的条目被标成按 kind 推导",
+            }))?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "扫了 {} 条（profile 未知的 {} 条按 kind 推导）→ 命中 {} 条",
+        items_len(&data),
+        unknown,
+        hits.len()
+    );
+    if hits.is_empty() {
+        println!("  （没有符合的。放宽条件：去掉 --profile/--host，或 `ncc search <关键词>`）");
+        return Ok(());
+    }
+    for (it, prof, why) in &hits {
+        println!(
+            "  [{prof}] {}/{}@{}  {}",
+            it["namespace"]["slug"].as_str().unwrap_or(""),
+            it["slug"].as_str().unwrap_or(""),
+            it["version"].as_str().unwrap_or(""),
+            it["name"].as_str().unwrap_or("")
+        );
+        println!("      {why}");
+        if let Some(s) = it["summary"].as_str().filter(|s| !s.is_empty()) {
+            println!("      {s}");
+        }
+        println!(
+            "      看细节：ncc hur profile @{}/{}",
+            it["namespace"]["slug"].as_str().unwrap_or(""),
+            it["slug"].as_str().unwrap_or("")
+        );
+    }
+    Ok(())
+}
+
+fn items_len(data: &Value) -> i64 {
+    data["total"].as_i64().unwrap_or_else(|| data["items"].as_array().map(|v| v.len() as i64).unwrap_or(0))
+}
+
+/// `ncc hur data import` —— 把一份数据快照包灌进节点。
+///
+/// 为什么默认只出计划、要 `--apply` 才写：这一步会**改节点上的数据**（不是本地文件）。
+/// 与 `ncc hur run` 同一条纪律 —— 动手之前先把要发生的事打出来给人看。
+///
+/// 先验后导，顺序不能反：包不合规（R12）、或签名核对不过（要求了的话），
+/// 就不该有一个字节落进节点。
+fn data_import(cfg: &CliConfig, a: HurDataImportArgs) -> Result<()> {
+    let (pkg, root) = datapack::read(Path::new(a.package.trim()))?;
+    let prof = pkg.profile_name();
+    let Some(def) = profile::get(prof) else {
+        bail!("profile「{prof}」不在规范里（用 `ncc hur profile <包>` 看它是什么）");
+    };
+    if !def.data {
+        bail!(
+            "{prof} 不是数据快照包（{}）—— 代码类包请用 `ncc install` / `ncc hur run`",
+            def.summary
+        );
+    }
+    let decl = pkg
+        .data
+        .as_ref()
+        .ok_or_else(|| anyhow!("profile={prof} 但没有 data{{}} 声明，不导入（不知道这份数据从哪来、给谁看）"))?;
+
+    // ① 先验：不合规根本不进计划
+    let issues = spec::validate(&pkg, &root, spec::read_lock(&root).as_ref(), false);
+    let errs: Vec<String> = issues
+        .iter()
+        .filter(|i| i.level == spec::Level::Error)
+        .map(|i| format!("[{}] {}", i.rule, i.msg))
+        .collect();
+    if !errs.is_empty() {
+        bail!("这份快照包不合规，不导入：\n  {}", errs.join("\n  "));
+    }
+    let sig = sign::store().check_dir(&root, &pkg, a.require_signature, None);
+    if a.require_signature && !(sig.verified && sig.info.is_some()) {
+        bail!(
+            "要求签名可核对，但：{}",
+            if sig.summary.is_empty() { "这份快照包没有签名".to_string() } else { sig.summary.clone() }
+        );
+    }
+
+    // ② 计划：隐私级别先说话（它决定这份数据能落到哪儿）
+    let privacy = decl.privacy.trim();
+    let forced_private = privacy != "public";
+    let ns = if a.into.trim().is_empty() { String::new() } else { a.into.trim().trim_start_matches('@').to_string() };
+    let mut plan: Vec<Value> = Vec::new();
+    for doc in &decl.docs {
+        plan.push(json!({
+            "path": doc.path,
+            "to": match prof {
+                "kb-seed" => format!("kb {}", doc.slug),
+                "mem-seed" => format!("mem {} / {}", doc.subject, doc.key),
+                "ckpt-set" => format!("ckpt {}", doc.name),
+                _ => format!("本机暂存 {}", doc.path),
+            },
+            "visibility": if forced_private { "private".to_string() } else if doc.visibility.trim().is_empty() { "public".to_string() } else { doc.visibility.trim().to_string() },
+            "bytes": std::fs::metadata(root.join(doc.path.trim())).map(|m| m.len()).unwrap_or(0),
+        }));
+    }
+    let summary = json!({
+        "package": root, "profile": prof, "requestedProfile": prof,
+        "source": decl.source, "snapshotAt": decl.snapshot_at,
+        "privacy": privacy, "license": decl.license, "payload": decl.payload,
+        "namespace": if ns.is_empty() { "（我的个人库）" } else { ns.as_str() },
+        "signature": sig.summary,
+        "docs": plan,
+        "apply": a.apply,
+    });
+
+    if !a.apply {
+        if a.json {
+            println!("{}", serde_json::to_string_pretty(&json!({ "plan": summary, "note": "这只是计划；真要写就加 --apply" }))?);
+            return Ok(());
+        }
+        println!("计划（**没有写任何东西**——要写就加 --apply）：");
+        println!("  {}", datapack::describe(&pkg));
+        println!("  目标      {}", if ns.is_empty() { "我的个人库".to_string() } else { format!("@{ns}") });
+        if forced_private {
+            println!("  可见性    privacy={privacy} ⇒ 全部按 private 落（快照不是公开的就不允许导入成公开）");
+        }
+        for row in &plan {
+            println!(
+                "    {} → {}（{} 字节，{}）",
+                row["path"].as_str().unwrap_or(""),
+                row["to"].as_str().unwrap_or(""),
+                row["bytes"],
+                row["visibility"].as_str().unwrap_or("")
+            );
+        }
+        if sig.summary.is_empty() {
+            println!("  提示      这份快照包未签名（要核对就 `ncc hur verify {}`）", root.display());
+        }
+        return Ok(());
+    }
+
+    // ③ 真写。按 profile 分派到既有接口：不多造一套写路径
+    let token = config::require_token(cfg)?;
+    let mut done = 0usize;
+    for doc in &decl.docs {
+        let bytes = datapack::doc_bytes(&root, doc)?;
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        match prof {
+            "kb-seed" => {
+                let mut body = json!({
+                    "namespace": ns,
+                    "slug": doc.slug,
+                    "title": if doc.title.is_empty() { doc.slug.clone() } else { doc.title.clone() },
+                    "kind": if doc.kind.is_empty() { "doc".to_string() } else { doc.kind.clone() },
+                    "format": if doc.format.is_empty() { "markdown".to_string() } else { doc.format.clone() },
+                    "content": text,
+                    "tags": doc.tags,
+                    "visibility": if forced_private { "private".to_string() } else if doc.visibility.is_empty() { "public".to_string() } else { doc.visibility.clone() },
+                });
+                if !doc.summary.is_empty() {
+                    body["source"] = json!(doc.summary);
+                }
+                api::post_json(cfg, "/api/kb", Some(&token), &body)?;
+            }
+            "mem-seed" => {
+                let body = json!({
+                    "namespace": ns,
+                    "subject": if doc.subject.is_empty() { "self".to_string() } else { doc.subject.clone() },
+                    "key": doc.key,
+                    "value": text,
+                    "kind": if doc.kind.is_empty() { "fact".to_string() } else { doc.kind.clone() },
+                    "tags": doc.tags,
+                    "confidence": 1000,
+                    "pinned": false,
+                    "ttl_days": 0,
+                });
+                api::request(cfg, "PUT", "/api/mem", Some(&token), Some(&body), None, &[])?;
+            }
+            "ckpt-set" => {
+                let digest = format!("sha256:{}", spec::sha256_hex(&bytes));
+                let body = json!({
+                    "namespace": ns,
+                    "name": if doc.name.is_empty() { doc.path.clone() } else { doc.name.clone() },
+                    "label": if doc.label.is_empty() { "handoff".to_string() } else { doc.label.clone() },
+                    "step": doc.step,
+                    "tags": doc.tags,
+                    "visibility": if forced_private { "private".to_string() } else if doc.visibility.is_empty() { "public".to_string() } else { doc.visibility.clone() },
+                    "parent": "",           // 血缘指向**源节点**的点，不跨包乱接
+                    "digest": digest,
+                    "size": bytes.len(),
+                    "meta": doc.meta,
+                    "media_type": if doc.media_type.is_empty() { "application/octet-stream".to_string() } else { doc.media_type.clone() },
+                });
+                let created = api::post_json(cfg, "/api/ckpt", Some(&token), &body)?;
+                let id = created["checkpoint"]["id"].as_str().unwrap_or("").to_string();
+                if id.is_empty() {
+                    bail!("服务端没返回检查点 id：{created}");
+                }
+                api::request(
+                    cfg,
+                    "PUT",
+                    &format!("/api/ckpt/{}/blob", api::urlenc(&id)),
+                    Some(&token),
+                    None,
+                    Some(&bytes),
+                    &[],
+                )?;
+            }
+            "trace-set" => {
+                // 轨迹的落点是**本机暂存区**（不是节点）—— 上传是 `ncc trace push`，另一个动作
+                crate::trace::import_dataset(&root.join(doc.path.trim()))?;
+            }
+            other => bail!("profile「{other}」还没有导入路径（支持的：kb-seed / mem-seed / ckpt-set / trace-set）"),
+        }
+        done += 1;
+    }
+
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&json!({ "applied": done, "plan": summary }))?);
+        return Ok(());
+    }
+    println!("✅ 已导入 {done} 份（{prof}）");
+    println!("   {}", datapack::describe(&pkg));
+    match prof {
+        "kb-seed" => println!("   看看     ncc kb ls" ),
+        "mem-seed" => println!("   看看     ncc mem ls"),
+        "ckpt-set" => println!("   看看     ncc ckpt ls"),
+        _ => println!("   下一步   ncc trace push（轨迹先进本机暂存，上传是另一个动作）"),
+    }
+    Ok(())
+}
+
+/// JSON 值 → 人读字符串（空/缺省写"（未声明）"，不编）。
+fn s_or_dash(v: &Value) -> String {
+    v.as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("（未声明）").to_string()
+}
 
 /// `ncc hur attach` —— 把本机签名补到一个**已发布**的条目上。
-///
 /// 为什么单独一条命令、而不是让 `sign` 顺手联网：`sign` 的语义是"私钥不出设备的本地动作"，
 /// 让它联网就把这条边界糊掉了。联网只发生在这里，而且**只上传签名文件本身与公钥**（公开产物），
 /// 包内容一个字节都不传 —— 与 `publish` 的离线铁律一致。

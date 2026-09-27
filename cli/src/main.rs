@@ -4,6 +4,9 @@ mod capability;
 mod config;
 mod configs;
 mod gateway;
+mod app;
+mod gwreport;
+mod httpsrv;
 mod hur;
 // 本机执行（`ncc hur run --exec`）。只在带 sandbox feature 时编译进来
 // （默认开；`--no-default-features` 得到不含 wasmtime 的瘦身构建）。
@@ -17,8 +20,12 @@ mod registry;
 mod registryadd;
 mod registryp2p;
 mod services;
+mod signcmd;
 mod target;
 mod terminal;
+mod state;
+mod store;
+mod trace;
 mod tui;
 mod upgrade;
 
@@ -134,6 +141,16 @@ enum Cmd {
     /// 执行：默认只出可审计划；`--exec` 在本机 wasm 沙箱里真跑（限额来自策略）
     #[command(subcommand)]
     Hur(hur::HurCmd),
+    /// 制品加签：签的是**发布出去的那份字节**（不限 kind —— Skill / MCP / 任意文件）
+    ///
+    /// 包（HUR 目录 / .hur）会转交给 `ncc hur sign`（那里签的是规范打包字节，
+    /// 要连包身份/版本/lock 一起核对）。签名只写本机 `<制品>.minisig`，
+    /// 第三方拿公钥 `minisign -V -p ncc.pub -m SKILL.md` 就能独立核对。
+    ///
+    /// `--attach` 是唯一联网动作：只上传签名文件与公钥，制品字节一个字节都不传。
+    Sign(signcmd::SignArgs),
+    /// 制品验签：本地文件走本机，条目引用则下载产物字节再核对（--require-signature 可进 CI）
+    Verify(signcmd::VerifyArgs),
     /// API-Key：ncc key create --label ci | ncc key list | ncc key revoke <id>
     #[command(subcommand)]
     Key(KeyCmd),
@@ -145,15 +162,52 @@ enum Cmd {
     Nodes(NodesArgs),
     /// NCC Gateway：固定路由的白名单代理（S2a）—— 提供出口（accept）/ 借用出口（forward）
     ///
-    /// **纯本地**：不向 NCC 上报任何东西，数据面只在 A↔B 之间直连。
+    /// 数据面只在 A↔B 之间直连；**控制面是可选的**：绑了才上报**摘要**（逐条审计留本机）。
     /// 调用方**不能指定目标地址**，只能给「路由名 + 路由内的路径」。
     #[command(subcommand)]
     Gateway(GatewayCmd),
+    /// 个人 Agent 舱：把「用户自己部署一个人助理」变成一条命令（设计见 prd/ncc-personal-agent.md）
+    ///
+    /// 分工：产品是用户的（app.json）、引擎是 ncc、应用逻辑是 HUR 包（hur.json）、
+    /// 互联走 ncc-platform（身份 / 点到点分享 / 网关 / P2P）—— 不新增数据面。
+    #[command(subcommand)]
+    App(AppCmd),
     /// NCC Service：对外服务（服务提供方打包的多条业务）—— 匹配找服务 / 声明自己的服务
     ///
     /// 需要目标声明 `services` 能力（云端 ncc.ai 已声明；内网节点将来也可以声明，
     /// 那时同一个命令在那台节点上直接可用）。
     Services(ServicesArgs),
+    /// NCC Trace：Agent / HUR 的运行轨迹（采集 → 本地暂存 → 上传 → 评测 / 训练数据集）
+    ///
+    /// 纯本地命令不少（add / ls / show / stats / export / label 都有本地形态），
+    /// 只有 `push` 与带 `--remote` 的那些才联网 —— 轨迹默认留在你自己的机器上。
+    #[command(subcommand)]
+    Trace(trace::TraceCmd),
+    /// NCC KB：托管知识库（语料）—— 列表 / 取用 / 写作 / 检索 / **按包的声明拉取**
+    ///
+    /// 知识库是**状态**不是制品：包只能在 hur.json 的 `state.kb` 里声明它要哪些，
+    /// 字节住在节点上（`ncc kb pull --package .` 就是"读声明 → 取库"，按 checksum 增量）。
+    #[command(subcommand)]
+    Kb(state::KbAction),
+    /// NCC Mem：托管的 Agent 记忆（键值 + TTL + 来源）—— 跨运行、跨机器记得住
+    ///
+    /// **没有公开档**：记忆只属于命名空间成员与拿到 `state` 授权的人。
+    /// 写是 upsert（同键即更新，Revision+1），过期**读时**即生效。
+    #[command(subcommand)]
+    Mem(state::MemAction),
+    /// NCC Ckpt：托管的检查点（不可变快照 + 血缘）—— 交接与回滚的落点
+    ///
+    /// 字节进 blob、元数据进库；取回时客户端**核对摘要**（检查点的价值就是
+    /// "拿回来的是原来那份"）。不可变：要改就再打一个点。
+    #[command(subcommand)]
+    Ckpt(state::CkptAction),
+    /// NCC Store：通用记录仓 —— **声明一个集合就是新增一类内容**（issue / log / 复盘 / 备注…）
+    ///
+    /// 与 kb / mem / ckpt / trace 的分工：那四类各是**一类内容**，这里承载的是
+    /// 「还不值得单写一类」的那些东西 —— 集合（有哪些字段、能不能改、给谁看、放多久）
+    /// 是**声明**出来的，服务端一行不用改。三条边界：动态≠无模式、不可变就是不可变、CRUD≠授权。
+    #[command(subcommand)]
+    Store(store::StoreCmd),
     /// NCC Registry 节点（内网托管节点）：登录 / 入网 / 目录 / 路由 / 配置 / 分享 / 管理
     ///
     /// 只在内网节点目标上跑（kind=registry）；云端命令见 `ncc hub …`。
@@ -170,7 +224,19 @@ enum Cmd {
     #[command(subcommand)]
     P2p(p2p::P2pCmd),
     /// 以 MCP server 方式暴露 NCC（stdio），供 Claude Desktop / Cursor / VS Code / 任意 Agent 接入
-    Mcp,
+    ///
+    /// **模型面 = 声明面**：`--package <包>` 时只暴露那个包 `state.stores[]`
+    /// 声明过的集合（读按 mode 给、写只有声明了写才给）；没声明 = 模型连名字都看不到。
+    Mcp(McpArgs),
+}
+
+/// `ncc mcp` 的参数：模型面能不能收窄，取决于有没有告诉它「哪个包的声明」。
+#[derive(clap::Args)]
+struct McpArgs {
+    /// 只暴露这个包（目录或 hur.json）`state.stores[]` 声明过的集合 ——
+    /// **模型面 = 声明面**：没声明的一个都不给（读按 mode，写要有声明）
+    #[arg(long, default_value = "")]
+    package: String,
 }
 
 /// ncc nodes 的子命令。不跟子命令 = 列我的节点与连接。
@@ -204,6 +270,61 @@ enum NodesCmd {
 }
 
 #[derive(Subcommand)]
+enum AppCmd {
+    /// 在目录里生成舱：app.json + hur.json + README.md + SKILL.md（不覆盖已有文件，除非 --force）
+    Init {
+        #[arg(long)]
+        dir: Option<String>,
+        /// 舱名（默认 personal-agent）
+        #[arg(long)]
+        name: Option<String>,
+        /// 内容住哪个命名空间（默认取当前身份；不给则让服务端按「我的」处理）
+        #[arg(long)]
+        namespace: Option<String>,
+        /// 分享走哪个目标（默认 hub = 云端 ncc.ai；内容永远走当前目标）
+        #[arg(long)]
+        share_target: Option<String>,
+        /// 控制台端口（默认 8487，只监听 127.0.0.1）
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 逐项自检：部署描述 / 包声明（走 hur-core）/ 凭据 / 目标与能力 / 三样内容 / 出口 / 端口
+    Doctor {
+        #[arg(long)]
+        dir: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 起舱（常驻）：本机控制台 + （绑定了才起）网关心跳与摘要上报
+    Up {
+        #[arg(long)]
+        dir: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+    },
+    /// 看舱的现状（不起服务）：命名空间 / 入口 / 三样内容 / 出口 / 自检提醒
+    Status {
+        #[arg(long)]
+        dir: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 导出成可交付目录（含 sha256 清单）—— 别人拿到就能部署一份自己的
+    Export {
+        #[arg(long)]
+        dir: Option<String>,
+        #[arg(long)]
+        out: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum GatewayCmd {
     /// 写一份示例配置到 ~/.ncc/gateway.json（--force 覆盖）
     Init {
@@ -216,10 +337,73 @@ enum GatewayCmd {
     Run,
     /// 看配置摘要 + 是否在跑
     Status,
-    /// 看本地审计（只读；只记元数据，不含载荷）
+    /// 看审计（只读；本地只记元数据不含载荷，--remote 看控制面留存的**摘要**）
     Audit {
         #[arg(long, default_value_t = 20)]
         tail: usize,
+        #[arg(long)]
+        json: bool,
+        /// 看控制面那侧的留存摘要（要登录）
+        #[arg(long)]
+        remote: bool,
+        /// 只看某个时间之后的（RFC3339 / 2026-09-26 / unix 秒）
+        #[arg(long)]
+        since: Option<String>,
+        /// 列表条数（--remote 时用）
+        #[arg(long, default_value_t = 50)]
+        limit: i64,
+        /// 导出 CSV（合规报告；只有 --remote 有意义）
+        #[arg(long)]
+        csv: bool,
+    },
+    /// 绑定控制面：注册网关 → 拿一次性令牌 → 写进 gateway.json（之后心跳/上报都认它）
+    Bind {
+        /// 登记到哪个命名空间（默认个人空间；组织空间需要 Pro）
+        #[arg(long)]
+        namespace: Option<String>,
+        /// 网关名（默认主机名）
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 发一次心跳（`run` 会按 heartbeat_sec 自动发；这条是手动/排障用）
+    Heartbeat {
+        /// online（默认）| draining（准备下线：还在心跳，但别派新活）
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 把本地 JSONL 审计聚合成**摘要**、签名、上报控制面（断线时进待传队列，恢复后补传）
+    Report {
+        /// 从什么时候之后开始聚合（默认：上次的水位）
+        #[arg(long)]
+        since: Option<String>,
+        /// 单个窗口最长多少分钟（服务端拒收 > 24h 的窗口）
+        #[arg(long)]
+        window_minutes: Option<i64>,
+        /// 只算不发送：看看会报什么（**不推进水位**）
+        #[arg(long)]
+        dry_run: bool,
+        /// 丢掉被控制面拒绝的摘要（默认留着并报错；拒收是数据问题，不该静默吞掉）
+        #[arg(long)]
+        drop_rejected: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 看控制面记的用量摘要（**按自报计数**，口径写在输出里）
+    Usage {
+        #[arg(long)]
+        json: bool,
+    },
+    /// 注销：吊销网关凭据（本地审计不动；控制面已留存摘要保留到留存期）
+    Unbind {
+        /// 连本地上报账本一起删（默认保留：里面可能有还没传出去的窗口）
+        #[arg(long)]
+        purge_state: bool,
         #[arg(long)]
         json: bool,
     },
@@ -483,7 +667,7 @@ fn main() {
     #[cfg(feature = "sandbox")]
     hur_core::policy::register_engines(hur_sandbox::ENGINES);
     // 先判定协议模式，再决定提示走哪个流：resolve_target 里的提示也算。
-    if matches!(cli.cmd, Cmd::Mcp) {
+    if matches!(cli.cmd, Cmd::Mcp(_)) {
         PROTOCOL_STDOUT.store(true, Ordering::Relaxed);
     }
     if let Err(e) = resolve_target(&mut cfg, &cli, hub_prefix) {
@@ -551,7 +735,8 @@ fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::R
                 );
                 probe_cfg.current = Some("probe".into());
                 let m = capability::probe(&probe_cfg);
-                let name = target::suggest_name_for(cfg, &base, &m.kind);
+                // 名字撞上已有目标就换一个：**绝不覆盖**（覆盖会抹掉那台机器上的登录态）。
+                let name = target::free_name(cfg, &target::suggest_name_for(cfg, &base, &m.kind));
                 cfg.targets.insert(
                     name.clone(),
                     config::Target {
@@ -595,6 +780,17 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Living(_) => Some("living"),
         // 纯本地：打洞预检一样不依赖 NCC 服务端。
         Cmd::Gateway(_) => None,
+        // 舱的命令自己报告能力（doctor 的职责就是回答「这个目标有没有这些能力」），不在这里门禁
+        Cmd::App(_) => None,
+        // 加签是**本地**动作（私钥不出设备）；核对也不依赖服务端声明的能力面，
+        // 所以两者都不在这里门禁。
+        Cmd::Sign(_) | Cmd::Verify(_) => None,
+        Cmd::Trace(t) => t.capability(),
+        // 三样状态各是一个能力（节点可以只托管知识库、不托管记忆）。
+        Cmd::Kb(k) => k.capability(),
+        Cmd::Mem(m) => m.capability(),
+        Cmd::Ckpt(c) => c.capability(),
+        Cmd::Store(s) => s.capability(),
         Cmd::Profile(_) => Some("profile"),
         Cmd::Nodes(_) => Some("nodes"),
         Cmd::Services(_) => Some("services"),
@@ -680,15 +876,86 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         },
         Cmd::Upgrade(a) => upgrade::run(a),
         Cmd::Hur(h) => hur::run(cfg, h),
+        Cmd::Sign(s) => signcmd::sign(cfg, s),
+        Cmd::Verify(v) => signcmd::verify(cfg, v),
         Cmd::Key(k) => cmd_key(cfg, k),
         Cmd::Living(a) => cmd_living(cfg, a),
+        Cmd::Trace(t) => trace::run(cfg, t),
+        Cmd::Kb(k) => state::run_kb(cfg, k),
+        Cmd::Mem(m) => state::run_mem(cfg, m),
+        Cmd::Ckpt(c) => state::run_ckpt(cfg, c),
+        Cmd::Store(s) => store::run(cfg, s),
         // Gateway 是纯本地命令（不需要服务器）：不查能力面，也不读写 NCC 配置。
+        Cmd::App(a) => match a {
+            AppCmd::Init { dir, name, namespace, share_target, port, force, json } => app::init(
+                cfg,
+                &app::InitArgs {
+                    dir: dir.clone(), name: name.clone(), namespace: namespace.clone(),
+                    share_target: share_target.clone(),
+                    port: *port, force: *force, json: *json,
+                },
+            ),
+            AppCmd::Doctor { dir, json } => {
+                app::doctor(cfg, &app::DoctorArgs { dir: dir.clone(), json: *json })
+            }
+            AppCmd::Up { dir, port } => app::up(cfg, &app::UpArgs { dir: dir.clone(), port: *port }),
+            AppCmd::Status { dir, json } => {
+                app::status(cfg, &app::StatusArgs { dir: dir.clone(), json: *json })
+            }
+            AppCmd::Export { dir, out, json } => app::export(
+                cfg,
+                &app::ExportArgs { dir: dir.clone(), out: out.clone(), json: *json },
+            ),
+        },
         Cmd::Gateway(g) => match g {
             GatewayCmd::Init { force } => gateway::init(*force),
             GatewayCmd::Check => gateway::check(),
             GatewayCmd::Run => gateway::run(),
             GatewayCmd::Status => gateway::status(),
-            GatewayCmd::Audit { tail, json } => gateway::audit_cmd(*tail, *json),
+            GatewayCmd::Audit { tail, json, remote, since, limit, csv } => {
+                if *remote {
+                    gwreport::audit_remote(
+                        cfg,
+                        &gwreport::RemoteAuditArgs {
+                            since: since.clone(),
+                            limit: *limit,
+                            csv: *csv,
+                            json: *json,
+                        },
+                    )
+                } else {
+                    gateway::audit_cmd(*tail, *json)
+                }
+            }
+            GatewayCmd::Bind { namespace, name, version, json } => gwreport::bind(
+                cfg,
+                &gwreport::BindArgs {
+                    namespace: namespace.clone(),
+                    name: name.clone(),
+                    version: version.clone(),
+                    json: *json,
+                },
+            ),
+            GatewayCmd::Heartbeat { status, json } => gwreport::heartbeat(
+                cfg,
+                &gwreport::HeartbeatArgs { status: status.clone(), json: *json },
+            ),
+            GatewayCmd::Report { since, window_minutes, dry_run, drop_rejected, json } => {
+                gwreport::report(
+                    cfg,
+                    &gwreport::ReportArgs {
+                        since: since.clone(),
+                        window_minutes: *window_minutes,
+                        dry_run: *dry_run,
+                        drop_rejected: *drop_rejected,
+                        json: *json,
+                    },
+                )
+            }
+            GatewayCmd::Usage { json } => gwreport::usage(cfg, *json),
+            GatewayCmd::Unbind { purge_state, json } => {
+                gwreport::unbind(cfg, *purge_state, *json)
+            }
         },
         Cmd::Profile(p) => match &p.action {
             None | Some(ProfileCmd::Show { username: None }) => profile::show(cfg, None),
@@ -761,7 +1028,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             RegistryCmd::Leave(a) => registry::leave(cfg, a),
         },
         Cmd::Target(t) => target::run(cfg, t),
-        Cmd::Mcp => mcp::serve(cfg),
+        Cmd::Mcp(a) => mcp::serve(cfg, &mcp::McpOptions { package: a.package.clone() }),
     }
 }
 

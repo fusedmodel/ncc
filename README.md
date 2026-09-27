@@ -209,6 +209,8 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc info <target>` | Print an artifact's full record as JSON |
 | `ncc download <target>` | Download the artifact bytes |
 | `ncc install <target>` | Install into the local package directory |
+| `ncc sign <file>` | **Sign the bytes you publish** (any kind: skill / mcp / …). Minisign/ed25519; the key never leaves the machine; `--attach <ref>` is the only networked step (uploads the `.minisig` + public key, never the artifact bytes) |
+| `ncc verify <file \| @ns/slug>` | Verify a signature: local file runs entirely offline; a reference downloads the bytes, re-checks the digest, then verifies. `--require-signature` for CI; a **tampered** artifact always exits non-zero |
 | `ncc key list` / `create` / `revoke` / `scopes` | Manage capability tokens (kind, scopes, namespace limits, expiry) |
 | `ncc living --name X --kind service\|agent\|assigned` | Register a node (= heartbeat report); the node declares what it is |
 | `ncc profile [show <username>]` | View your profile card, or someone else's |
@@ -228,6 +230,9 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc registry p2p self` / `check --peer <ip:port>` | NAT profile **on the node machine** / real UDP punch against a peer mapping (0 bytes) |
 | `ncc registry p2p serve` `[--on] [--peer <ip:port>]` | Node's punchable UDP entry (STUN replies only); `--peer` sets the reverse-punch peer |
 | `ncc gateway init` / `check` / `run` / `status` / `audit` | Gateway (S2a): a fixed-route allow-listed proxy — provide egress (`accept`) or borrow a peer's (`forward`). Callers can never choose the target; outbound credentials come from config `inject`; local JSONL audit records metadata only |
+| `ncc gateway bind` / `heartbeat` | Attach to the **control plane** (= ncc.ai): register the gateway → token written to `~/.ncc/gateway.json` (0600, shown once) / periodic heartbeat (default meaning is `online`; `draining` may be self-reported) |
+| `ncc gateway report` / `usage` | Aggregate local audit into **window summaries** and report them signed (**persist before sending**: unreachable control plane ⇒ queue, backfill when it returns) / usage rollup (explicitly **self-reported counters**) |
+| `ncc gateway audit --remote` / `unbind` | View/export summaries retained by the control plane (`--csv` = compliance export) / deregister and clear the local binding (works even when the control plane is unreachable) |
 | `ncc registry add` | Join a self-hosted `ncc-registry` with a one-click intranet link, or key/secret |
 | `ncc registry login` / `join` | Sign in to that node, or host this machine as a node (register + heartbeat) |
 | `ncc registry status` / `nodes` | That node and its cluster (master/worker) / discover nodes on the instance |
@@ -242,9 +247,45 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc registry replicate` | Push a copy of an artifact to workers (`--to all` or names) |
 | `ncc registry rm` | Take an artifact down and reclaim every replica (`--yes`) |
 | `ncc registry leave` | Take my node offline (the next heartbeat re-registers it) |
+| `ncc trace add --file <f.jsonl>` | Collect run traces — native `ncc-trace/v1` documents, HUR run traces, or an event stream (`{type,name,ms,in,out}` per line). **Local only**, no network |
+| `ncc trace ls` / `show` / `stats` / `export` / `label` / `rm` | Inspect, aggregate, export (JSONL dataset) or label traces locally; add `--remote` to do it against the target node |
+| `ncc trace push` | Upload collected traces to the node (idempotent, 50 per batch). Requires the target to declare the `trace` capability |
+| `ncc trace kinds` / `status` | Vocabularies and limits / local spool state (how many collected, how many uploaded) |
+| `ncc kb set <slug> --title … [--file f]` | Write a **hosted knowledge base** document (exists → new revision). `--public` makes it anonymously readable |
+| `ncc kb ls` / `get` / `search` / `history` / `bundle` | List (public ∪ mine ∪ granted) / read one, `--revision N` for a historical version / **keyword-weighted** search / revision history / group fetch a whole namespace |
+| `ncc kb archive` / `restore` / `rm` | Archive (hidden from listings and search) / restore / delete |
+| `ncc kb pull --package <dir>` | **Read a package's `state.kb` declaration and pull those corpora** into `~/.ncc/kb` (incremental by `checksum`). Refuses to guess when the package declares nothing |
+| `ncc kb kinds` | Knowledge-base kinds / formats / limits (works offline) |
+| `ncc mem set <key> <value>` | Write **memory** (upsert on `(namespace, subject, key)`, `--ttl-days`, `--kind`, `--source`, `--confidence`, `--pin`) |
+| `ncc mem get <key>` / `ls` / `rm` / `gc` | Read one by key (the path an agent takes) / list (expired excluded) / delete / really remove expired entries |
+| `ncc mem kinds` | Memory kinds and limits (memory has **no public tier**) |
+| `ncc ckpt save --name … --file …` | Take a **checkpoint**: computes `sha256`, creates the metadata, uploads the bytes (`--parent-last` links lineage, `--meta k=v` adds free metadata) |
+| `ncc ckpt ls` / `show` / `lineage` | List / inspect incl. a short-lived signed `bytesUrl` / walk the `parent` chain back to the start |
+| `ncc ckpt pull <id> --out <file>` | Fetch the bytes, **verifying the digest before writing to disk** |
+| `ncc ckpt prune --ref <@ns/slug> --keep N` / `rm` | Keep the newest N (rest marked `pruned`, bytes deleted, metadata kept) / delete one outright |
+| `ncc ckpt kinds` | Checkpoint labels and limits (immutable — there is no "edit" action) |
+| `ncc store declare <collection>` | **Declare a collection — this is the entire cost of a new kind of content** (issues, run logs, retros, notes…). The server does not change: `--field 'title:string!'` / `'status:enum:open\|closed'` / `'labels:string[]'` / `'body:text?search'` / `'owner:ref'`, `--index` for the filterable ones, `--immutable` / `--append-only`, `--public`, `--max-bytes`, `--ttl-days` |
+| `ncc store declare --file <f>` / `--dir <d>` | Declarations are **configuration**: apply them from a file (single object, array, `{"stores":[…]}` or a whole `hur.json`), or from a directory of `*.json` (one per collection). Declaring states the whole truth — anything absent from the file is absent |
+| `ncc store declare … --check` | Show **what would change** (which keys) without changing anything; exits 1 when there is drift, so it works as a CI gate |
+| `ncc store export --dir <d>` / `--file <f>` | Write the declarations out (one file per collection + a README) so they can live in git, be reviewed, and be re-applied. This is the **declaration**, not the records — it is not a backup |
+| `ncc store ls` | Which collections this node has (records, shape, visibility, declared fields) |
+| `ncc store put <collection> <key>` | Write one record: `--body` / `--file` / stdin, `--field k=v` (typed and validated **locally against the declaration**), `--meta k=v` (free JSON, **not filterable**), `--tag`, `--ttl-days`, `--revision N` (optimistic concurrency — a mismatch is a 409, never a silent overwrite), `--note` (recorded in history) |
+| `ncc store list <collection>` | Query: `--where field=value` (must be a declared **and indexed** field, otherwise it fails with the list of filterable fields rather than returning nothing), `--q` (keyword matching: every word must appear; hits are weighted key 3 / tags and `?search` fields 2 / body 1 — **not** indexed retrieval, and ranking runs over at most 500 candidates), `--tag`, `--prefix`, `--archived`, `--expired`, paging |
+| `ncc store get <collection> <key>` | Fetch one record with its body |
+| `ncc store history <collection> <key>` | Revision history — metadata only (who, when, digest, note). Notes travel with **their own** revision, so the note you gave at creation is never lost |
+| `ncc store rm <collection> <key>` | Archive (not listed, still there). `--hard` really deletes |
+| `ncc store kinds` | Type whitelist / caps / the three invariants — **works offline** |
 | `ncc terminal [status\|setup]` | Open the capability console / inspect the POSIX runtime |
 | `ncc upgrade` | Upgrade the CLI binary in place (`--check` only reports, `--force` reinstalls) |
-| `ncc mcp` | Start as an **MCP server** over stdio, so any agent can drive NCC |
+| `ncc mcp` | Start as an **MCP server** over stdio, so any agent can drive NCC. `--package <dir\|hur.json>` narrows the face to the collections that package declares (**the model face = the declared face**: read tools follow `mode`, a write tool exists only if the package declares a write, and a collection that is not declared is not even visible — nor callable) |
+| `ncc app init` / `doctor` / `up` / `status` / `export` | **NCC pod**: make "deploy your own personal assistant" one command — the product is yours (`app.json`), the engine is ncc, the app logic is a HUR package (`hur.json`), content lives on your node, interconnection on the platform; `up` runs a loopback console, `export` produces a hand-off directory |
+| `ncc hur profile <path \| @ns/slug>` | Read what a package **is**: what it wants, what it gives, **how to hook it up** — plus a graded check (`structure / self-consistent / signature` reported separately, never smeared into one ✅). `--list` prints the whole profile table |
+| `ncc hur match --profile kb-seed` | Read-only search: find packages by profile / integration host / capability |
+| `ncc hur data import --package <dir>` | Pour a **data snapshot package** into the node (kb-seed / mem-seed / ckpt-set / trace-set). Prints a plan by default; `--apply` actually writes |
+| `ncc kb bundle --as-package <dir>` | Export a knowledge base as an immutable **snapshot package** (source / snapshotAt / privacy / license), signable & publishable |
+| `ncc mem export --as-package <dir>` | Memory snapshot (private by default — a memory that can be handed out is no longer a memory) |
+| `ncc ckpt export --as-package <dir>` | Checkpoint set: bytes + lineage, digest verified before it enters the package |
+| `ncc trace export --as-package <dir>` | Trace dataset snapshot; `--payload digest\|preview\|full` must be declared (`full` + `public` is refused) |
 | `ncc help <command>` | Show generated help for any command |
 
 Global flags:
@@ -293,6 +334,51 @@ Exactly one of `--file` or `--url` is required.
 | `-o, --out <PATH>` | `download`: destination path |
 
 `ncc install` lays artifacts out as `<root>/<namespace>/<slug>/` and writes a `package.json` alongside the artifact file recording the source reference, kind, version, `sha256`, size, install time — and the wrapper `manifest` / `harness` block when the artifact declares one.
+
+### `ncc sign` and `ncc verify` — signing any artifact
+
+A signature is only worth anything if the person checking it does not have to trust you. So
+`ncc sign` signs **the exact bytes you publish**, and anyone holding the public key can check
+them with stock tooling — no NCC, no `ncc-cli`:
+
+```sh
+ncc hur key gen                                  # once: key lives in ~/.harnessuse/keys
+ncc sign SKILL.md --kind skill --reference @me/release-notes --version 0.1.0
+#   ⇢ writes SKILL.md.minisig (offline; the private key never leaves the machine)
+
+ncc verify SKILL.md                              # ✔ verified
+ncc verify SKILL.md --require-signature          # CI gate (non-zero when there is no verifiable signature)
+minisign -V -p ~/.harnessuse/keys/hur.pub -m SKILL.md   # the third-party check
+```
+
+The signature object carries `format`, `keynum`, `signer`, `sha256` (the artifact digest),
+the `.minisig` text and a public-key hint. Put it in the publish manifest and the registry
+re-checks that the digest matches the bytes you just uploaded:
+
+```sh
+ncc sign SKILL.md --kind skill --reference @me/release-notes --version 0.1.0 --json \
+  | python3 -c 'import json,sys; json.dump({"signature": json.load(sys.stdin)["signature"]}, open("manifest.json","w"))'
+ncc publish --file SKILL.md --kind skill --name release-notes --manifest manifest.json
+```
+
+Signing after the fact is `--attach` (the only networked path — it uploads the `.minisig` and
+the public key, never the artifact bytes):
+
+```sh
+ncc sign SKILL.md --kind skill --attach @me/release-notes
+```
+
+Three things this deliberately does **not** do:
+
+* **A package is not one file.** Point `ncc sign` at a HUR package directory (or a `.hur`
+  artifact) and it hands over to `ncc hur sign`, which signs the canonical packed bytes
+  together with the package identity, version and `hur.lock`. Two shapes, one implementation each.
+* **An unknown key is not "verified".** `ncc verify` reports `⚠️ has a signature, but this
+  machine does not know the key` and exits non-zero for `--require-signature`.
+* **A bundled public key is not trust.** The `pubkey` captured next to a signature is the
+  publisher's own claim. `ncc verify` will tell you the signature is *self-consistent* with it,
+  nothing more — accepting it means `--pubkey <the key you confirmed yourself>` or
+  `ncc hur key trust`.
 
 ### `ncc living` — registering a node
 
@@ -525,6 +611,45 @@ ncc registry admin audit --limit 20                      # who did what to whom,
 Two rules the server enforces: **you cannot disable your own account**, and
 **you cannot disable the last usable admin**.
 
+### `ncc hur profile` and data snapshot packages
+
+What a package **is** used to be carried by a three-valued `kind` (`agent|harness|repo`). It now has a
+name: **profile** — 11 of them (`agent` `harness` `plugin` `mcp` `app` `scaffold` `skill` `kb-seed`
+`mem-seed` `ckpt-set` `trace-set`). The **envelope is unchanged** (deterministic bytes + `hur.json` +
+`hur.lock` + signature); what the profile decides is **what it wants, whether it runs, how it hooks up,
+and what it matches on**.
+
+```sh
+ncc hur profile --list                 # the whole profile table
+ncc hur profile ./my-plugin            # what / wants / gives / how to hook up, plus a graded check
+ncc hur match --profile plugin --host cursor
+```
+
+**A profile is a constraint, not a label.** Data profiles explicitly forbid `entry` and
+`permissions.network` — a knowledge-base snapshot must not run code or reach the network on its own
+(new rule R12; legacy packages without a profile are unaffected).
+
+The artifact file name carries the same segment: `dist/…-0.1.0.kb-seed.hur`, `…-0.1.0.plugin.hur` —
+so a `dist/` full of `.hur` files is scannable at a glance. **The name is a hint, the manifest is the
+authority**: renaming a file does not change what it is (it only adds a warning), and a name we do not
+recognise is never treated as a mistake.
+
+All four data kinds (`kb` / `mem` / `ckpt` / `trace`) export as immutable **snapshot packages** that can
+be poured back into any node:
+
+```sh
+ncc kb bundle --namespace @me --as-package ./kbseed --privacy internal --license CC-BY-4.0
+ncc hur verify ./kbseed && ncc hur sign ./kbseed && ncc hur publish ./kbseed
+ncc hur data import --package ./kbseed            # plan only — writes nothing
+ncc hur data import --package ./kbseed --apply    # actually writes
+```
+
+Four boundaries: **live state never ships** (kb/mem/ckpt are rewritten, growing, private by default —
+what travels is a snapshot); a snapshot **must say** where it came from, when it was taken, who may see
+it, and under what licence; **the privacy level decides** (`privacy != public` ⇒ everything lands
+`private`); **payloads are declared honestly** (`full` + `public` is refused). Design:
+`ncc-platform/prd/ncc-hur-spec.md`.
+
 ### `ncc key`
 
 API keys are **capability tokens**: two independent constraints — `scopes` (what it may do) and
@@ -579,6 +704,70 @@ Inside the console:
 | `exit` / `quit` | Leave |
 
 `ncc terminal status` prints the resolved base URL, OS and POSIX runtime without entering the console. On Unix the runtime is native; on Windows the CLI detects WSL2 and falls back to MSYS2, guiding you through `ncc terminal setup` when neither is present.
+
+### `ncc gateway` (attaching to the control plane)
+
+The gateway keeps audit **on the machine** by default. Once attached to the control
+plane (= ncc.ai) it also aggregates local audit into **window summaries** (minute/hour
+level), signs them and reports them — **paths, payloads and credentials never leave the
+machine**; the control plane only sees counts, byte totals, **hostnames**, status
+buckets and latency percentiles. That red line is also enforced server-side: a "domain"
+containing `/` or whitespace in a summary ⇒ 400.
+
+```bash
+ncc gateway init --accept llm            # a gateway config first (S2a)
+ncc gateway bind --namespace @your-org   # register: token shown once, written to ~/.ncc/gateway.json (0600)
+ncc gateway heartbeat                    # heartbeat (default meaning "online"; --status draining to self-report)
+ncc gateway run                          # stay resident: heartbeats + reports on schedule
+ncc gateway report --dry-run             # show which windows would be aggregated (send nothing)
+ncc gateway report                       # really report (persist first, then send)
+ncc gateway audit --remote --csv         # view/export what the control plane retains
+ncc gateway usage                        # usage rollup (labelled "self-reported")
+ncc gateway unbind                       # deregister + clear the local binding (local audit untouched)
+```
+
+Semantics worth remembering:
+
+| Semantics | Notes |
+|---|---|
+| **Disconnection never loses audit** | Local ledger `~/.ncc/gateway-report.json` holds the watermark + a pending queue; items are **persisted before sending**. Unreachable control plane, revoked token, machine reboot — nothing is lost; `report` backfills later (the server dedupes by summary digest, so **no double counting**) |
+| **Failures are never silent** | A failed report prints the reason, the pending count and the two ways out (backfill later / re-bind) — it never looks like "nothing happened" |
+| **Online status is derived** | The control plane decides `offline` from a `last_seen_at` timeout; a client **cannot** self-report `offline` |
+| **What the signature proves** | `HMAC-SHA256(key = sha256(gateway token), canonical summary)` proves **source and integrity** (this really came from the gateway holding that token, unmodified) — it does **not** prove the content is true (counters are self-reported) |
+| **Re-binding = new identity** | `bind` clears the report ledger (local audit files untouched) so old queued windows are never attributed to the new gateway |
+
+---
+
+### `ncc app` (an NCC pod: a self-hostable personal agent)
+
+**The product is yours, the engine is ncc, the app logic is a HUR package, the platform only provides safe interconnection.** One directory is one assistant:
+
+```bash
+ncc app init --dir ./my-pod --namespace @me --share-target cloud
+ncc app doctor --dir ./my-pod     # item-by-item self-check, each with "what to run next"
+ncc app up     --dir ./my-pod     # serve the loopback console at http://127.0.0.1:8487/
+ncc app export --dir ./my-pod --out ./my-pod-export   # a directory someone else can deploy
+```
+
+A pod remembers **two targets** — that is the crux of the design:
+
+| Which side | Which target | What lives there |
+|---|---|---|
+| Content | the **current target** (`ncc target use <node>`) | canvases/notes = knowledge base, memory, checkpoints |
+| Sharing | `share.target` in `app.json` (default `hub`, the cloud) | point-to-point sharing: a **read-only snapshot** of the current content, as a link |
+
+The console is a tiny loopback page: four panels plus one button ("generate snapshot link") — the only
+write action, and a human clicks it. Whoever opens the link needs **no account** and sees a static copy
+of that content; a keyed link requires sending the key along (it is shown once). They never see your
+console and can never reach your node.
+
+Three boundaries ship in the pod's own `README.md` and in `doctor` output: **the control plane only ever
+holds summaries**, **a snapshot is not a grant** (long-term access is `ncc grant`), and **deleting the pod
+does not delete your data** (it lives on the node).
+
+End-to-end: `bash scripts/app-smoke.sh` (engine + node + platform, isolated ports and `NCC_HOME`, **51/51**).
+
+---
 
 ## Core concepts
 
@@ -715,6 +904,7 @@ The CLI is designed to be driven by other programs:
 - **Errors** — written to stderr as `✗ [error_code] message`, where the code and message come straight from the registry's JSON error body (`{"error":{"code":…,"message":…}}`). Network failures are reported separately as `网络错误: …`.
 - **Structured data** — `ncc info <target>` prints the artifact record as pretty JSON on stdout, suitable for `jq`.
 - **Non-interactive auth** — mint an API key once (`ncc key create --label ci`, printed exactly once) and use it in place of a login session.
+- **Signature gate** — `ncc verify <file | @ns/slug> --require-signature` exits non-zero unless the signature is verifiable with a key this machine trusts; a *tampered* artifact fails without needing the flag. Note that "has a signature from an unknown key" also fails the gate — that is the point.
 - **Human-readable text** — `search`, `publish`, `install` and friends print human-readable Chinese output; use the HTTP API directly if you need machine-stable output. Note that `ncc terminal` detects a non-TTY and degrades to a REPL rather than failing.
 
 Client-side network behaviour: the API client uses a 10 s connect timeout, a 60 s overall timeout and follows up to 10 redirects. Artifact bytes are fetched with a 60 s budget and buffered in memory before being written, so `download` / `install` are not yet suited to very large artifacts.
@@ -790,7 +980,9 @@ scripts/             build-release.sh (cross-compile + checksums)
 ## Use it from an agent
 
 `ncc mcp` runs NCC as an **MCP server** over stdio, so any MCP-capable agent can search the catalog,
-fetch artifacts, publish results and look up people — no extra service to run:
+fetch artifacts, publish results and look up people, read its own knowledge base / memory / checkpoints
+and run traces, and check an organisation's gateways plus their compliance audit summaries — no extra
+service to run (33 tools, gated by what the connected target declares):
 
 ```jsonc
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp"] } } }
@@ -818,10 +1010,29 @@ fetch artifacts, publish results and look up people — no extra service to run:
 | `ncc_region_profile` | Where your node network clusters |
 | `ncc_recommend_nodes` | Nodes by region, same-region-first |
 | `ncc_list_grants` | Grant relationships (outgoing / incoming) |
+| `ncc_list_kb` | Hosted knowledge base: list / keyword-search documents |
+| `ncc_get_kb` | Read one knowledge-base document (with its `checksum`) |
+| `ncc_list_mem` | Hosted memory entries (key / value / kind / TTL / source) |
+| `ncc_get_mem` | Read one memory by key — the path an agent takes |
+| `ncc_list_ckpt` | Hosted checkpoints: metadata and digests (bytes via `ncc ckpt pull`) |
+| `ncc_list_traces` / `ncc_trace_stats` | Run traces / the aggregate verdict (success rate, latency, tokens, cost, per version) |
+| `ncc_p2p_probe` / `ncc_p2p_check` / `ncc_p2p_node` | Hole-punch preflight (local only) / a real 0-byte punch test / the target node machine's profile and entry state |
+| `ncc_list_gateways` | Gateway control plane: which gateways exist, **are they online** (derived from heartbeats), how much they moved |
+| `ncc_gateway_audit` | Retained audit **summaries** for one gateway: counts, **hostnames**, status buckets, latency percentiles |
+| `ncc_gateway_usage` | Usage rollup for one gateway (**self-reported counters**, labelled in the response) |
 
-The node, grant and service tools are **read-only on purpose**. Anything that changes what
+The node, grant, service and **state** tools are **read-only on purpose**. Anything that changes what
 another party can obtain — declaring a service, linking a node, granting access — stays in the
-CLI, where the user performs it deliberately.
+CLI, where the user performs it deliberately. That also covers the state tools: letting a single
+tool call silently rewrite an agent's memory or knowledge makes it impossible to reconstruct
+afterwards who changed what — so `ncc kb set` / `ncc mem set` / `ncc ckpt save` stay in the CLI.
+
+The three gateway tools read the **window summaries** the control plane retains — not the full audit:
+paths, payloads and credentials stay on the **gateway machine**, so "which URL did who call" cannot be
+answered from an agent; run `ncc gateway audit` on that machine instead. Two more caveats worth stating
+out loud: online status is *derived* by the control plane from a heartbeat timeout, and usage is
+**self-reported** (the signature proves source and integrity, not truth). Registering, revoking or
+starting a gateway are actions taken by a person on that machine.
 
 Search, fetch and the people directory need **no login**; only publishing does. `ncc mcp` writes only
 protocol messages to stdout and all logs to stderr — required by MCP's stdio transport.

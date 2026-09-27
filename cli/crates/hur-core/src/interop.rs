@@ -276,7 +276,7 @@ fn body_of(c: &BodyCtx) -> String {
 /// 「怎么再往前一步」——把自己装到别的 Agent 里的可复制提示词（人和 Agent 都能读）
 pub fn install_hint(pkg: &HurPackage, target: &str) -> String {
     let ref_ = if pkg.publish.slug.trim().is_empty() {
-        format!("./dist/{}-{}.hur", pkg.id, pkg.version)
+        format!("./dist/{}", crate::spec::artifact_name(pkg))
     } else if pkg.publish.slug.contains('/') {
         format!("@{}", pkg.publish.slug)
     } else {
@@ -907,8 +907,11 @@ mod tests {
     fn pkg_with_agent() -> HurPackage {
         HurPackage {
             egress: None,
+            state: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),
+            profile: None,
+            data: None,
             id: "A-hotel-front-desk-abc123".into(),
             name: "Front Desk".into(),
             version: "0.2.0".into(),
@@ -933,6 +936,7 @@ mod tests {
             }),
         }
     }
+    
 
     fn files() -> Vec<(String, String)> {
         vec![

@@ -256,8 +256,11 @@ mod tests {
     fn pkg_with(deps: Deps) -> HurPackage {
         HurPackage {
             egress: None,
+            state: None,
             spec: crate::spec::PKG_SPEC.into(),
             kind: "agent".into(),
+            profile: None,
+            data: None,
             id: "A-dep-test-000001".into(),
             name: "dep test".into(),
             version: "0.1.0".into(),
@@ -274,6 +277,7 @@ mod tests {
             security: None,
         }
     }
+    
 
     struct Tmp(std::path::PathBuf);
     impl Drop for Tmp {

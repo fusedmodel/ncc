@@ -2,6 +2,7 @@
 use crate::config::CliConfig;
 use anyhow::{bail, Context};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 fn agent() -> ureq::Agent {
     let mut b = ureq::AgentBuilder::new()
@@ -129,6 +130,46 @@ pub fn get_bytes(cfg: &CliConfig, path_or_url: &str, token: Option<&str>) -> any
 
 pub fn post_json(cfg: &CliConfig, path: &str, token: Option<&str>, body: &Value) -> anyhow::Result<Value> {
     request(cfg, "POST", path, token, Some(body), None, &[])
+}
+
+/// 取原始字节**并带上响应头**。
+///
+/// 导出数据集要它：数据集摘要（`X-NCC-Dataset-Digest`）与条数在响应头里 ——
+/// 本地重新序列化一遍得到的字节与服务端的不一样，摘要是算不出来的，
+/// 所以**原样落盘 + 原样读头**才是诚实的做法。
+pub fn get_bytes_with_headers(
+    cfg: &CliConfig,
+    path_or_url: &str,
+    token: Option<&str>,
+) -> anyhow::Result<(Vec<u8>, BTreeMap<String, String>)> {
+    let url = if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
+        path_or_url.to_string()
+    } else {
+        format!("{}{}", cfg.base_url().trim_end_matches('/'), path_or_url)
+    };
+    let mut req = agent().request("GET", &url);
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    match req.call() {
+        Ok(r) => {
+            let mut headers = BTreeMap::new();
+            for name in r.headers_names() {
+                if let Some(v) = r.header(&name) {
+                    headers.insert(name.to_ascii_lowercase(), v.to_string());
+                }
+            }
+            let mut buf = Vec::new();
+            use std::io::Read;
+            r.into_reader().read_to_end(&mut buf)?;
+            Ok((buf, headers))
+        }
+        Err(ureq::Error::Status(status, r)) => {
+            let body = r.into_string().unwrap_or_default();
+            bail!("{}", err_of(status, &body))
+        }
+        Err(e) => bail!("网络错误: {e}"),
+    }
 }
 pub fn del(cfg: &CliConfig, path: &str, token: Option<&str>) -> anyhow::Result<Value> {
     request(cfg, "DELETE", path, token, None, None, &[])

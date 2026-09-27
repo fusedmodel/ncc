@@ -386,6 +386,24 @@ fn rm(cfg: &mut CliConfig, name: &str, json_out: bool) -> Result<()> {
 }
 
 /// 给新目标起个短名字：cloud / local / host 短名（避免撞已有名字）。
+/// 取一个**没被占用**的目标名（`local` → `local-2` → `local-3` …）。
+///
+/// 为什么必须有这一步：按 `--base` 新建目标时，如果算出来的名字撞上已有目标，直接
+/// `insert` 会**把那台机器上的登录态一起抹掉**（踩过：跑完一次 `--base` 之后凭据没了，
+/// 后面的命令全 401）。名字撞了就换一个，绝不覆盖。
+pub fn free_name(cfg: &CliConfig, want: &str) -> String {
+    if !cfg.targets.contains_key(want) {
+        return want.to_string();
+    }
+    for i in 2..1000 {
+        let n = format!("{want}-{i}");
+        if !cfg.targets.contains_key(&n) {
+            return n;
+        }
+    }
+    format!("{want}-{}", std::process::id())
+}
+
 pub fn suggest_name_for(cfg: &CliConfig, base: &str, kind: &str) -> String {
     let host = base
         .trim_start_matches("http://")
@@ -451,4 +469,20 @@ pub fn ping(base: &str) -> Result<String> {
         &[],
     )?;
     Ok(d.get("service").and_then(|s| s.as_str()).unwrap_or("").to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{CliConfig, Target};
+
+    /// 名字撞上已有目标时必须换名 —— 覆盖会连带抹掉那台机器的凭据。
+    #[test]
+    fn free_name_never_collides() {
+        let mut cfg = CliConfig::default();
+        cfg.targets.insert("local".into(), Target { base_url: "http://127.0.0.1:18450".into(), ..Default::default() });
+        cfg.targets.insert("local-2".into(), Target { base_url: "http://127.0.0.1:9999".into(), ..Default::default() });
+        assert_eq!(free_name(&cfg, "local"), "local-3");
+        assert_eq!(free_name(&cfg, "office"), "office");
+    }
 }

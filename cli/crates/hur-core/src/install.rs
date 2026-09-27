@@ -53,13 +53,22 @@ pub struct Source {
 }
 
 /// 给**已经落盘**的包目录补登记（GUI「写入本机 / 打包」后用，不重新解包）。
-/// 产物若是 `dist/<id>-<version>.hur` 则记录其 sha256，否则留空。
+///
+/// 产物的 sha256 取自 `dist/` 里那个 `.hur`（新名字 `<id>-<version>.<profile>.hur`
+/// 与改命名之前的老名字都认，见 `spec::find_artifact`）。
+///
+/// ⚠️ `nur write` 这条路上它**通常是空的**，而且这是对的：`write` 只把**工程源文件**
+/// 写进包落点（`copy_tree` 显式跳过 `dist/`），产物并不在那儿。给一份不在场的字节登记摘要，
+/// 就是为没发生的事签字 —— 宁可留空。
 pub fn register_dir(dir: &Path, source: Option<Source>) -> Result<InstallRecord> {
     let manifest_text = std::fs::read_to_string(dir.join(MANIFEST))
         .with_context(|| format!("{} 里没有 {MANIFEST}", dir.display()))?;
     let pkg = crate::spec::parse(&manifest_text)?;
-    let dist = dir.join(crate::spec::DIST).join(format!("{}-{}.hur", pkg.id, pkg.version));
-    let sha = if dist.is_file() { sha256_file(&dist)? } else { String::new() };
+    let dist = crate::spec::find_artifact(&dir.join(crate::spec::DIST), &pkg);
+    let sha = match &dist {
+        Some(p) => sha256_file(p)?,
+        None => String::new(),
+    };
     let rec = InstallRecord {
         id: pkg.id.clone(),
         name: pkg.name.clone(),

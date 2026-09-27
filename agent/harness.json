@@ -6,10 +6,14 @@
     "runtime": {
       "sandbox": "local",
       "transport": "stdio",
-      "requires": ["ncc"]
+      "requires": [
+        "ncc"
+      ]
     },
-    "protocols": ["mcp"],
-    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、读团队托管配置、按角色找人，以及判断跨局域网直连（P2P）条件。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化。",
+    "protocols": [
+      "mcp"
+    ],
+    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、读团队托管配置、按角色找人、判断跨局域网直连（P2P）条件，读 Agent 的知识库/记忆/检查点与运行轨迹，以及查自己组织的 NCC Gateway 在线状态与**只含摘要**的合规审计。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化；写动作（发布以外的改动、状态写入、网关注册/吊销）一律留在 CLI，由持凭据的人执行。",
     "tools": [
       "ncc_list_kinds",
       "ncc_search_catalog",
@@ -31,20 +35,73 @@
       "ncc_region_profile",
       "ncc_recommend_nodes",
       "ncc_list_grants",
+      "ncc_list_traces",
+      "ncc_trace_stats",
       "ncc_p2p_probe",
       "ncc_p2p_check",
-      "ncc_p2p_node"
+      "ncc_p2p_node",
+      "ncc_list_kb",
+      "ncc_get_kb",
+      "ncc_list_mem",
+      "ncc_get_mem",
+      "ncc_list_ckpt",
+      "ncc_list_gateways",
+      "ncc_gateway_audit",
+      "ncc_gateway_usage"
     ],
     "inputs": [
-      { "name": "connection", "type": "string", "description": "连接目标名（ncc target list）；缺省用当前目标。云端 hub / 内网节点如 office" },
-      { "name": "ref", "type": "string", "description": "引用：制品 @namespace/slug 或 R-… / 服务 @提供方/标识 / 配置 @命名空间/slug（旧名 target 仍兼容）" },
-      { "name": "query", "type": "string", "description": "检索关键词" },
-      { "name": "kind", "type": "string", "description": "制品类型过滤" },
-      { "name": "intent", "type": "string", "description": "服务匹配：一句人话意图（如「帮我订杭州的酒店」）" },
-      { "name": "addr", "type": "string", "description": "P2P：对端映射地址 ip:port（直连对打时用，通常来自对端 ncc_p2p_node 的 mapped）" }
+      {
+        "name": "connection",
+        "type": "string",
+        "description": "连接目标名（ncc target list）；缺省用当前目标。云端 hub / 内网节点如 office"
+      },
+      {
+        "name": "ref",
+        "type": "string",
+        "description": "引用：制品 @namespace/slug 或 R-… / 服务 @提供方/标识 / 配置 @命名空间/slug（旧名 target 仍兼容）"
+      },
+      {
+        "name": "query",
+        "type": "string",
+        "description": "检索关键词"
+      },
+      {
+        "name": "kind",
+        "type": "string",
+        "description": "制品类型过滤"
+      },
+      {
+        "name": "intent",
+        "type": "string",
+        "description": "服务匹配：一句人话意图（如「帮我订杭州的酒店」）"
+      },
+      {
+        "name": "addr",
+        "type": "string",
+        "description": "P2P：对端映射地址 ip:port（直连对打时用，通常来自对端 ncc_p2p_node 的 mapped）"
+      },
+      {
+        "name": "gateway",
+        "type": "string",
+        "description": "网关 id（GW-…）或名字；名字不唯一时会列出候选（ncc_list_gateways / ncc_gateway_audit / ncc_gateway_usage）"
+      },
+      {
+        "name": "since",
+        "type": "string",
+        "description": "时间下界：RFC3339 / 2026-09-27 / unix 秒（轨迹、审计摘要、用量都用它）"
+      },
+      {
+        "name": "limit",
+        "type": "integer",
+        "description": "返回条数（各工具上限不同，见 inputSchema）"
+      }
     ],
     "outputs": [
-      { "name": "content", "type": "text", "description": "文本结果（检索列表 / 元数据 JSON / 制品正文）" }
+      {
+        "name": "content",
+        "type": "text",
+        "description": "文本结果（检索列表 / 元数据 JSON / 制品正文）"
+      }
     ],
     "living": false
   }

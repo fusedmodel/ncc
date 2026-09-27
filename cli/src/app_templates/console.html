@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>个人 Agent 舱</title>
+<!--
+  舱控制台（本机 loopback 上的那个页面）。**刻意做得极小**：
+  它只证明「这个舱活着、内容在哪、怎么给别人看」——真正的画布/工作台界面是体验层的事
+  （harness-use 或用户自己的壳），NCC 出的是内容与互联，不是像素。
+  同一份模板两种模式：live（本机，读 /api/*）与 snapshot（分享出去的只读快照）。
+-->
+<style>
+  :root{
+    --bg:#fff; --bg2:#f9fafb; --bg3:#f3f4f6; --ink:#111827; --ink2:#4b5563;
+    --ink3:#6b7280; --ink4:#9ca3af; --line:#e5e7eb; --ok:#16a34a; --warn:#d97706; --err:#dc2626;
+    --mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Noto Sans SC','Microsoft YaHei',system-ui,sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{font-family:var(--sans);color:var(--ink);background:var(--bg);line-height:1.6;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:28px 22px 56px}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap;padding-bottom:16px;border-bottom:1px solid var(--line)}
+  h1{font-size:21px;font-weight:700;letter-spacing:-.01em}
+  .sub{color:var(--ink3);font-size:13px;margin-top:3px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .chip{font-family:var(--mono);font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:999px;border:1px solid var(--line);background:#fff;color:var(--ink3);text-transform:lowercase}
+  .chip.on{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .chip.off{color:var(--ink4);text-decoration:line-through}
+  .where{margin-top:14px;padding:10px 13px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);font-size:12.5px;color:var(--ink2)}
+  .where b{color:var(--ink)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:16px;margin-top:20px}
+  .card{border:1px solid var(--line);border-radius:12px;background:#fff;overflow:hidden}
+  .card>h2{font-size:13px;font-weight:700;padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .card>h2 .n{font-family:var(--mono);font-size:11px;font-weight:600;color:var(--ink4)}
+  .card .body{padding:6px 0;max-height:340px;overflow:auto}
+  .row{padding:9px 14px;border-bottom:1px solid var(--bg3);font-size:13px}
+  .row:last-child{border-bottom:0}
+  .row .t{font-weight:600}
+  .row .m{color:var(--ink3);font-size:12px;margin-top:2px;font-family:var(--mono);word-break:break-all}
+  .empty{padding:16px 14px;color:var(--ink4);font-size:12.5px}
+  .note{padding:10px 14px;font-size:12px;color:var(--ink3);border-top:1px solid var(--bg3);background:var(--bg2)}
+  .note.err{color:var(--err)}
+  .row.share .u{font-family:var(--mono);font-size:11.5px;word-break:break-all;color:var(--ink2)}
+  .bar{display:flex;gap:8px;align-items:center;padding:12px 14px;border-top:1px solid var(--bg3);background:var(--bg2);flex-wrap:wrap}
+  input{font-family:var(--sans);font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:8px;flex:1;min-width:120px;background:#fff;color:var(--ink)}
+  input:focus{outline:none;border-color:var(--ink)}
+  button{font-family:inherit;font-size:13px;font-weight:600;padding:8px 14px;border-radius:8px;border:1px solid transparent;background:var(--ink);color:#fff;cursor:pointer;white-space:nowrap}
+  button.ghost{background:#fff;color:var(--ink);border-color:var(--line)}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  footer{margin-top:22px;color:var(--ink4);font-size:12px}
+  footer code{font-family:var(--mono);background:var(--bg3);padding:1px 5px;border-radius:5px}
+  .msg{margin-top:12px;padding:11px 13px;border-radius:10px;font-size:12.5px;border:1px solid var(--line);background:var(--bg2);display:none}
+  .msg.show{display:block}
+  .msg.ok{border-color:#bbf7d0;background:#f0fdf4}
+  .msg.err{border-color:#fecaca;background:#fef2f2;color:#7f1d1d}
+  .msg code{font-family:var(--mono);font-size:12px}
+  .banner{padding:9px 13px;border:1px solid var(--line);border-radius:10px;background:var(--ink);color:#fff;font-size:12.5px;margin-top:14px;display:none}
+  .banner.show{display:block}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1 id="title">个人 Agent 舱</h1>
+      <div class="sub" id="sub">本机控制台 · 127.0.0.1</div>
+    </div>
+    <div class="chips" id="chips"></div>
+  </header>
+
+  <div class="banner" id="banner"></div>
+  <div class="where" id="where">正在读取…</div>
+
+  <div class="grid">
+    <section class="card">
+      <h2>画布 / 笔记 <span class="n" id="n-canvas">–</span></h2>
+      <div class="body" id="canvas"><div class="empty">加载中…</div></div>
+      <div class="note" id="note-canvas"></div>
+    </section>
+
+    <section class="card">
+      <h2>记忆 <span class="n" id="n-memory">–</span></h2>
+      <div class="body" id="memory"><div class="empty">加载中…</div></div>
+      <div class="note" id="note-memory"></div>
+    </section>
+
+    <section class="card">
+      <h2>检查点 <span class="n" id="n-ckpt">–</span></h2>
+      <div class="body" id="ckpt"><div class="empty">加载中…</div></div>
+      <div class="note" id="note-ckpt"></div>
+    </section>
+
+    <section class="card">
+      <h2>给别人看 <span class="n" id="n-share">–</span></h2>
+      <div class="body" id="shares"><div class="empty">加载中…</div></div>
+      <div class="bar">
+        <input id="key" placeholder="访问 key（留空=不设，谁拿到链接都能看）" maxlength="16">
+        <button id="btn-share">生成快照链接</button>
+      </div>
+      <div class="note" id="note-share"></div>
+    </section>
+  </div>
+
+  <div class="msg" id="msg"></div>
+
+  <footer>
+    <div id="foot-where"></div>
+    <div style="margin-top:6px">内容住节点、互联走平台：<b>控制面只看得到摘要与授权关系，拿不到业务数据</b>。
+      删掉这个舱（<code>rm -rf &lt;dir&gt;</code>）不会删掉节点上的内容 —— 那是你的数据，要单独删。</div>
+  </footer>
+</div>
+
+<!--SNAPSHOT-->
+<script nonce="{{NONCE}}">
+/* 两种模式：
+   - live：本机控制台，向同源 /api/* 取数据（页面就在 ncc app up 起的进程里）
+   - snapshot：分享出去的只读快照，数据在 window.__NCC_SNAPSHOT__ 里（没有后端） */
+const SNAP = window.__NCC_SNAPSHOT__ || null;
+const MODE = SNAP ? "snapshot" : "live";
+const $ = (id) => document.getElementById(id);
+
+function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function bytes(n){ n = Number(n||0); const u=["B","KB","MB","GB"]; let i=0; while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+" "+u[i]; }
+function when(s){ if(!s) return "—"; return String(s).replace("T"," ").replace("Z","").slice(0,19); }
+
+async function api(path){
+  const r = await fetch(path, { headers: { "accept": "application/json" } });
+  const d = await r.json().catch(() => ({ error: "响应不是 JSON" }));
+  if(!r.ok) throw new Error((d.error && d.error.message) || ("HTTP " + r.status));
+  return d;
+}
+
+function panel(id, noteId, countId, data){
+  const box = $(id), note = $(noteId);
+  const items = (data && data.items) || [];
+  $(countId).textContent = (data && data.available) ? items.length : "不可用";
+  if(data && !data.available){
+    box.innerHTML = '<div class="empty">这个目标没提供这项内容</div>';
+    note.className = "note err";
+    note.textContent = data.reason || "";
+    return;
+  }
+  if(!items.length){
+    box.innerHTML = '<div class="empty">还是空的</div>';
+  } else {
+    box.innerHTML = items.map(data.render).join("");
+  }
+  note.className = "note";
+  note.textContent = (data && data.note) || "";
+}
+
+function render(d){
+  const st = d.status || {};
+  $("title").textContent = (st.app && st.app.title) || "个人 Agent 舱";
+  $("sub").textContent = MODE === "snapshot"
+    ? "只读快照 · " + when(st.checkedAt) + " 生成"
+    : "本机控制台 · " + ((st.app && st.app.name) || "");
+
+  const caps = (st.target && st.target.capabilities) || [];
+  const want = ["registry", "kb", "mem", "ckpt", "trace", "share", "gateway"];
+  $("chips").innerHTML = want.map(c =>
+    '<span class="chip ' + (caps.includes(c) ? "on" : "off") + '">' + c + "</span>").join("") +
+    '<span class="chip ' + (st.credential && st.credential.loggedIn ? "on" : "off") + '">' +
+    (st.credential && st.credential.loggedIn ? "已登录" : "未登录") + "</span>";
+
+  $("where").innerHTML =
+    "内容在 <b>" + esc((st.target && st.target.product) || "?") + "</b>（" + esc((st.target && st.target.base) || "?") +
+    "）· 命名空间 <b>" + esc((st.app && st.app.namespace) || "?") + "</b> · 出口 <b>" +
+    esc((st.gateway && st.gateway.route) || "未声明") + "</b>" +
+    (st.gateway && st.gateway.bound
+      ? "（网关 " + esc(st.gateway.id || "") + " · 控制面看到的是摘要）"
+      : "（未绑定网关：模型调用不经过 NCC 审计）");
+
+  panel("canvas", "note-canvas", "n-canvas", {
+    available: d.canvas && d.canvas.available, reason: d.canvas && d.canvas.reason,
+    items: (d.canvas && d.canvas.items) || [],
+    note: d.canvas && d.canvas.note,
+    render: (x) => '<div class="row"><div class="t">' + esc(x.title || x.ref) +
+      ' <span class="chip">' + esc(x.kind || "doc") + " v" + esc(x.revision || 0) + '</span></div><div class="m">' +
+      esc(x.ref || "") + (x.summary ? " · " + esc(x.summary) : "") + "</div></div>",
+  });
+
+  panel("memory", "note-memory", "n-memory", {
+    available: d.memory && d.memory.available, reason: d.memory && d.memory.reason,
+    items: (d.memory && d.memory.items) || [],
+    note: d.memory && d.memory.note,
+    render: (m) => '<div class="row"><div class="t">' + esc(m.key) + '</div><div class="m">' +
+      esc(m.subject || "self") + " · " + esc(m.kind || "fact") +
+      (m.expiresAt ? " · " + when(m.expiresAt) + " 过期" : "") + '</div><div class="m">' +
+      esc(String(m.value == null ? "" : m.value).slice(0, 400)) + "</div></div>",
+  });
+
+  panel("ckpt", "note-ckpt", "n-ckpt", {
+    available: d.checkpoints && d.checkpoints.available, reason: d.checkpoints && d.checkpoints.reason,
+    items: (d.checkpoints && d.checkpoints.items) || [],
+    note: d.checkpoints && d.checkpoints.note,
+    render: (c) => '<div class="row"><div class="t">' + esc(c.name || c.id) +
+      ' <span class="chip">' + esc(c.label || "manual") + '</span></div><div class="m">' +
+      esc(c.id || "") + " · " + bytes(c.size) + " · " + when(c.createdAt) + "</div></div>",
+  });
+
+  const sh = d.shares || { available:false };
+  $("n-share").textContent = sh.available ? ((sh.items||[]).length) : "不可用";
+  $("shares").innerHTML = sh.available
+    ? ((sh.items||[]).length
+        ? sh.items.map(s => '<div class="row share"><div class="t">' + esc(s.title) +
+            ' <span class="chip">' + (s.hasPassword ? "带 key" : "公开") + '</span></div><div class="u">' +
+            esc(s.url) + "</div></div>").join("")
+        : '<div class="empty">还没有分享出去的快照</div>')
+    : '<div class="empty">这个目标没提供分享</div>';
+  $("note-share").className = sh.available ? "note" : "note err";
+  $("note-share").textContent = (sh.reason || sh.note || "生成的是「只读快照」：别人打开链接看到的是当前内容的静态拷贝，不需要账号；带 key 的链接要把 key 一起发给他（key 只回显一次）。").replace(/\*\*/g, "");
+  // 只有云端目标能做「舱快照」；内网节点的分享是制品级的（要 ref），按钮在这里就该是灰的，
+  // 而不是点下去报一个错。
+  if(!sh.available || MODE === "snapshot" || sh.snapshot === false){
+    $("btn-share").disabled = true;
+    $("key").disabled = true;
+  }
+  if(MODE === "snapshot"){ document.querySelector(".bar").style.display = "none"; $("key").style.display = "none"; }
+
+  $("foot-where").innerHTML = "舱目录 <code>" + esc((st.app && st.app.dir) || "") + "</code>" +
+    (st.about ? " · 目标自述：" + esc(st.about) : "");
+}
+
+function msg(text, kind){
+  const el = $("msg"); el.className = "msg show " + (kind || "");
+  el.innerHTML = text;
+}
+
+async function load(){
+  if(MODE === "snapshot"){
+    render(SNAP);
+    $("banner").className = "banner show";
+    $("banner").textContent = "这是一份只读快照（由某个 Agent 舱生成）。写动作、记忆的改动、新的分享都不在这里。";
+    return;
+  }
+  try {
+    const [status, canvas, memory, checkpoints, shares] = await Promise.all([
+      api("/api/status"), api("/api/canvas"), api("/api/memory"), api("/api/checkpoints"), api("/api/shares"),
+    ]);
+    render({ status, canvas, memory, checkpoints, shares });
+    const errs = [canvas, memory, checkpoints].filter(x => !x.available).length;
+    if(errs) msg("有 " + errs + " 块内容读不到 —— 看各面板下的说明（多半是「当前目标没声明这个能力」，切目标或在那台节点上写内容即可）。", "");
+  } catch(e){
+    msg("读不到舱状态：<code>" + esc(e.message) + "</code>", "err");
+  }
+}
+
+$("btn-share") && $("btn-share").addEventListener("click", async () => {
+  $("btn-share").disabled = true;
+  msg("正在生成快照并上传…", "");
+  try {
+    const r = await fetch("/api/share", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key: $("key").value.trim() }),
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error((d.error && d.error.message) || ("HTTP " + r.status));
+    const line = d.key ? '把这个链接和 key 一起发给他：<br><code>' + esc(d.url) + "</code><br>key：<code>" + esc(d.key) + "</code>（只回显这一次）"
+                       : '把这个链接发给他：<br><code>' + esc(d.url) + "</code>";
+    msg(line + "<br>他是匿名打开的，看不到这个控制台，只看到一份只读快照。", "ok");
+    load();
+  } catch(e){
+    msg("生成失败：<code>" + esc(e.message) + "</code>", "err");
+  }
+  $("btn-share").disabled = false;
+});
+
+load();
+</script>
+</body>
+</html>

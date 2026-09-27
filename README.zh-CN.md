@@ -211,6 +211,8 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc info <target>` | 以 JSON 打印制品完整记录 |
 | `ncc download <target>` | 下载制品字节 |
 | `ncc install <target>` | 安装到本地包目录 |
+| `ncc sign <文件>` | **签你发布出去的那份字节**（不限 kind：skill / mcp / …）。Minisign/ed25519，私钥不出设备；`--attach <引用>` 是唯一联网动作（只上传 `.minisig` 与公钥，制品字节一个字节都不传） |
+| `ncc verify <文件 \| @命名空间/slug>` | 验签：本地文件全程离线；条目引用则下载字节 → 核摘要 → 验签。`--require-signature` 可进 CI；**被改过**的字节一律非 0 退出 |
 | `ncc key list` / `create` / `revoke` / `scopes` | 管理能力令牌（类型 / 作用域 / 命名空间限定 / 过期） |
 | `ncc living` | 把本机作为设备节点上报到你的命名空间 |
 | `ncc p2p probe` / `p2p check <节点>` | 打洞条件预检（纯本地）/ 两端真实建连检查（互打 STUN，≈ ICE connectivity check） |
@@ -242,11 +244,50 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc registry replicate` | 把制品分发到 worker（副本） |
 | `ncc registry rm` | 下架制品并回收各节点副本（`--yes`） |
 | `ncc registry leave` | 下线我的节点（下次心跳会重新注册） |
+| `ncc trace add --file <f.jsonl>` | 采集运行轨迹：原生 `ncc-trace/v1` 文档 / HUR 执行留痕 / 事件流（每行 `{type,name,ms,in,out}`）。**只写本机**，不联网 |
+| `ncc trace ls` / `show` / `stats` / `export` / `label` / `rm` | 本地看 / 聚合 / 导出（JSONL 数据集）/ 打评测标注 / 删；加 `--remote` 则对这些动作走目标节点 |
+| `ncc trace push` | 把采集到的轨迹上传到节点（幂等，每批 50 条）。要求目标声明 `trace` 能力 |
+| `ncc trace kinds` / `status` | 词表与上限 / 本地暂存状态（采集了多少、传了多少） |
+| `ncc kb set <slug> --title … [--file f]` | 写一篇**托管知识库**文档（存在即新版本）；`--public` 让它匿名可读 |
+| `ncc kb ls` / `get` / `search` / `history` / `bundle` | 列表（公开 ∪ 我的 ∪ 被授权的）/ 取一篇（`--revision N` 取历史版）/ **关键词加权**检索 / 版本历史 / 成组拉一个命名空间 |
+| `ncc kb archive` / `restore` / `rm` | 归档（默认不出现在列表与检索里）/ 恢复 / 删除 |
+| `ncc kb pull --package <目录>` | **读包的 `state.kb` 声明并拉那几个库**到 `~/.ncc/kb`（按 `checksum` 增量）；包没声明就明确拒绝，不替它猜 |
+| `ncc kb kinds` | 知识库类型 / 格式 / 上限（离线也能看） |
+| `ncc mem set <key> <value>` | 写**记忆**（`(命名空间, subject, key)` upsert；`--ttl-days`、`--kind`、`--source`、`--confidence`、`--pin`） |
+| `ncc mem get <key>` / `ls` / `rm` / `gc` | 按 key 读一条（Agent 读记忆的主路径）/ 列表（默认不含过期的）/ 删一条 / 真正清掉已过期的 |
+| `ncc mem kinds` | 记忆种类与上限（记忆**没有公开档**） |
+| `ncc ckpt save --name … --file …` | 打一个**检查点**：算 `sha256` → 建元数据 → 传字节（`--parent-last` 自动接血缘，`--meta k=v` 加自由元数据） |
+| `ncc ckpt ls` / `show` / `lineage` | 列表 / 看一个（含短时签名 `bytesUrl`）/ 沿 `parent` 回溯到起点 |
+| `ncc ckpt pull <id> --out <文件>` | 取回字节，**落盘前核对摘要** |
+| `ncc ckpt prune --ref <@ns/slug> --keep N` / `rm` | 每个制品只留最新 N 个（其余标 `pruned`、删字节、留元数据）/ 彻底删一个 |
+| `ncc ckpt kinds` | 检查点粒度与上限（不可变：没有"改"这个动作） |
+| `ncc store declare <集合>` | **声明一个集合 —— 这就是新增一类内容的全部代价**（问题单 / 运行日志 / 复盘 / 备注…）。服务端不用改：`--field 'title:string!'` / `'status:enum:open\|closed'` / `'labels:string[]'` / `'body:text?search'` / `'owner:ref'`，`--index` 指定能过滤的字段，`--immutable` / `--append-only`、`--public`、`--max-bytes`、`--ttl-days` |
+| `ncc store declare --file <文件>` / `--dir <目录>` | 声明是**配置**：从文件 apply（单件 / 数组 / `{"stores":[…]}` / 整个 `hur.json` 都收），或从一个目录逐件 apply。**声明是完整的一份说法，不是补丁** —— 文件里没写的项就是没有 |
+| `ncc store declare … --check` | 只看**会改什么**（哪几项变了）而不改；有差异退出码 1，可以直接当 CI 门禁 |
+| `ncc store export --dir <目录>` / `--file <文件>` | 把声明导出来（一件一个文件 + README），好进 git、好评审、再 apply。导的是**声明不是记录** —— 它不是备份 |
+| `ncc store ls` | 这台节点上有哪些集合（记录数 / 形态 / 可见性 / 声明的字段） |
+| `ncc store put <集合> <key>` | 写一条：`--body` / `--file` / stdin、`--field k=v`（**本地就按声明类型化与校验**）、`--meta k=v`（自由 JSON，**不过滤**）、`--tag`、`--ttl-days`、`--revision N`（乐观并发，对不上 409，不是静默覆盖）、`--note`（进历史） |
+| `ncc store list <集合>` | 查：`--where 字段=值`（必须是声明过**且在 index 里**的字段，否则报错并列出能过滤的哪些，**不会给你个空结果**）、`--q`（**关键词匹配**：几个词都要出现；命中位置加权排序 key 3 / 标签与 `?search` 字段 2 / 正文 1 —— 不是索引检索，排序在最多 500 条候选上做）、`--tag`、`--prefix`、`--archived`、`--expired`、分页 |
+| `ncc store get <集合> <key>` | 取一条（含正文） |
+| `ncc store history <集合> <key>` | 改动历史 —— 只记元数据（谁 / 何时 / 哪个摘要 / 备注）。备注**跟着它自己的版本走**，所以建记录时写的那条备注永远看得到 |
+| `ncc store rm <集合> <key>` | 归档（不列出、但还在）；`--hard` 才是真删 |
+| `ncc store kinds` | 类型白名单 / 上限 / 三条不变量 —— **离线可读** |
 | `ncc terminal [status\|setup]` | 打开能力命令台 / 查看 POSIX 运行时 |
 | `ncc upgrade` | 把 CLI 二进制就地升级到最新发布版（`--check` 只检查不下载，`--force` 强制重装）|
-| `ncc mcp` | 以 **MCP server**（stdio）启动，让任意 Agent 驱动 NCC |
+| `ncc mcp` | 以 **MCP server**（stdio）启动，让任意 Agent 驱动 NCC。`--package <目录\|hur.json>` 把面收窄到这个包声明的集合（**模型面 = 声明面**：读工具按 `mode` 给、写工具要有声明才给，没声明的集合连名字都看不到，也调不动） |
 | `ncc gateway init` / `check` / `run` / `status` / `audit` | **NCC Gateway（S2a）**：固定路由的白名单代理 —— 提供出口（`accept`）或借对端出口（`forward`）。调用方**不能指定目标地址**；出站凭据只来自配置 `inject`（调用方的 `Authorization` 不透传）；本地 JSONL 审计只记元数据 |
+| `ncc gateway bind` / `heartbeat` | 接**控制面**（= ncc.ai）：注册网关 → 令牌写进 `~/.ncc/gateway.json`（0600，只回一次）/ 周期心跳（缺省语义 `online`，可自报 `draining`）|
+| `ncc gateway report` / `usage` | 把本地审计聚合成**窗口摘要**签名上报（**先落盘再发送**：控制面不可达就进待传队列，恢复后补传）/ 用量汇总（写明是**自报计数**）|
+| `ncc gateway audit --remote` / `unbind` | 看/导出控制面留存的摘要（`--csv`＝合规导出）/ 注销并清本地绑定（控制面不可达也能解绑）|
+| `ncc app init` / `doctor` / `up` / `status` / `export` | **NCC 舱（`ncc app`）**：把「用户自己部署一个人助理」变成一条命令 —— 产品本体是你的（`app.json`）、引擎是 ncc、应用逻辑是 HUR 包（`hur.json`）、内容住节点、互联走平台；`up` 起本机控制台（loopback），`export` 出可交付目录 |
 | `ncc help <command>` | 查看任意命令的自动生成帮助 |
+| `ncc hur profile <包 \| @命名空间/slug>` | 读一份包**是什么**：要什么 / 给什么 / **怎么接**，外加**分级体检**（结构 · 自洽 · 签名分开报，不合成一个 ✅）；`--list` 列规范里的全部 profile |
+| `ncc hur match --profile kb-seed` | 按 profile / 集成宿主 / 能力在目录里找包（**只读**） |
+| `ncc hur data import --package <目录>` | 把**数据快照包**灌进节点（kb-seed / mem-seed / ckpt-set / trace-set）；默认只出计划，`--apply` 才真写 |
+| `ncc kb bundle --as-package <目录>` | 把知识库导出成**快照包**（来源 / 快照时刻 / 隐私级别 / 许可），可签名可发布 |
+| `ncc mem export --as-package <目录>` | 记忆快照（**默认 private** —— 能分发出去的记忆就不再是记忆了） |
+| `ncc ckpt export --as-package <目录>` | 检查点集合：字节 + 血缘，进包前逐个核摘要 |
+| `ncc trace export --as-package <目录>` | 轨迹数据集快照；`--payload digest\|preview\|full` 必须声明（`full` + `public` 直接拒） |
 
 全局参数：
 
@@ -294,6 +335,46 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `-o, --out <PATH>` | `download` 的输出路径 |
 
 `ncc install` 按 `<root>/<命名空间>/<slug>/` 组织目录，并在制品文件旁写入 `package.json`，记录来源引用、kind、版本、`sha256`、大小、安装时间，以及制品声明了封装契约时的 `manifest` / `harness` 块。
+
+### `ncc sign` 与 `ncc verify`（给任意制品加签）
+
+签名只有在「核对方不必信你」时才有意义。所以 `ncc sign` 签的就是**你发布出去的那份字节**，
+拿到公钥的人用现成工具就能独立核对 —— 不需要 NCC，也不需要 `ncc-cli`：
+
+```sh
+ncc hur key gen                                  # 一次性：密钥在 ~/.harnessuse/keys
+ncc sign SKILL.md --kind skill --reference @me/release-notes --version 0.1.0
+#   ⇢ 写出 SKILL.md.minisig（离线；私钥不出设备）
+
+ncc verify SKILL.md                              # ✔ 已验证
+ncc verify SKILL.md --require-signature          # CI 门禁（没有可核对签名就非 0）
+minisign -V -p ~/.harnessuse/keys/hur.pub -m SKILL.md   # 第三方的核对方式
+```
+
+签名对象里有 `format` / `keynum` / `signer` / `sha256`（制品摘要）、`.minisig` 正文与
+公钥线索。把它放进发布清单，服务端会再核一次「摘要 == 刚上传的那份字节」：
+
+```sh
+ncc sign SKILL.md --kind skill --reference @me/release-notes --version 0.1.0 --json \
+  | python3 -c 'import json,sys; json.dump({"signature": json.load(sys.stdin)["signature"]}, open("manifest.json","w"))'
+ncc publish --file SKILL.md --kind skill --name release-notes --manifest manifest.json
+```
+
+事后加签是 `--attach`（唯一联网路径 —— 只上传 `.minisig` 与公钥，制品字节不传）：
+
+```sh
+ncc sign SKILL.md --kind skill --attach @me/release-notes
+```
+
+三件**故意不做**的事：
+
+* **包不是一份文件。** 把 `ncc sign` 指到 HUR 包目录（或 `.hur` 产物）它会转交 `ncc hur sign`——
+  那里签的是**规范打包字节**，要连包身份、版本与 `hur.lock` 一起核对。两种形态各一套实现。
+* **公钥不认识就不是"已验证"。** `ncc verify` 会如实报 `⚠️ 有签名，但公钥本机不认识`，
+  并且带 `--require-signature` 时非 0 退出。
+* **随签名一起给的公钥不是信任依据。** 签名旁边那个 `pubkey` 是发布方自己的声明；
+  `ncc verify` 最多告诉你它**自洽**，仅此而已 —— 要认它，就用
+  `--pubkey <你自己确认过的公钥>` 或 `ncc hur key trust`。
 
 ### `ncc living`
 
@@ -545,6 +626,39 @@ ncc registry admin audit --limit 20                      # 谁在什么时候把
 
 两条服务端强制的规则：**不能禁用自己的账号**，**不能禁用最后一个可用管理员**。
 
+### `ncc hur profile` 与数据快照包
+
+一份包“**是什么**”，过去由一个只有三个值的 `kind`（`agent|harness|repo`）兼职。现在叫 **profile**，
+共 11 个：`agent` `harness` `plugin` `mcp` `app` `scaffold` `skill` `kb-seed` `mem-seed`
+`ckpt-set` `trace-set`。**封装不变**（确定性字节 + `hur.json` + `hur.lock` + 签名），profile 只决定
+**要什么、能不能跑、怎么接、按什么匹配**。
+
+```sh
+ncc hur profile --list                 # 规范里的全部 profile
+ncc hur profile ./my-plugin            # 是什么 / 要什么 / 给什么 / 怎么接 + 分级体检
+ncc hur match --profile plugin --host cursor
+```
+
+**profile 的价值在约束，不在宽容**：数据类 profile 明确禁止 `entry` 与 `permissions.network` ——
+一份知识库快照不该能跑代码、也不该自己出网（新规则 R12，老包不受影响）。
+
+产物文件名也带上这一段：`dist/…-0.1.0.kb-seed.hur`、`…-0.1.0.plugin.hur` —— 一个 `dist/` 里
+躺着几十个 `.hur` 时，一眼看得出哪个是能跑的包、哪个是一份数据。**名字只是线索，清单才是权威**：
+改名不会改变它是什么（只多一条提醒），认不出来的名字也不会被当成写错。
+
+数据类的四样（`kb` / `mem` / `ckpt` / `trace`）都能导出成**不可变快照包**，再灌回任意节点：
+
+```sh
+ncc kb bundle --namespace @me --as-package ./kbseed --privacy internal --license CC-BY-4.0
+ncc hur verify ./kbseed && ncc hur sign ./kbseed && ncc hur publish ./kbseed
+ncc hur data import --package ./kbseed            # 默认只出计划，一个字节都不写
+ncc hur data import --package ./kbseed --apply    # 真写
+```
+
+四条边界：**活状态不出门**（kb/mem/ckpt 会被反复写、持续变大、默认私有 —— 能打包的是它们的快照）；
+**快照必须说清**来源 / 时刻 / 隐私 / 许可；**隐私级别说了算**（`privacy != public` ⇒ 导入后全部 `private`）；
+**载荷如实声明**（`trace-set` 的 `full` + `public` 直接拒）。设计见 `ncc-platform/prd/ncc-hur-spec.md`。
+
 ### `ncc key`
 
 API-Key 是**能力令牌**，有两个独立约束：`scopes`（能做什么）与 `namespaces`（能拉谁的东西）。
@@ -597,6 +711,69 @@ ncc key revoke <id>
 | `exit` / `quit` | 退出 |
 
 `ncc terminal status` 不进入命令台，直接打印解析出的 base URL、操作系统与 POSIX 运行时。Unix 上运行时即原生；Windows 上会检测 WSL2，缺失时降级 MSYS2，并通过 `ncc terminal setup` 引导装配。
+
+### `ncc gateway`（接控制面：摘要上报）
+
+网关（S2a/S2b）默认只把审计落在**本机**。接上控制面（= ncc.ai）之后，它会把本地审计
+**聚合成窗口摘要**（分钟/小时级）签名上报 —— **路径、载荷、凭据都不出本机**，控制面只看到
+计数、字节数、**主机名**、状态桶、延迟分位。这条红线在服务端还有一道硬拦：
+摘要里"域名"带 `/` 或空白 → 400。
+
+```bash
+ncc gateway init --accept llm            # 先有一份网关配置（S2a）
+ncc gateway bind --namespace @你的组织    # 注册到控制面：令牌只回一次，写进 ~/.ncc/gateway.json（0600）
+ncc gateway heartbeat                    # 心跳（缺省语义 online；--status draining 可自报）
+ncc gateway run                          # 常驻：按 heartbeat_sec / report_sec 周期干活
+ncc gateway report --dry-run             # 看会聚合出哪些窗口（不发送）
+ncc gateway report                       # 真上报（先落盘再发送）
+ncc gateway audit --remote --csv         # 看/导出控制面留存的摘要
+ncc gateway usage                        # 用量汇总（写明是"自报计数"）
+ncc gateway unbind                       # 注销 + 清本地绑定（本地审计文件不动）
+```
+
+几条**要记住的语义**：
+
+| 语义 | 说明 |
+|---|---|
+| **断线不丢审计** | 本地账本 `~/.ncc/gateway-report.json` 记水位 + 待传队列；**先落盘再发送**。控制面不可达、令牌被吊销、机器重启，审计都还在，恢复后 `report` 自动补传（服务端按摘要 digest 判重复，**不双计**）|
+| **上报失败不静默** | 失败会打印原因 + 待传条数 + 两条出路（恢复后补传 / 换绑）；不会看起来"什么都没发生" |
+| **在线状态是推导的** | 控制面按 `last_seen_at` 超时判 `offline`；客户端**不能**自报 `offline` |
+| **签名证明什么** | `HMAC-SHA256(key = sha256(网关令牌), 规范摘要)` —— 证明**来源与完整**（确实是持令牌的那台网关报的、没被改过），**不证明内容真实**（计数是网关自报的）|
+| **换绑 = 换身份** | `bind` 会清空上报账本（本地审计文件不动），旧队列不会算到新网关上 |
+
+---
+
+### `ncc app`（NCC 舱：可自部署的个人 Agent 助理）
+
+**产品是用户的，引擎是 ncc，应用逻辑是 HUR 包，平台只做安全互联。** 一个目录就是一台助理：
+
+```bash
+ncc app init --dir ./my-pod --namespace @me --share-target cloud   # 生成 app.json / hur.json / run.sh / README / SKILL
+ncc app doctor --dir ./my-pod     # 逐项自检：缺什么、下一步跑什么，都会打出来
+ncc app up     --dir ./my-pod     # 起舱：本机控制台 http://127.0.0.1:8487/
+ncc app status --dir ./my-pod     # 看现状（不起服务）
+ncc app export --dir ./my-pod --out ./my-pod-export   # 别人拿到就能部署一份自己的
+```
+
+**舱记着两个目标**（这条是设计要害）：
+
+| 哪一侧 | 走哪个目标 | 住什么 |
+|---|---|---|
+| 内容 | **当前目标**（`ncc target use <节点名>`） | 画布/笔记 = 知识库 kb · 记忆 = mem · 交接点 = ckpt |
+| 分享 | `app.json` 里的 `share.target`（默认 `hub` = 云端） | 点对点分享：把当前内容打成一份**只读快照**发出链接 |
+
+控制台是本机 loopback 上的一个极小页面：四个面板（画布 / 记忆 / 检查点 / 给别人看）+ 一个
+「生成快照链接」按钮（**舱里唯一的写动作，由人点**）。别人打开链接**不用账号**，看到的是
+当前内容的静态拷贝；带 key 的链接要把 key 一起发给他（key 只回显一次）。对方看不到控制台，
+也碰不到你的节点。
+
+三条边界写在 `README.md`（舱里那份）与 `doctor` 输出里：**控制面只有摘要**、
+**快照 ≠ 长期权限**（长期是 `ncc grant`）、**删舱 ≠ 删数据**（内容在节点上，要单独删）。
+
+端到端验证：`bash scripts/app-smoke.sh`（三个东西一起跑：引擎 + ncc-registry 节点 + ncc-platform 平台；
+隔离端口与 `NCC_HOME`，**51/51**）。
+
+---
 
 ## 核心概念
 
@@ -728,6 +905,8 @@ CLI 被设计为可被其它程序驱动：
 - **错误** —— 写到 stderr，形如 `✗ [error_code] message`，其中 code 与 message 直接来自注册中心的 JSON 错误体（`{"error":{"code":…,"message":…}}`）；网络故障另行报告为 `网络错误: …`。
 - **结构化数据** —— `ncc info <target>` 在 stdout 打印制品的 pretty JSON，可直接交给 `jq`。
 - **非交互认证** —— 一次生成 API-Key（`ncc key create --label ci`，仅显示一次），用它替代登录态。
+- **签名门禁** —— `ncc verify <文件 | @命名空间/slug> --require-signature`：签名不能在本机被核对就非 0 退出；
+  **被改过**的制品不需要这个开关就失败。注意「有签名但公钥不认识」同样过不了门禁 —— 那正是它该有的行为。
 - **面向人的文本** —— `search`、`publish`、`install` 等打印人类可读的中文输出；需要机器稳定的输出时请直接调用 HTTP API。注意 `ncc terminal` 会检测非 TTY 并降级为 REPL，而不是报错。
 
 客户端网络行为：API 客户端连接超时 10s、整体超时 60s、最多 10 次重定向。制品字节以 60s 预算拉取，并在写盘前整体缓存在内存中，因此 `download` / `install` 目前不适合超大制品。
@@ -803,7 +982,8 @@ scripts/             build-release.sh（交叉编译 + 校验和）
 ## 让 Agent 使用
 
 `ncc mcp` 以 **MCP server** 方式（stdio）跑起 NCC，任何支持 MCP 的 Agent 都能检索目录、取回制品、
-发布成果、查找同行 —— 不需要额外服务：
+发布成果、查找同行，读它自己的知识库/记忆/检查点与运行轨迹，查组织网关的在线状态与合规审计摘要 ——
+不需要额外服务（33 个工具，按**目标声明的能力**放行）：
 
 ```jsonc
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp"] } } }
@@ -831,9 +1011,26 @@ scripts/             build-release.sh（交叉编译 + 校验和）
 | `ncc_region_profile` | 节点在哪些区域更厚 |
 | `ncc_recommend_nodes` | 按区域推荐节点，同区域优先 |
 | `ncc_list_grants` | 授权关系（给出的 / 收到的） |
+| `ncc_list_kb` | 托管知识库：列表 / 关键词检索 |
+| `ncc_get_kb` | 读一篇知识库文档（带 `checksum`） |
+| `ncc_list_mem` | 托管记忆条目（键 / 值 / 种类 / TTL / 来源） |
+| `ncc_get_mem` | 按 key 读一条记忆（Agent 读记忆的主路径） |
+| `ncc_list_ckpt` | 托管检查点：元数据与摘要（字节走 `ncc ckpt pull`） |
+| `ncc_list_traces` / `ncc_trace_stats` | 运行轨迹列表 / **聚合结论**（成功率、耗时、token、花费、按版本分组） |
+| `ncc_p2p_probe` / `ncc_p2p_check` / `ncc_p2p_node` | 打洞条件预检（本机，纯本地）/ 真实对打实测（0 字节）/ 目标节点那台机器的画像与入口状态 |
+| `ncc_list_gateways` | 网关控制面：我们有哪些网关、**在线吗**（状态由心跳**推导**）、用了多少 |
+| `ncc_gateway_audit` | 某台网关留存的审计**摘要**：计数、**主机名**、状态桶、延迟分位 |
+| `ncc_gateway_usage` | 某台网关的用量汇总（**自报计数**，口径写在返回里） |
 
-节点、授权与服务相关的工具**故意做成只读**。任何会改变「别人能拿到什么」的动作 ——
-声明服务、连接节点、授权 —— 都留在 CLI 里，由用户明确执行。
+节点、授权、服务与**状态**相关的工具**故意做成只读**。任何会改变「别人能拿到什么」的动作 ——
+声明服务、连接节点、授权 —— 都留在 CLI 里，由用户明确执行。状态工具也是这个道理：
+让一次工具调用悄悄改掉 Agent 的记忆或知识，事后没人能复盘是谁改的 ——
+所以 `ncc kb set` / `ncc mem set` / `ncc ckpt save` 留在 CLI。
+
+网关那三个工具读的是控制面留存的**窗口摘要**（不是完整审计）：路径、载荷与凭据留在**网关本机**，
+所以「谁调了哪个 URL」在 Agent 侧回答不了 —— 要去那台机器上跑 `ncc gateway audit`。
+另外两条口径：在线状态是控制面按心跳超时**推导**的，用量是网关**自报**的（签名只证明来源与完整，
+不证明内容为真）。注册/吊销网关、让网关开始上报，都是**那台机器上**的人的动作。
 
 检索、取回与人才目录**无需登录**；只有发布需要凭据。`ncc mcp` 的 stdout 只输出协议消息、
 日志全部走 stderr —— 这是 MCP stdio 的硬要求。

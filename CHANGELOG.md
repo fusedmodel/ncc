@@ -14,6 +14,268 @@
 
 ## [未发布]
 
+### 变更 · `ncc store list --q` 从子串改为**关键词匹配 + 加权排序**
+
+- **几个词都要出现**（空格 / 中英文逗号 / 顿号分开），命中位置决定排序：
+  key 3 / 标签与 `?search` 字段 2 / 正文 1 —— 与 kb 的关键词加权同一口径。
+- **明说的取舍**：排序在最多 500 条候选上做（超出按更新时间截断），不是索引检索、
+  更不是向量检索 —— `ncc store kinds` 与接口文案里都这么写。
+- **`ncc store ls` 成为「这台节点上有什么内容」**：列出实际有的集合（内置的带标记），
+  并列出节点支持的几类内置内容与哪些还没用过（取用即声明）。
+- **`ncc store export` 跳过内置集合**（它们的声明在节点代码里，不是配置），并在
+  stdout 给 JSON 时把人看的说明改到 stderr（之前粘在 JSON 后面，调用方一解析就炸）。
+- 验证：`bash scripts/store-smoke.sh`（133 通过 / 0 失败）。
+
+### 新增 · 声明即配置：`ncc store export` / `declare --file|--dir|--check`
+
+集合声明是**配置**，不是一次性敲出来的命令行参数 —— 它得能进 git、能被评审、
+能先看差异再决定改不改。
+
+- **`ncc store export --dir stores/`**：一件一个 `<集合>.json` + 一份说清用法的 README；
+  也可以 `--file` 打成一份或直接打到 stdout。
+- **`ncc store declare --dir stores/`**：逐件 apply（幂等：一样的再来一次就是「不变」）。
+- **`--check`**：只看会改什么，**真的不改**；有差异退出码 1 —— 可以直接当 CI 门禁。
+  差异说得具体：只说哪几项变了（`fields` / `index` / `visibility` …）。
+- **一个形状两种用法**：`CollectionSpec` 是节点与包共用的同一个形状 ——
+  节点声明「提供什么」，包的 `state.stores[]` 声明「需要什么」（多一个 `mode`）。
+  所以 `--file` 也直接吃 **`hur.json`**：「把这个包需要的集合落地」
+  就是 `ncc store declare --file hur.json`，不用先手工抄一遍。
+- **`declare` 是完整的一份说法，不是补丁**：文件里没写的项就是没有。
+- **`mode` 只属于包**：从 `hur.json` apply 时会提醒一句，
+  免得有人以为文件里写了 `readwrite` 就等于这台节点授权了写。
+- **离线先拦能拦的**：`index` 里的字段没在 `fields` 声明过 → 本地就拒（与包的 R12 同一条口径）。
+- 节点侧 `Collection` 多一个 `reason`（为什么提供这一类内容），导出时跟声明一起走。
+- 验证：`bash scripts/store-smoke.sh`（123 通过 / 0 失败）。
+
+### 新增 · 模型面 = 声明面：`ncc mcp --package <包>`
+
+一个 HUR 包（插件 / harness）需要的是**恰好它能用的那部分**：多了是风险（模型看得到
+不该看的），少了是幻觉（模型以为自己能调）。于是 `ncc mcp` 支持把面收窄到包的声明：
+
+- **`ncc mcp --package ./my-pkg`**：工具表 = 这个包 `state.stores[]` 声明过的集合。
+  `read`（默认）→ `ncc_store_list_<集合>` / `ncc_store_get_<集合>`；`readwrite` → 多一个
+  `ncc_store_put_<集合>`；`write`（只写）→ **只给写工具**（写进去的不回头读）；
+  **没声明 → 连名字都看不到**。
+- **看不到的也真调不动**：`tools/list` 不广告只是第一步 —— 边界判在**执行处**，
+  不然一个跑偏的客户端（或手工构造的请求）照样能发 `tools/call`。
+- **声明成了模型的 schema**：字段类型、枚举词表、必填全从**节点解析好的声明**来
+  （不在客户端重写一套字段语法）；**过滤只广告 `index` 里声明过的字段** ——
+  广告一个服务端会 400 的条件，等于让模型去撞墙。
+- **`fields` / `filter` 是嵌套对象**：集合完全可以声明一个叫 `body` / `archived` / `q`
+  的字段，平铺就分不清是哪个了。
+- **没给 `--package`**：只给浏览用的只读工具（与 kb / mem 同一档：写状态由持凭据的人
+  显式跑 CLI 决定）。记录仓多一条 —— **包可以用声明打开写口子**，因为每次写都自带审计
+  （谁、何时、改成哪个摘要、备注）。
+- **声明了但节点上没有**的集合：不广告、不放行，并说清是「没声明」还是「声明了没落地」。
+- **R12**：任何写模式（`readwrite` / `write`）不给 `reason` 都会提醒 ——
+  声明了写 = 「模型能改这些内容」，该说清为什么要给它这个口子。
+- **`nur profile`** 把结果算给作者看：
+  `模型面：ncc mcp --package . → 读 issue · **写** issue/audit`。
+- 验证：`bash scripts/store-smoke.sh`（99 通过 / 0 失败）。
+
+### 新增 · `ncc store`：通用记录仓（**声明一个集合 = 新增一类内容**）
+
+在做完知识库 / 记忆 / 检查点 / 轨迹之后，下一个需求是「问题单」「运行日志」「复盘」……
+每来一个都照着前四个抄一遍（建表、写路由、写授权、写分页、写归档）。抄到第四遍能看清：
+**它们的不同只在"声明"，机械部分是同一套**。于是把声明（集合）与数据（记录）分开。
+
+- **`ncc store declare <集合>`**：字段（`title:string!` / `status:enum:open|closed` /
+  `labels:string[]` / `body:text?search` / `owner:ref`）、能过滤的字段（`--index`）、
+  能否修改（`--immutable` / `--append-only`）、可见性、单条上限、默认存活期 —— 全在一处声明。
+- **`ncc store put`**：客户端**先读声明再发请求** —— 按声明在本地把值类型化
+  （int / bool / string[] / enum 词表），没声明的字段、越界的枚举、写错的类型、缺的必填项
+  **在本地就拒**（省一次往返，错误说在人近处）；动词按集合形态选（可变走 PUT，
+  只追加/不可变走 POST）。
+- **`ncc store list --where 字段=值`**：线上是 `?f.字段=值` —— 加前缀是为了不与保留参数撞车
+  （一个集合完全可以声明一个叫 `status` 的字段）。
+- **`ncc store kinds`** 离线可读：词表 / 上限 / 三条不变量。
+- **包里的声明**：`state.stores[]`（`collection` / `mode` / `fields` / `index` / `shape` /
+  `visibility` / `reason`），`nur profile` 四问如实显示「集合：issue（读改 · mutable · private）」，
+  **R12 离线就拦**：index 里的字段没在 fields 里声明、集合名不合法、重复声明、
+  数据快照包声明写（快照发出去是只读的）、只写却不说 reason（警告）。
+  R12 **刻意不重新实现字段声明语法** —— 那套语法的唯一实现在节点侧，
+  在这里再写一遍就成了"两套说法"；报错要发生在真正声明的地方。
+- 三条不变量落在两端：**动态 ≠ 无模式**、**不可变就是不可变**、**CRUD ≠ 授权**。
+- 验证：`bash scripts/store-smoke.sh`（61 通过 / 0 失败）。
+
+### 新增 · HUR 包规范：**一个封装 + 多组 profile**（`ncc hur profile` / `match` / 数据快照包）
+
+一句话：过去"这份包是什么"由一个只有三个值的 `kind`（`agent|harness|repo`）兼职，现在它有了正经的名字 ——
+**profile**。共 11 个：`agent` `harness` `plugin` `mcp` `app` `scaffold` `skill`
+`kb-seed` `mem-seed` `ckpt-set` `trace-set`。封装（确定性字节 + 清单 + 锁 + 签名）**不变**，
+profile 只管"要什么、能不能跑、怎么接、按什么匹配"。设计见 `ncc-platform/prd/ncc-hur-spec.md`。
+
+- **`ncc hur profile <本地包 | @命名空间/slug>`**：读「是什么 / 要什么 / 给什么 / **怎么接**」四问
+  （`inspect` 只答了三分之一），外加**分级体检**：`✔ 结构 ✔ 自洽 ⚪ 签名` —— 三条轴分开报，
+  不合成一个"通过"。`--list` 列规范里的全部 profile（`--json` 给别的工具读）。
+- **`ncc hur match --profile kb-seed [--host cursor] [--capability mcp]`**：按 profile / 宿主 /
+  能力在目录里找能用的包（**只读**）。如实说局限：目录不索引 profile，所以是"按 kind 拉一批 + 按清单位过滤"，
+  清单里没写 profile 的条目标成"按 kind 推导"，**不混进"匹配上了"**。
+- **R12：profile 决定必填项**（这才叫规范）。数据类 profile **禁止** `entry` 与
+  `permissions.network`（一份知识库快照不该能跑代码、也不该自己出网），`skill` 禁止 `entry`，
+  `plugin` 必须说清接哪个宿主；数据包还必须带 `data{}`（来源 / 时刻 / 隐私级别），
+  且 `payload=full` 不许 `privacy=public`。**老包（没写 profile）不受影响**（有单测守着）。
+- **目录里认得出来**：`ncc hur publish` 现在把 `manifest.profile`（含 `profile_declared`：
+  作者写的还是按 kind 推导的）与快照声明带进条目，服务端零改动。字段名跟着包规范（snake_case），
+  不另造一套 camelCase。
+- **映射进规范**：`profile → 目录 kind` 由 `profile::registry_kinds` 唯一确定（`--kind` 仍可覆盖）。
+  一处行为变化：`kind=repo`（脚手架）过去被记成 `hur`，现在如实记成 `scaffold`。
+- **产物文件名也带 profile 段**：`<id>-<version>.<profile>.hur`（如 `…-0.1.0.kb-seed.hur`）——
+  一个 `dist/` 里躺着几十个 `.hur` 时，一眼看得出哪个是能跑的包、哪个是一份数据。
+  `.hur` 仍是最后的扩展名（侧车与解包机制不受影响）；**名字只是线索、清单才是权威**：
+  改名只多一条提醒、认不出来的名字不吭声；找产物时新名字在前、老名字兜底。
+  顺手收拢了三处**自己拼老文件名**的地方（签名/登记/提示词）—— 改命名后它们会静默找不到产物。
+- **数据快照包（新）**：`kb / mem / ckpt / trace` 各自能导出成**不可变快照包**
+  （`ncc kb bundle --as-package` · `ncc mem export --as-package` · `ncc ckpt export --as-package` ·
+  `ncc trace export --as-package`），带来源 / 快照时刻 / 隐私级别 / 许可 / 载荷级别，
+  可签名、可发布、可 `ncc hur data import --package <目录> --apply` 灌回去。
+  - **默认只出计划**（与 `nur run` 同一条纪律）：这一步会改节点上的数据，不该悄悄发生。
+  - **先验后导**：不合规或签名核对不过（`--require-signature`）就不落一个字节。
+  - **隐私级别说了算**：`privacy != public` ⇒ 导入的每一份都按 `private` 落（并打印说明）；
+    `full` + `public` 在生成阶段就拒绝。`mem-seed` 默认 `private`；`trace-set` 默认 `payload=full`
+    （**宣称得比实际更严是危险的那个方向**）。
+  - 轨迹包的落点是**本机暂存区**，上传是另一个动作（`ncc trace push`）—— 一个包不替使用者决定要不要上传。
+- **红线**：**活状态不出门，只有快照能**。kb / mem / ckpt 是会被反复写、持续变大、默认私有的状态，
+  它们住在节点上；能打包分发的是它们的不可变快照。（`mem-seed` 尤其：能分发的那一刻，它就不再是记忆了。）
+- **端到端**：`scripts/profile-smoke.sh` **73 项全绿**（把 `entry` + 网络权限塞回数据包看 R12 拦不拦、
+  计划阶段确认节点版本号没变、`--apply` 后内容一字不差、`full+public` 被拒、四种快照包往返）。
+
+### 新增 · 制品加签：`ncc sign` / `ncc verify`（**不限 kind** —— Skill / MCP / 任意文件）
+
+过去只有 `kind=hur` 能加签（签的是**规范打包字节**）。现在一份 `SKILL.md`、一份
+`mcp.json`、任意一份字节也能被署名 —— 而且签的就是**你发布出去的那一份**，
+第三方拿公钥 `minisign -V -p ncc.pub -m SKILL.md` 就能独立核对：**不需要 NCC，也不需要 `ncc-cli`**。
+
+- **`ncc sign <文件>`**：本地签（私钥不出设备），写 `<制品>.minisig`；
+  `--kind/--reference/--version` 只进**签名声明**（`ncc <kind> <引用> <版本> sha256=<hex>`，
+  被签名保护）。`--json` 直接吐出可放进发布清单的 `signature{}` 块。
+- **`ncc sign --attach <引用>`**：给**已发布**条目事后加签。唯一联网动作，而且
+  **只上传签名文件与公钥**，制品字节一个字节都不传（与 `publish` 的离线铁律一致）。
+  本机先挡一次「签名摘要 == 条目产物摘要」——**加签不是贴标签**，贴到别的字节上就是造假。
+- **`ncc verify <文件 | @命名空间/slug>`**：本地文件全程离线；条目引用则
+  下载字节 → **先核摘要**（拿回来的必须是登记的那一份）→ 再验签。`--require-signature` 可进 CI。
+- **两处诚实边界写进判定里**：① 有签名但公钥本机不认识 ⇒ 只能说"有签名"，
+  **不能说"已验证"**；条目里随签名一起带的公钥会做一次**自洽性**检查，但输出明确写"属**自证**"；
+  ② 签名**对不上**（被改过 / 用错钥匙）**不需要任何开关就非 0 退出** —— 那不是"没签名"。
+- **包不在这里签**：目录 / `.hur` 产物转交 `ncc hur sign`（签规范打包字节，
+  连包身份、版本、`hur.lock` 一起核对），避免了同一件事长出两套实现。
+- **`hur-core`**：`Claim` 增加 `kind` 字段并识别 `ncc <kind> <引用> <版本> sha256=` 语法
+  （`hur <id> <version> …` 照旧，向后兼容），新增 `comment_for_artifact`。
+- **端到端**：`scripts/sign-smoke.sh` **51 项全绿**（真改一个字节、真换一把钥匙、
+  服务端摘要对不上被 400 拒绝、未签名时 `--require-signature` 非 0、加签只传签名文件）。
+
+### 新增 · `ncc app`：NCC 舱（可自部署的个人 Agent 助理）
+
+把「用户自己部署一个人助理（Muse 类：记得住你、有工作台、能安全地给别人看一部分）」变成一条命令。
+分层沿用整个项目的铁律：**产品本体是用户的（`app.json`）、引擎是 ncc、应用逻辑是 HUR 包（`hur.json`）、
+内容住节点、互联走平台**。
+
+- **命令面**：`app init`（生成 app.json / hur.json / run.sh / README.md / SKILL.md；`hur.json` 必须过
+  `hur_core` 与 `ncc hur verify` **同一份判定**）、`app doctor`（逐项自检，每项都给"下一步跑什么"）、
+  `app up`（起本机 loopback 控制台）、`app status`、`app export`（可交付目录 + sha256 清单）。
+- **舱记着两个目标**：内容走**当前目标**（ncc-registry 节点），分享走 `share.target`（默认 `hub` 云端）。
+  "内容住节点、互联走平台"落到配置上就是两个目标名 —— 缺哪个 `doctor` 就说哪个。
+- **本机控制台**（`cli/src/app_templates/console.html`）：四个面板（画布 / 记忆 / 检查点 / 给别人看）
+  + 「生成快照链接」。面板只读；唯一的写动作是把当前内容打成**只读快照**上传成分享链接（人点的），
+  对方**不用账号**就能看，带 key 的链接要把 key 一起发（只回显一次）。
+- **顺手抽了一层**：网关里手写的 HTTP/1.1 服务端抽成 `cli/src/httpsrv.rs`，网关与控制台共用一份实现
+  （协议细节只写一遍）。
+- **一处安全加固**：控制台会渲染用户自己的内容，所以不给页面开 `unsafe-inline` —— 内联脚本用
+  **一次性 nonce** 放行；编码时用显式锚点注入快照，**锚点找不到就报错**，不产出"打得开但空"的假快照。
+- **一处目标管理修复**：按 `--base` 新建目标时，如果算出来的名字撞上已有目标，过去会**直接覆盖**
+  （连带抹掉那台机器的登录态）；现在名字冲突一律换名（`local-2`），**绝不覆盖**，并补了单测。
+- **端到端**：`scripts/app-smoke.sh`（引擎 + ncc-registry + ncc-platform 一起跑，隔离数据与 `NCC_HOME`）
+  **51 项全绿**。设计见 `ncc-platform/prd/ncc-personal-agent.md`。
+
+### 新增 · Agent 面跟上最新能力：网关控制面只读三件套（MCP 工具 30 → 33）
+
+`ncc mcp` 的工具面此前落后于 CLI 已经落地的能力（轨迹与三样状态写在代码里、文档里没写；
+网关控制面完全没进 Agent 面）。这次一起补齐 —— **Agent 能读，但改不了**：
+
+- **新增三个只读工具**（能力 `gateway`，由云端 ncc.ai 声明）：
+  `ncc_list_gateways`（有哪些网关 / 在线吗 / 用了多少）、`ncc_gateway_audit`
+  （某台网关留存的**窗口摘要**：计数、**主机名**、状态桶、延迟分位）、`ncc_gateway_usage`（用量汇总）。
+  参数用 `gateway`（`GW-…` 或名字；名字不唯一时列出候选，**宁可报错也不瞎挑一台**）。
+- **工具说明里写死三条口径**（模型会照着说）：在线状态是控制面按心跳超时**推导**的、
+  控制面**只有摘要**（路径与载荷不出网关本机）、用量是网关**自报**的（签名只证明来源与完整）。
+- **文档口径纠正**：`agent/`（README / SKILL.md / harness.json）与站内文档原来都写"最多 20/23 个工具"，
+  `harness.json` 的工具清单也漏了 7 个已有工具 —— 现在 `harness.json` 的清单**由 `mcp.rs` 生成**，
+  契约和实现不会再各说各话。
+- `SKILL.md` 新增三段工作流：G 运行轨迹（`payload=digest` 不能当训练材料、`score` 只对打过分的轨迹求平均）、
+  H 三样状态（关键词加权检索、记忆没有公开档、写状态留在 CLI）、I 网关与合规审计（摘要 ≠ 完整审计；
+  "谁调了哪个 URL"要去网关本机跑 `ncc gateway audit`）。
+
+### 新增 · `ncc gateway` 接控制面：`bind` / `heartbeat` / `report` / `usage` / `audit --remote` / `unbind`
+
+S2a 的网关只管本机转发与本地审计；现在它能**注册到控制面**（= ncc.ai）并把本地审计
+**聚合成窗口摘要**签名上报 —— **路径、载荷、凭据都不出本机**，控制面只看到计数、字节数、
+**主机名**、状态桶、延迟分位。
+
+- **`ncc gateway bind [--namespace @org] [--name …]`**：注册网关 → 令牌（`ncc_gw_…`）
+  写进 `~/.ncc/gateway.json`（0600，**只回一次**）。换绑会清空上报账本（本地审计文件不动）。
+- **`ncc gateway heartbeat [--status online|draining]`**：缺省语义是 `online` ——
+  不这样的话一次 `draining` 会把网关永远钉在 draining 上（`offline` 只能由控制面推导，不能自报）。
+- **`ncc gateway report [--since] [--window-minutes N] [--dry-run] [--drop-rejected]`**：
+  本地账本 `~/.ncc/gateway-report.json` 记**水位 + 待传队列**，**先落盘再发送** ——
+  控制面不可达 / 令牌被吊销 / 机器重启，审计都不丢，恢复后自动补传；被拒的摘要**留在队列里**
+  并报出原因（`--drop-rejected` 才丢）。失败**不静默**：报原因 + 待传条数 + 两条出路。
+- **`ncc gateway usage`** / **`ncc gateway audit --remote [--csv] [--since]`**：
+  用量汇总（输出里写明「自报计数」）/ 看与**合规导出**控制面留存的摘要。
+- **`ncc gateway unbind [--purge-state]`**：注销 + 清本地绑定；控制面不可达也能解绑
+  （否则这台机器既报不上去也清不掉）。
+- **`ncc gateway run`** 在绑定时起后台线程，按 `heartbeat_sec` / `report_sec` 周期做事。
+- 摘要的规范字节沿用 `ncc trace` 的约定（长度前缀 `key=len:value`，**不是 JSON**）：
+  键顺序/浮点表示在 Rust 与 Go 里不一样，用 JSON 会算出两个 digest。两边各有一份固定向量测试。
+
+### 新增 · 托管状态：`ncc kb` / `ncc mem` / `ncc ckpt`（知识库 / 记忆 / 检查点）
+
+Agent 的三样**状态**住到节点上：知识库（语料）、记忆（键值 + TTL + 来源）、检查点（不可变快照 + 血缘）。
+它们**不是制品**（包是能力：内容寻址 + 有签名；状态是数据：会被改写、会长大、默认私有），
+所以包只在 `hur.json` 的 `state{}`（规则 R11）里**声明**要哪些，字节住节点。
+
+- **命令组 `ncc kb`**：`ls` / `get`（`--revision N` 取历史版）/ `set`（存在即新版本）/ `search`（关键词加权，
+  服务端打分）/ `history` / `archive` / `restore` / `rm` / `bundle` / `kinds`，以及
+  **`ncc kb pull --package <目录>`** —— 读包的 `state.kb` 声明，按 `checksum` **增量**拉到 `~/.ncc/kb`
+  （写 `index.json` 记校验和）；包没声明时**明确拒绝**，不替它猜。落地前逐篇核对正文的 `sha256` 与声明一致。
+- **命令组 `ncc mem`**：`set`（同键即更新，`--ttl-days` / `--kind` / `--source` / `--confidence` / `--pin`）/
+  `get`（Agent 读记忆的主路径）/ `ls`（默认不含过期）/ `rm`（id 或 key 都认）/ `gc` / `kinds`。
+- **命令组 `ncc ckpt`**：`save`（算摘要 → 建元数据 → 传字节；`--parent-last` 自动接血缘、`--meta k=v`）/
+  `ls` / `show` / `pull`（**落盘前核对摘要**）/ `lineage` / `prune`（每个制品留最新 N 个）/
+  `rm` / `kinds`。`ncc ckpt pull` 拿字节优先走**短时签名地址**（对方不用带凭据）。
+- **MCP 新增 5 个只读工具**（共 27 个）：`ncc_list_kb` / `ncc_get_kb` / `ncc_list_mem` / `ncc_get_mem` /
+  `ncc_list_ckpt`。**写不在工具里** —— 让一次工具调用悄悄改掉 Agent 的记忆或知识，事后没人能复盘。
+- **位置参数命名踩坑（已记）**：`mem rm` / `ckpt show|pull|lineage|rm` 的位置参数**不能**叫 `target`
+  （顶层 `--target` 是 global 的，clap 会把值塞进全局目标，报「没有名为 X 的目标」），一律叫 `reference`。
+- **KB 缓存目录**：与轨迹的本地暂存同一套（`~/.ncc/kb`，`NCC_HOME` 可改根），不家目录乱放。
+
+### 新增 · `ncc trace`：运行轨迹（能力评估 + 后训练数据集）
+
+把「真跑过什么」变成可用的数据：**同一份轨迹**既回答「这个版本好不好」（成功率 / 耗时 /
+ token / 花费 / 人工结论），也能导成**后训练数据集**（JSONL + 奖励 / 得分 / 切分）。
+
+- **命令组 `ncc trace`**：`add`（采集）/ `ls` / `show` / `push`（上传）/ `stats`（聚合）/ `export`（数据集）/ 
+  `label`（评测标注）/ `kinds` / `rm` / `status`。
+  除 `push` 与带 `--remote` 的以外**全部本地可用**（离线也能采集与看结论）。
+- **三种采集输入**：原生 `ncc-trace/v1` 文档；`ncc hur run` 的执行留痕（自动收敛成 `kind=hur-run`）；
+  任意 Agent 的事件流（每行 `{"type","name","ms","in","out"}`）。
+- **`ncc hur run --exec` 跑完自动采集**：留痕 → 一条轨迹写进本地暂存（**不联网**），
+  `ncc trace push` 才上传。留痕里没有提示词与输出，所以转出来的轨迹如实标成 `payload=digest`。
+- **内容默认不上传**：`--payload digest|preview|full`（默认 digest），`--redact strict|basic|off`
+  （密钥 / 邮箱 / IPv4 / 长随机串）。采集时就脱敏，并把**做过什么**写进 `redaction.rules`。
+  摘要**不含原文**，所以脱敏不影响幂等去重（有测试钉住这个性质）。
+- **摘要跨语言一致**：`trace_digest_core` 与 ncc-registry 的 Go 实现逐字节相同
+  （长度前缀拼接，不用 JSON 序列化），两边测试用**同一个 sha256 向量**。
+  因此轨迹里没有浮点：金额用微美元、得分用千分位整数。
+- **本地暂存** `~/.ncc/traces/`（`spool/*.json` + `pushed.json` + `labels.json`，权限 0600）；
+  `push` 幂等（重复上传算 `duplicates`），`--prune` 才删本地副本。
+- **MCP 新增两个只读工具** `ncc_list_traces` / `ncc_trace_stats`（共 22 个）；
+  **写入口（push / label）故意不暴露给 Agent**。
+- 15 个单测：跨语言摘要向量、脱敏规则、预览按字符边界截断、事件包装、留痕收敛、校验、路径穿越防护。
+
+实测（真起 registry + 真跑 wasm 包）：事件流采集 → 邮箱与 `sk-` 密钥被替换成 `<email>`/`<api_key>`；
+push → 服务端可见；重推一次 → `duplicates 1`；另一个账号 → 看不到（默认私有）；
+`ncc hur run --exec` → 自动多出一条 `kind=hur-run` 轨迹；`export --remote` → JSONL + 数据集摘要。
+
 ### 新增 · HUR 清单的 `egress` 出口声明（R10）+ 网关路由**绑到包**（S2b①）
 
 把「我愿意提供一个出口」从**一份手写 JSON** 变成**一份可签名、可分发的包声明**。

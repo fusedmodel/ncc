@@ -20,7 +20,11 @@ pub const HUR_MANIFEST: &str = MANIFEST;
 pub const HUR_DIST: &str = DIST;
 
 /// 包内容目录（打包时按此顺序收集，保证可复现）
-pub const CONTENT_DIRS: [&str; 4] = ["src", "skills", "kb", "assets"];
+///
+/// `data/` 是**数据快照**的落点（`profile=kb-seed|mem-seed|ckpt-set|trace-set`）；
+/// `kb/` 保持原义：随包走的本地知识库文件（`permissions.local: ["kb"]`）。
+/// 两者不是一回事：`kb/` 是能力的一部分，`data/` 是**一次快照**。
+pub const CONTENT_DIRS: [&str; 5] = ["src", "skills", "kb", "data", "assets"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +116,174 @@ pub struct AgentSpec {
     pub adapters: Vec<String>,
 }
 
+impl HurPackage {
+    /// 这份包的 profile 名（缺省按 `kind` 推导）。
+    pub fn profile_name(&self) -> &'static str {
+        crate::profile::of(self.profile.as_deref(), &self.kind)
+    }
+
+    /// 是不是数据快照包（不可执行、只读）。
+    pub fn is_data(&self) -> bool {
+        crate::profile::is_data(self.profile_name())
+    }
+}
+
+/// 产物文件名：`<id>-<version>.<profile>.hur`。
+///
+/// 为什么把 profile 放进**文件名**：一个 `dist/` 里可能躺着几十个 `.hur`，
+/// "这是能跑的包、还是一份数据快照"应当一眼看得出来 —— 这不是安全问题
+/// （真正的身份在清单里，R12 按清单判），而是**别让人把一份轨迹数据当 app 发出去**。
+///
+/// 两条约束保证这么做是安全的：
+/// 1. `.hur` 仍是**最后一个扩展名**，所以 `.minisig` / `.sha256` 侧车、
+///    `find_sig` / `sidecar_sha` / `unpack` 全部照旧（它们都是往完整路径后面追加）。
+/// 2. 名字**只是线索**：任何解析都必须读清单，不许解析文件名 ——
+///    `valid_id` 本来就允许 id 里带 `.`，靠点号切文件名迟早切错。
+pub fn artifact_name(pkg: &HurPackage) -> String {
+    format!("{}-{}.{}.hur", pkg.id, pkg.version, pkg.profile_name())
+}
+
+/// 产物的候选文件名：**新名字在前，老名字兜底**。
+///
+/// 为什么要兜底：`dist/` 里可能还躺着改命名之前打出来的 `.hur`（没有 profile 段）。
+/// 因为"名字格式变了"就说"找不到产物"，那是在惩罚用户什么都没做错的事。
+pub fn artifact_candidates(pkg: &HurPackage) -> Vec<String> {
+    vec![artifact_name(pkg), format!("{}-{}.hur", pkg.id, pkg.version)]
+}
+
+/// 在 `dir`（一般是 `dist/`）里找这个包的产物：先新名字，再老名字。
+pub fn find_artifact(dir: &Path, pkg: &HurPackage) -> Option<PathBuf> {
+    artifact_candidates(pkg)
+        .into_iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+}
+
+/// 从文件名里认出 profile 那一段（`demo.kb-seed.hur` → `kb-seed`）。
+///
+/// 只认**规范里的 profile 名**：老名字（`H-demo-0.1.0.hur`，那一段是版本号）、
+/// 人手改的、或者别的工具生成的名字一律返回 `None` —— 认不出来就说"没有线索"，
+/// 不要说人家写错了。
+pub fn name_profile_token(file: &str) -> Option<String> {
+    let base = Path::new(file)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(file);
+    let stem = base.strip_suffix(".hur").unwrap_or(base);
+    let token = stem.rsplit('.').next()?;
+    crate::profile::get(token).map(|p| p.name.to_string())
+}
+
+/// 文件名与清单对不上时给一条提醒（**只提醒，不拦**）。
+///
+/// 为什么不拦：文件会被下载、改名、塞进压缩包、被 IM 转到别的地方 ——
+/// 一个名字（而不是内容）就能让包"校验不过"，那才是错的。真正判身份的是清单。
+pub fn name_mismatch_note(file: &str, pkg: &HurPackage) -> Option<Issue> {
+    let token = name_profile_token(file)?;
+    let real = pkg.profile_name();
+    if token == real {
+        return None;
+    }
+    Some(Issue::warn(
+        "R12",
+        format!("文件名叫「{token}」，但清单里是 profile={real} —— 以**清单**为准（重命名文件不会改变它是什么）"),
+    ))
+}
+
+/// 数据快照声明（`data{}`）。
+///
+/// 为什么要有它，而不是直接把文件塞进包里：一份快照必须回答三个问题才谈得上可信 ——
+/// **从哪儿来的**（`source`）、**什么时候的**（`snapshot_at`）、**能给谁看**（`privacy`）。
+/// 少了这三样，包里就是一堆来历不明的字节，跟"随手拷了个目录"没区别。
+///
+/// ⚠️ **活状态永远不进包**：kb / mem / ckpt 是会被反复写、会持续变大、默认私有的状态，
+/// 只有它们的**不可变快照**才适合被打包、签名、分发（见 `profile.rs` 模块头）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct DataDecl {
+    /// 来源（`@命名空间/slug`，或 `local` 这类本机来源）
+    pub source: String,
+    /// 从哪个目标取的（目标名；空 = 本机）—— 出了问题要能追溯到哪台机器
+    #[serde(default)]
+    pub source_target: String,
+    /// 快照时刻（RFC3339）。"什么时候的数据"是这份声明的一半价值。
+    pub snapshot_at: String,
+    /// 隐私级别：`public` | `internal` | `private`（导入方按它决定能不能进公开档）
+    pub privacy: String,
+    /// 许可（空 = 未声明。未声明就不该往外发 —— 校验只提醒，不替发布者拍板）
+    #[serde(default)]
+    pub license: String,
+    /// 轨迹类专用：payload 策略（`digest` | `preview` | `full`）。默认 digest。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<String>,
+    #[serde(default)]
+    pub note: String,
+    /// 逐份文件的元数据。**摘要不写在这里** —— `hur.lock.files` 已经记了每个文件的 sha256，
+    /// 两处都记迟早会不一致（单一来源原则）。
+    #[serde(default)]
+    pub docs: Vec<DataDoc>,
+}
+
+/// 快照里的一份文件。字段是各数据 profile 的并集（用不到的就空着）——
+/// 宁可字段多一点，也不要一个"按 profile 解释的任意 JSON"（那就没法校验了）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub struct DataDoc {
+    /// 包内相对路径（必须在 `data/` 下）
+    pub path: String,
+    /// kb：文档 slug
+    #[serde(default)]
+    pub slug: String,
+    /// mem：谁的记忆
+    #[serde(default)]
+    pub subject: String,
+    /// mem：键
+    #[serde(default)]
+    pub key: String,
+    /// kb / trace：标题
+    #[serde(default)]
+    pub title: String,
+    /// ckpt：点的名字
+    #[serde(default)]
+    pub name: String,
+    /// kb / trace：种类（`doc|faq|...` / `hur-run|agent`）
+    #[serde(default)]
+    pub kind: String,
+    /// kb：格式（`markdown|text|json|yaml`）
+    #[serde(default)]
+    pub format: String,
+    /// ckpt：媒体类型
+    #[serde(default)]
+    pub media_type: String,
+    /// ckpt：粒度（`episode|step|run|release|handoff|manual`）
+    #[serde(default)]
+    pub label: String,
+    /// ckpt：序号
+    #[serde(default)]
+    pub step: i64,
+    /// ckpt：血缘（父点 id，源包内名字）
+    #[serde(default)]
+    pub parent: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// 导入后的可见性（受 `data.privacy` 约束：包不是 public，就不许导入成 public）
+    #[serde(default)]
+    pub visibility: String,
+    #[serde(default)]
+    pub summary: String,
+    /// 自由结构（ckpt 的 `meta` 这类；别拿它绕过校验）
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub meta: serde_json::Map<String, serde_json::Value>,
+}
+
+/// 合法隐私级别。
+pub const DATA_PRIVACY: [&str; 3] = ["public", "internal", "private"];
+/// 轨迹 payload 策略。
+pub const DATA_PAYLOAD: [&str; 3] = ["digest", "preview", "full"];
+
+/// 快照文件必须落在这下面 —— 一旦允许散布在包各处，"数据包"就没法一眼认出来。
+pub const DATA_DIR: &str = "data/";
+
 impl AgentSpec {
     pub fn is_empty(&self) -> bool {
         self.system_prompt.trim().is_empty()
@@ -132,6 +304,12 @@ fn default_visibility() -> String {
 pub struct HurPackage {
     pub spec: String,
     pub kind: String,
+    /// 这份包**是什么**（`crate::profile::PROFILES` 里的名字）。
+    ///
+    /// 可省：老包没写就按 `kind` 推导（`crate::profile::from_kind`）—— **向后兼容**，
+    /// 不加这个字段不会让任何既有包变红。写了就是权威（`ncc hur profile` 读它）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     pub id: String,
     pub name: String,
     pub version: String,
@@ -156,6 +334,20 @@ pub struct HurPackage {
     /// `kind=agent` 的 Agent 声明（其它 kind 可省略）
     #[serde(default)]
     pub agent: Option<AgentSpec>,
+    /// **数据快照声明**（`data{}`）：只有数据类 profile 才有，也只允许它们有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<DataDecl>,
+    /// 状态声明（`state{}`）：这个包**需要哪些知识库 / 记忆 / 检查点**。
+    ///
+    /// 关键区分：**包本身仍然是无状态的** —— kb / mem / ckpt 存在节点上，
+    /// 包里只有"我需要它们"这句话。这样"这个 Agent 用哪些数据"是可签名、可分发、
+    /// 可核对的一句话，而不是散在文档里。
+    ///
+    /// ⚠️ 与 `permissions.local` 里的 `kb` **不是一件事**：
+    ///   本地 kb = 包目录里随包走的文件（本机读）；
+    ///   这里的 kb = **节点托管**的知识库（@命名空间/slug，要联网读写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<StateDecl>,
     /// 安全策略声明（R8）：本包希望用哪套策略 + 进一步收紧自己
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<crate::policy::SecurityReq>,
@@ -536,6 +728,274 @@ pub fn egress_covers(
     out
 }
 
+/// 状态声明（`state{}`）：这个包需要哪些**节点托管的状态**。
+///
+/// 为什么 kb / mem / ckpt 不做成"包"：
+///   · 包是**能力**：代码 + 清单 + 确定性字节 + 签名，消费方式是"装上去跑"；
+///   · 这三样是**状态**：会被反复写、会持续变大、默认私有、生命周期与包无关。
+/// 所以分工是：**状态住节点，包只声明要什么**（与 `egress` 同一个思路）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StateDecl {
+    /// 需要的知识库（`@命名空间/slug`，或 `*` = 这个节点上我能读的任意库）。
+    #[serde(default)]
+    pub kb: Vec<KbRequirement>,
+    /// 记忆策略（可省 = 不用记忆）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryDecl>,
+    /// 检查点策略（可省 = 不打检查点）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoints: Option<CheckpointDecl>,
+    /// 需要的**通用记录仓**集合（issue / log / 复盘 / 备注…）。
+    ///
+    /// 与 `kb` 的分工：知识库是**一类内容**（语料），这里是「还不值得单写一类的那些」——
+    /// 集合是声明出来的，所以包里说清楚「我要哪个集合、什么字段、能不能改」。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stores: Vec<StoreRequirement>,
+}
+
+impl StateDecl {
+    /// 什么都没声明（则不参与校验，也不影响包的任何行为）。
+    pub fn is_empty(&self) -> bool {
+        self.kb.is_empty()
+            && self.memory.is_none()
+            && self.checkpoints.is_none()
+            && self.stores.is_empty()
+    }
+}
+
+/// 集合的形态词表（与节点侧的声明同名）。
+pub const STORE_MODES: [&str; 3] = ["read", "write", "readwrite"];
+/// 集合形态：可变 / 只追加。`""` = 不关心。
+pub const STORE_SHAPES: [&str; 2] = ["mutable", "append-only"];
+/// 集合可见性词表（与节点侧同名）。`""` = 不关心。
+pub const STORE_VISIBILITIES: [&str; 2] = ["private", "public"];
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+/// 一条集合需求（`state.stores[]` 的一项）。
+///
+/// 为什么需求放在包里、权限放在节点上：节点管的是**别人能不能**（授权），
+/// 包里管的是**这个包需要什么**。两件事分开，读的人才知道
+/// 一份包会在什么状态下跑起来、缺什么。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct StoreRequirement {
+    /// 集合名（一类内容的名字：`issue` / `log` / `note` …）。
+    pub collection: String,
+    /// `read` | `write` | `readwrite`（空 = read）。
+    #[serde(default)]
+    pub mode: String,
+    /// 这个集合要求有哪些字段 —— 语法与节点上同一个（`"title:string!"`
+    /// / `"status:enum:open|closed"` / `"labels:string[]"`）。
+    /// **写了就是约束**：声明了就得与节点上的对得上，对不上就别跑（见 R12）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    /// 需要按哪些字段过滤（必须是 `fields` 里声明过的字段）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub index: Vec<String>,
+    /// `mutable` | `append-only`（不写 = 不关心）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shape: String,
+    /// `private` | `public`（不写 = 不关心）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub visibility: String,
+    /// 单条上限要求（字节；0 = 不关心）。
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub max_bytes: u64,
+    /// 为什么要它（授权提示与排障时给人看的一句话）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+impl StoreRequirement {
+    /// 归一化后的模式（空 = read）。
+    pub fn mode_norm(&self) -> &str {
+        let m = self.mode.trim();
+        if m.is_empty() {
+            "read"
+        } else {
+            m
+        }
+    }
+
+    /// 这个声明会不会写。
+    pub fn writes(&self) -> bool {
+        matches!(self.mode_norm(), "write" | "readwrite")
+    }
+}
+
+/// 集合名是否合法（与节点侧 `ValidCollectionKind` 同一口径）。
+pub fn valid_collection_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    if b.is_empty() || b.len() > 48 {
+        return false;
+    }
+    if !b[0].is_ascii_lowercase() {
+        return false;
+    }
+    b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-' || *c == b'_')
+}
+
+/// 一条知识库要求。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KbRequirement {
+    /// `@命名空间/slug` 或 `*`。
+    pub r#ref: String,
+    /// `read` | `write` | `readwrite`。
+    #[serde(default)]
+    pub mode: String,
+}
+
+/// 记忆策略。`subject` 是"谁的记忆"（`self` 表示整个包共一份；
+/// 也可以写具体的会话/角色名，同一个包里多条流水线各记各的）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MemoryDecl {
+    #[serde(default)]
+    pub subject: String,
+    /// 允许写的记忆种类（空 = 不限，但不推荐）。
+    #[serde(default)]
+    pub kinds: Vec<String>,
+    /// 记忆的默认存活天数（0 = 不过期；写进条目的 TTL）。
+    #[serde(default)]
+    pub ttl_days: u32,
+}
+
+/// 检查点策略。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CheckpointDecl {
+    /// 关掉则说清楚不要检查点（写 false 比不写更明确，所以保留这个字段）。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 打点粒度：`episode` | `step` | `run` | `release` | `handoff` | `manual`。
+    #[serde(default)]
+    pub label: String,
+    /// 本机最多留几份（0 = 不留本地副本，只在节点上）。
+    #[serde(default)]
+    pub keep_local: u32,
+}
+
+/// 知识库读写模式。
+pub const STATE_KB_MODES: [&str; 3] = ["read", "write", "readwrite"];
+/// 记忆种类词表。
+pub const STATE_MEMORY_KINDS: [&str; 5] = ["fact", "preference", "episode", "summary", "pointer"];
+/// 检查点粒度词表。
+pub const STATE_CKPT_LABELS: [&str; 6] = ["episode", "step", "run", "release", "handoff", "manual"];
+
+/// 知识库引用：`*`（这个节点上能读的任意库）或 `@命名空间/slug`。
+pub fn valid_kb_ref(s: &str) -> bool {
+    let s = s.trim();
+    if s == "*" {
+        return true;
+    }
+    let Some(rest) = s.strip_prefix('@') else { return false };
+    let Some((ns, slug)) = rest.split_once('/') else { return false };
+    !ns.is_empty()
+        && !slug.is_empty()
+        && !slug.contains('/')
+        && ns.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+        && slug.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '_' | '.'))
+}
+
+/// 把知识库引用拆成 `(命名空间, slug)`（`*` 返回 `("*", "")`）。
+pub fn split_kb_ref(s: &str) -> (String, String) {
+    let s = s.trim();
+    if s == "*" {
+        return ("*".into(), String::new());
+    }
+    match s.trim_start_matches('@').split_once('/') {
+        Some((ns, slug)) => (ns.to_string(), slug.to_string()),
+        None => (String::new(), String::new()),
+    }
+}
+
+/// R11：校验状态声明（`state{}`）。
+///
+/// 与 R10 同样的取向：不是判断"声明得对不对"，而是**声明本身要有边界** ——
+/// 引用必须是个合法引用（否则运行时才知道找不到）、模式/种类必须在词表里（否则两边理解不一致）、
+/// 声明了状态就得有网络权限（否则这个包从设计上就拿不到自己的数据）。
+pub fn validate_state(pkg: &HurPackage) -> Vec<Issue> {
+    let mut out = Vec::new();
+    let Some(st) = pkg.state.as_ref() else { return out };
+    if st.is_empty() {
+        out.push(Issue::warn("R11", "state{} 存在但什么都没声明（kb / memory / checkpoints 全空）"));
+        return out;
+    }
+
+    // 只在 kind=agent 上生效（与 R8 的 security{} 同规矩）。
+    if pkg.kind != "agent" {
+        out.push(Issue::warn(
+            "R11",
+            format!("只有 kind=agent 才会读 state{{}}（当前 kind={}，这份声明会被忽略）", pkg.kind),
+        ));
+    }
+
+    let mut seen: Vec<String> = Vec::new();
+    for k in &st.kb {
+        let r = k.r#ref.trim();
+        if !valid_kb_ref(r) {
+            out.push(Issue::err(
+                "R11",
+                format!("kb 引用「{}」不合法（要 `@命名空间/slug` 或 `*`）", k.r#ref),
+            ));
+        } else if seen.iter().any(|x| x == r) {
+            out.push(Issue::err("R11", format!("kb 引用「{r}」重复")));
+        } else {
+            seen.push(r.to_string());
+        }
+        if !STATE_KB_MODES.contains(&k.mode.as_str()) {
+            out.push(Issue::err(
+                "R11",
+                format!("kb「{r}」的 mode「{}」不合法（{}）", k.mode, STATE_KB_MODES.join("|")),
+            ));
+        }
+    }
+
+    if let Some(m) = st.memory.as_ref() {
+        if m.subject.trim().is_empty() {
+            out.push(Issue::warn("R11", "memory.subject 为空 —— 建议显式写 `self` 或流水线名（否则多条流水线会共享一份记忆）"));
+        }
+        for k in &m.kinds {
+            if !STATE_MEMORY_KINDS.contains(&k.as_str()) {
+                out.push(Issue::err(
+                    "R11",
+                    format!("memory.kinds 里的「{k}」不在词表里（{}）", STATE_MEMORY_KINDS.join("|")),
+                ));
+            }
+        }
+        if m.ttl_days > 3650 {
+            out.push(Issue::err("R11", format!("memory.ttl_days={} 超过 10 年（0 = 不过期，别用大数字表达“很久”）", m.ttl_days)));
+        }
+    }
+
+    if let Some(c) = st.checkpoints.as_ref() {
+        if c.enabled && !STATE_CKPT_LABELS.contains(&c.label.as_str()) {
+            out.push(Issue::err(
+                "R11",
+                format!("checkpoints.label「{}」不合法（{}）", c.label, STATE_CKPT_LABELS.join("|")),
+            ));
+        }
+        if !c.enabled && c.keep_local > 0 {
+            out.push(Issue::warn(
+                "R11",
+                format!("checkpoints.enabled=false 但 keep_local={} —— 不打点就没什么可留（要么开 enabled，要么把 keep_local 设 0）", c.keep_local),
+            ));
+        }
+        if c.enabled && c.label.trim().is_empty() {
+            out.push(Issue::err("R11", "checkpoints.enabled=true 但没写 label（打点粒度得说清）"));
+        }
+    }
+
+    // 一致性：状态住在**节点**上，要用它就得能联网。
+    if pkg.permissions.network.is_empty() {
+        out.push(Issue::err(
+            "R11",
+            "声明了 state{} 但 permissions.network 是空的 —— kb / 记忆 / 检查点都在节点上，拿不到网络就永远读不到自己的数据",
+        ));
+    }
+    out
+}
+
 /// 从源码/技能文件里粗略抽取外呼域名（用于 R5 权限面核对）
 fn hosts_in_text(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -603,6 +1063,10 @@ pub fn is_local_ref(r: &str) -> bool {
 /// 远程依赖“未登记”只能算提醒；pack / verify 阶段为 false（必须先 build）。
 pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlocked_remote: bool) -> Vec<Issue> {
     let mut out = Vec::new();
+    // 生效的 profile（写了用写的，没写按 kind 推导）—— 必填项由它决定，
+    // 所以 R1/R3 不再硬编 "除 repo 外 entry 必填"。
+    let prof = pkg.profile_name();
+    let executable = crate::profile::is_executable(prof);
 
     // R1 规范与必填
     if pkg.spec != PKG_SPEC {
@@ -625,8 +1089,12 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
             ),
         ));
     }
-    if pkg.kind != "repo" && pkg.entry.trim().is_empty() {
-        out.push(Issue::err("R1", "entry 不能为空（指向包内入口文件，如 src/agent.ts）"));
+    // 只有**可执行** profile 才要求入口（数据快照与技能包反过来：禁止有入口，见 R12）
+    if executable && pkg.entry.trim().is_empty() {
+        out.push(Issue::err(
+            "R1",
+            format!("profile={prof} 是可执行的，entry 不能为空（指向包内入口文件，如 src/agent.ts）"),
+        ));
     }
 
     // R2 版本
@@ -639,7 +1107,7 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
     }
 
     // R3 入口与 kind 契约
-    if pkg.kind != "repo" {
+    if !pkg.entry.trim().is_empty() {
         let entry = dir.join(pkg.entry.trim());
         if !entry.exists() {
             out.push(Issue::err("R3", format!("entry「{}」不存在", pkg.entry)));
@@ -647,7 +1115,8 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
             out.push(Issue::err("R3", format!("entry「{}」是空文件", pkg.entry)));
         }
     }
-    if pkg.kind == "harness" {
+    // 数据快照包不发代码，别拿"端点 schema"的要求去烦它（R12 已经管它该有什么）
+    if pkg.kind == "harness" && !pkg.is_data() {
         let has_schema = dir.join("src").exists()
             && content_files(dir)
                 .iter()
@@ -774,6 +1243,280 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
     // 「提供出口」是不是合法，只应该有一个答案。
     out.extend(validate_egress(pkg));
 
+    // R11 状态声明（`state{}`）：这个包需要哪些知识库 / 记忆 / 检查点。
+    // kb / mem / ckpt 是**状态**（住节点），包只声明要什么 —— 见 validate_state 的说明。
+    out.extend(validate_state(pkg));
+
+    // R12 profile：**profile 决定必填项**，不是"写了就放过"。
+    out.extend(validate_profile(pkg, dir));
+
+    out
+}
+
+/// R12：`state.stores[]` 这一层。
+///
+/// ⚠️ 这里**故意不重新实现字段声明语法**（`title:string!` 那一套）。
+/// 那套语法的唯一实现是节点侧（`model.ParseFieldSpec`）——在这里再写一遍就成了
+/// "两套说法"：包校验过了、到节点上被拒，或者反过来。所以这里只判**不需要类型语义**
+/// 的那些事（集合名、模式、index 是不是声明过的字段、快照包能不能写…），
+/// 字段声明本身交给节点（`ncc store declare`）：**报错要发生在真正声明的地方**。
+fn validate_stores(pkg: &HurPackage, prof: &str, data_profile: bool, out: &mut Vec<Issue>) {
+    let Some(st) = pkg.state.as_ref() else { return };
+    let mut seen: Vec<&str> = Vec::new();
+    for (i, r) in st.stores.iter().enumerate() {
+        let name = r.collection.trim();
+        if name.is_empty() {
+            out.push(Issue::err("R12", "state.stores[] 里有空 collection"));
+            continue;
+        }
+        if !valid_collection_name(name) {
+            out.push(Issue::err(
+                "R12",
+                format!("集合名「{name}」不合法（小写字母数字与 -_，字母开头，≤48）"),
+            ));
+        }
+        if seen.contains(&name) {
+            out.push(Issue::err(
+                "R12",
+                format!("集合「{name}」在 state.stores[] 里出现了两次 —— 一个集合一份需求，别让它有两种说法"),
+            ));
+        }
+        seen.push(name);
+
+        // 模式：空 = read
+        let m = r.mode.trim();
+        if !m.is_empty() && !STORE_MODES.contains(&m) {
+            out.push(Issue::err(
+                "R12",
+                format!("state.stores[{i}].mode「{m}」不合法（read / write / readwrite，不写 = read）"),
+            ));
+        }
+        let sh = r.shape.trim();
+        if !sh.is_empty() && !STORE_SHAPES.contains(&sh) {
+            out.push(Issue::err(
+                "R12",
+                format!("state.stores[{i}].shape「{sh}」不合法（mutable / append-only）"),
+            ));
+        }
+        let vis = r.visibility.trim();
+        if !vis.is_empty() && !STORE_VISIBILITIES.contains(&vis) {
+            out.push(Issue::err(
+                "R12",
+                format!("state.stores[{i}].visibility「{vis}」不合法（private / public）"),
+            ));
+        }
+
+        // 能过滤的字段必须先在 fields 里声明过 —— 动态 ≠ 无模式。
+        // 字段名就是 `:` 前面那一段（取个名字，不算实现语法）。
+        let declared: Vec<&str> = r
+            .fields
+            .iter()
+            .filter_map(|f| f.split(':').next())
+            .map(str::trim)
+            .collect();
+        for idx in &r.index {
+            let f = idx.trim();
+            if f.is_empty() {
+                out.push(Issue::err("R12", format!("state.stores[{i}].index 里有空字段名")));
+                continue;
+            }
+            if !declared.contains(&f) {
+                out.push(Issue::err(
+                    "R12",
+                    format!(
+                        "集合「{name}」想按「{f}」过滤，但 fields 里没声明它 —— 没声明的字段在节点上过滤不了（动态 ≠ 无模式）"
+                    ),
+                ));
+            }
+        }
+
+        // 快照是只读的：数据包不该写集合
+        if data_profile && r.writes() {
+            out.push(Issue::err(
+                "R12",
+                format!(
+                    "profile={prof} 是数据快照，不该写集合「{name}」（现在是 {}）—— 快照发出去只读",
+                    r.mode_norm()
+                ),
+            ));
+        }
+
+        // 写模式在模型面上就是「**模型可以改这些内容**」—— 说清为什么再给。
+        // 只写更特殊：写进去的东西**不回头读**（上报/快照类内容的口径）。
+        if r.writes() && r.reason.trim().is_empty() {
+            out.push(Issue::warn(
+                "R12",
+                format!(
+                    "集合「{name}」声明成了 {}：这等于说「模型可以改这些内容」{}。\
+                     建议写清 state.stores[].reason —— 两个月后你会需要它",
+                    r.mode_norm(),
+                    if r.mode_norm() == "write" {
+                        "（只写 = 这个包拿不回自己写的内容）"
+                    } else {
+                        ""
+                    }
+                ),
+            ));
+        }
+    }
+}
+
+/// R12：按 profile 校验（**这一条是这个格式敢叫"规范"的原因**）。
+///
+/// 没有它，`profile` 就只是个标签：一份知识库快照既能带 `entry`（可以跑代码）、
+/// 又能带 `permissions.network`（可以自己出网），而校验一路绿灯 ——
+/// 那么出问题时就没人能说"这份包按规范就不该这样"。
+///
+/// 判定分成两半：**可执行类必须有入口**（R1 已管）、**数据类与技能包必须没有**；
+/// 数据类还额外要求 `data{}` 把"从哪来 / 什么时候 / 能给谁看"说清。
+pub fn validate_profile(pkg: &HurPackage, dir: &Path) -> Vec<Issue> {
+    let mut out = Vec::new();
+    let prof = pkg.profile_name();
+    let Some(def) = crate::profile::get(prof) else {
+        out.push(Issue::err(
+            "R12",
+            format!("profile「{prof}」不在规范里（可选：{}）", crate::profile::names().join(" / ")),
+        ));
+        return out;
+    };
+
+    // 集合需求（`state.stores[]`）——与 profile 无关的那部分先判
+    validate_stores(pkg, prof, def.data, &mut out);
+
+    // 显式写了 profile 就得跟 kind 对得上（目录靠它检索；对不上就是两套说法）
+    //
+    // ⚠️ 这里**不**比 kind 与 profile 的字面值：包内 kind（agent/harness/repo）与
+    // 目录 kind（plugin/mcp/skill/…）本来就是两套命名，对应关系由
+    // `profile::registry_kinds` 唯一确定，发布时用它映射（见 `publish::registry_kind`）。
+    // 拿两套命名互比只会到处误报。
+
+    if def.data {
+        // ① 数据快照**不许可执行**：这是它敢往外发的前提
+        if !pkg.entry.trim().is_empty() {
+            out.push(Issue::err(
+                "R12",
+                format!(
+                    "profile={prof} 是数据快照，不允许 entry（现在是「{}」）—— 数据不该能跑代码",
+                    pkg.entry
+                ),
+            ));
+        }
+        if !pkg.permissions.network.is_empty() {
+            out.push(Issue::err(
+                "R12",
+                format!(
+                    "profile={prof} 是数据快照，不允许 permissions.network（现在是 {:?}）—— 数据包不该自己出网",
+                    pkg.permissions.network
+                ),
+            ));
+        }
+        if pkg.egress.as_ref().map(|e| !e.is_empty()).unwrap_or(false) {
+            out.push(Issue::err("R12", format!("profile={prof} 是数据快照，不该声明 egress{{}}（那是出网通道）")));
+        }
+        if pkg.agent.as_ref().map(|a| !a.is_empty()).unwrap_or(false) {
+            out.push(Issue::err("R12", format!("profile={prof} 是数据快照，不该带 agent{{}} 声明")));
+        }
+        // ② 快照必须说清来历与去向
+        match pkg.data.as_ref() {
+            None => out.push(Issue::err(
+                "R12",
+                format!("profile={prof} 必须带 data{{}} 声明（source / snapshot_at / privacy）—— 不然包里就是一堆来历不明的字节"),
+            )),
+            Some(d) => {
+                if d.source.trim().is_empty() {
+                    out.push(Issue::err("R12", "data.source 不能为空（这份快照是从哪儿取的）"));
+                }
+                if d.snapshot_at.trim().is_empty() {
+                    out.push(Issue::err("R12", "data.snapshot_at 不能为空（「什么时候的数据」是这份声明的一半价值）"));
+                }
+                if !DATA_PRIVACY.contains(&d.privacy.trim()) {
+                    out.push(Issue::err(
+                        "R12",
+                        format!("data.privacy「{}」不合法（可选：{}）", d.privacy, DATA_PRIVACY.join(" / ")),
+                    ));
+                }
+                if d.license.trim().is_empty() {
+                    out.push(Issue::warn("R12", "data.license 未声明 —— 往外发之前先想清楚许可"));
+                }
+                if let Some(p) = d.payload.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    if !DATA_PAYLOAD.contains(&p) {
+                        out.push(Issue::err(
+                            "R12",
+                            format!("data.payload「{p}」不合法（可选：{}）", DATA_PAYLOAD.join(" / ")),
+                        ));
+                    }
+                    // 带完整载荷却说自己能公开 —— 这是最危险的一种搭配，直接拦
+                    if p == "full" && d.privacy.trim() == "public" {
+                        out.push(Issue::err("R12", "data.payload=full 与 privacy=public 不能同时出现（完整载荷不该公开）"));
+                    }
+                }
+                if d.docs.is_empty() {
+                    out.push(Issue::err("R12", "data.docs 是空的 —— 快照里没有任何文件"));
+                }
+                for doc in &d.docs {
+                    let p = doc.path.trim();
+                    if p.is_empty() {
+                        out.push(Issue::err("R12", "data.docs 里有空 path"));
+                        continue;
+                    }
+                    if !p.starts_with(DATA_DIR) {
+                        out.push(Issue::err(
+                            "R12",
+                            format!("data.docs 的「{p}」必须在 {DATA_DIR} 下 —— 数据与代码要能一眼分开"),
+                        ));
+                    }
+                    if !dir.join(p).is_file() {
+                        out.push(Issue::err("R12", format!("data.docs 的「{p}」在包里不存在")));
+                    }
+                    // 可见性不能比整包更公开（包说 internal，里面的文件不能声明 public）
+                    if !doc.visibility.trim().is_empty()
+                        && d.privacy.trim() != "public"
+                        && doc.visibility.trim() == "public"
+                    {
+                        out.push(Issue::err(
+                            "R12",
+                            format!("data.privacy={} 却把「{p}」声明成 public —— 往外一导入就漏了", d.privacy),
+                        ));
+                    }
+                }
+            }
+        }
+    } else {
+        // 反过来：非数据类不该带 data{}（带了说明模板串了）
+        if pkg.data.is_some() {
+            out.push(Issue::err(
+                "R12",
+                format!("profile={prof} 不是数据快照，不该带 data{{}} 声明（数据类可选：kb-seed / mem-seed / ckpt-set / trace-set）"),
+            ));
+        }
+    }
+
+    // 技能包：至少一份技能文件（`skills/` 下）；它同样不该有代码入口
+    if prof == "skill" {
+        let files = content_files(dir);
+        let skills: Vec<_> = files
+            .iter()
+            .filter(|f| rel(dir, f).starts_with("skills/"))
+            .collect();
+        if skills.is_empty() {
+            out.push(Issue::err("R12", "profile=skill 要求 skills/ 下至少一份技能文件"));
+        }
+        if !pkg.entry.trim().is_empty() {
+            out.push(Issue::err("R12", "profile=skill 不该有 entry（技能不是程序）"));
+        }
+    }
+
+    // 插件类：得说清接进哪个宿主，否则 interop 渲染不出来
+    if prof == "plugin" {
+        let hosts = pkg.agent.as_ref().map(|a| a.adapters.len()).unwrap_or(0);
+        if hosts == 0 {
+            out.push(Issue::err(
+                "R12",
+                format!("profile=plugin 要声明宿主（agent.adapters，可选：{}）", crate::interop::TARGETS.join(" / ")),
+            ));
+        }
+    }
+
     out
 }
 
@@ -860,7 +1603,12 @@ mod tests {
     use super::*;
 
     fn temp_pkg(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("hur-test-{name}-{}", std::process::id()));
+        // ⚠️ 目录名必须**每个测试一份**：测试是并行跑的，同名目录会被另一个测试
+        // `remove_dir_all` 掉，于是这个测试在"已经不存在/正在被删"的路径上建文件
+        // （症状：`Os { code: 22, kind: InvalidInput }`，看着像权限问题其实是抢目录）。
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("hur-test-{name}-{}-{n}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/agent.ts"), "export const x = 1\n").unwrap();
@@ -870,8 +1618,11 @@ mod tests {
     fn base(kind: &str, id: &str) -> HurPackage {
         HurPackage {
             egress: None,
+            state: None,
             spec: PKG_SPEC.into(),
             kind: kind.into(),
+            profile: None,
+            data: None,
             id: id.into(),
             name: "测试包".into(),
             version: "0.1.0".into(),
@@ -888,6 +1639,7 @@ mod tests {
             security: None,
         }
     }
+    
 
     #[test]
     fn semver_parse_and_cmp() {
@@ -926,9 +1678,213 @@ mod tests {
         assert!(issues.iter().any(|i| i.rule == "R3"), "{issues:?}");
     }
 
+    /* ---------------- R12：profile 决定必填项 ---------------- */
+
+    /// 造一份数据快照包：`data/` 下真的放一份文件。
+    fn data_pkg(prof: &str, dir: &Path) -> HurPackage {
+        std::fs::create_dir_all(dir.join("data")).unwrap();
+        std::fs::write(dir.join("data/sample.md"), "# 快照\n").unwrap();
+        let mut p = base("agent", "A-data-demo-abc123");
+        p.profile = Some(prof.into());
+        p.entry = String::new();
+        p.data = Some(DataDecl {
+            source: "@me/handbook".into(),
+            source_target: String::new(),
+            snapshot_at: "2026-09-27T10:00:00Z".into(),
+            privacy: "internal".into(),
+            license: "CC-BY-4.0".into(),
+            payload: None,
+            note: String::new(),
+            docs: vec![DataDoc { path: "data/sample.md".into(), slug: "sample".into(), ..Default::default() }],
+        });
+        p
+    }
+
     #[test]
-    fn rejects_undeclared_network_host() {
-        let dir = temp_pkg("net");
+    fn r12_data_snapshot_may_not_be_executable() {
+        let dir = temp_pkg("r12-data-exe");
+        let mut p = data_pkg("kb-seed", &dir);
+        // 一份数据快照带上入口与网络权限 —— 这是最该拦下来的搭配
+        p.entry = "src/agent.ts".into();
+        p.permissions.network = vec!["api.example.com".into()];
+        let out = validate(&p, &dir, None, false);
+        let r12: Vec<&str> = out.iter().filter(|i| i.rule == "R12").map(|i| i.msg.as_str()).collect();
+        assert!(r12.iter().any(|m| m.contains("不允许 entry")), "{out:?}");
+        assert!(r12.iter().any(|m| m.contains("不允许 permissions.network")), "{out:?}");
+        // 清爽的版本不该有任何错
+        let clean = data_pkg("kb-seed", &dir);
+        let out2 = validate(&clean, &dir, None, false);
+        assert!(out2.iter().all(|i| i.level != Level::Error), "{out2:?}");
+        // 许可没声明只提醒，不拦
+        let mut no_license = data_pkg("kb-seed", &dir);
+        no_license.data.as_mut().unwrap().license = String::new();
+        let out3 = validate(&no_license, &dir, None, false);
+        assert!(out3.iter().any(|i| i.rule == "R12" && i.level == Level::Warn), "{out3:?}");
+    }
+
+    #[test]
+    fn r12_data_snapshot_must_declare_where_it_came_from() {
+        let dir = temp_pkg("r12-data-decl");
+        let mut p = data_pkg("trace-set", &dir);
+        p.data = None;
+        let out = validate(&p, &dir, None, false);
+        assert!(
+            out.iter().any(|i| i.rule == "R12" && i.msg.contains("必须带 data{}")),
+            "{out:?}"
+        );
+
+        // 宣告了来源，但文件不在包里 / 跑出了 data/ —— 两种都拦
+        let mut bad = data_pkg("trace-set", &dir);
+        let d = bad.data.as_mut().unwrap();
+        d.source = String::new();
+        d.docs = vec![
+            DataDoc { path: "data/nope.md".into(), ..Default::default() },
+            DataDoc { path: "src/agent.ts".into(), ..Default::default() },
+        ];
+        let out2 = validate(&bad, &dir, None, false);
+        let msgs: Vec<String> = out2.iter().filter(|i| i.rule == "R12").map(|i| i.msg.clone()).collect();
+        assert!(msgs.iter().any(|m| m.contains("data.source 不能为空")), "{out2:?}");
+        assert!(msgs.iter().any(|m| m.contains("不存在")), "{out2:?}");
+        assert!(msgs.iter().any(|m| m.contains("必须在 data/ 下")), "{out2:?}");
+    }
+
+    /// 完整载荷 + 公开 = 最危险的一种搭配，直接拦死。
+    #[test]
+    fn r12_full_payload_cannot_be_public() {
+        let dir = temp_pkg("r12-payload");
+        let mut p = data_pkg("trace-set", &dir);
+        let d = p.data.as_mut().unwrap();
+        d.payload = Some("full".into());
+        d.privacy = "public".into();
+        let out = validate(&p, &dir, None, false);
+        assert!(
+            out.iter().any(|i| i.rule == "R12" && i.msg.contains("不能同时出现")),
+            "{out:?}"
+        );
+    }
+
+    /// 非数据类带了 `data{}`：模板串了，也要说。
+    #[test]
+    fn r12_only_data_profiles_may_carry_data() {
+        let dir = temp_pkg("r12-notdata");
+        let mut p = base("agent", "A-hotel-demo-abc123");
+        p.data = Some(DataDecl::default());
+        let out = validate(&p, &dir, None, false);
+        assert!(
+            out.iter().any(|i| i.rule == "R12" && i.msg.contains("不是数据快照")),
+            "{out:?}"
+        );
+    }
+
+    /// 技能包与插件包各有各的必填项 —— profile 的价值就是这些区别。
+    #[test]
+    fn r12_skill_and_plugin_have_their_own_requirements() {
+        let dir = temp_pkg("r12-skill");
+        let mut skill = base("agent", "A-skill-demo-abc123");
+        skill.profile = Some("skill".into());
+        skill.entry = String::new();
+        let out = validate(&skill, &dir, None, false);
+        assert!(
+            out.iter().any(|i| i.rule == "R12" && i.msg.contains("skills/ 下至少一份")),
+            "{out:?}"
+        );
+        // 补上一份技能文件就过
+        std::fs::create_dir_all(dir.join("skills")).unwrap();
+        std::fs::write(dir.join("skills/demo.md"), "---\nname: demo\n---\n").unwrap();
+        let out2 = validate(&skill, &dir, None, false);
+        assert!(out2.iter().all(|i| i.level != Level::Error), "{out2:?}");
+        // 技能包再带上 entry 就是走回头路
+        let mut with_entry = skill.clone();
+        with_entry.entry = "src/agent.ts".into();
+        let out3 = validate(&with_entry, &dir, None, false);
+        assert!(out3.iter().any(|i| i.rule == "R12" && i.msg.contains("不该有 entry")), "{out3:?}");
+
+        // 插件：不写宿主就没法接
+        let mut plugin = base("agent", "A-plugin-demo-abc123");
+        plugin.profile = Some("plugin".into());
+        let out4 = validate(&plugin, &dir, None, false);
+        assert!(out4.iter().any(|i| i.rule == "R12" && i.msg.contains("要声明宿主")), "{out4:?}");
+    }
+
+    /// 老包（没写 profile）不许因为这一条变红 —— 向后兼容是硬要求。
+    #[test]
+    fn r12_is_silent_for_legacy_packages_without_profile() {
+        let dir = temp_pkg("r12-legacy");
+        for kind in ["agent", "harness", "repo"] {
+            let mut p = base(kind, &format!("{}-legacy-abc123", kind_prefix(kind).trim_end_matches('-')));
+            if kind == "repo" {
+                p.entry = String::new();
+                p.id = "legacy-repo".into();
+            }
+            let out = validate(&p, &dir, None, false);
+            assert!(
+                out.iter().all(|i| i.rule != "R12"),
+                "老包（kind={kind}）不该冒出 R12：{out:?}"
+            );
+        }
+    }
+
+    /* ---------------- 产物文件名里的 profile 段 ---------------- */
+
+    #[test]
+    fn artifact_name_carries_the_profile_and_never_breaks_the_sidecars() {
+        let mut p = base("agent", "A-hotel-demo-abc123");
+        assert_eq!(artifact_name(&p), "A-hotel-demo-abc123-0.1.0.agent.hur");
+        p.profile = Some("kb-seed".into());
+        assert_eq!(artifact_name(&p), "A-hotel-demo-abc123-0.1.0.kb-seed.hur");
+        // `.hur` 始终是**最后的扩展名** —— `.minisig` / `.sha256` 侧车与 unpack 都靠它
+        assert!(artifact_name(&p).ends_with(".hur"));
+        // 候选名：新名字在前，老名字兜底（改命名之前打的包还得能用）
+        let c = artifact_candidates(&p);
+        assert_eq!(c.len(), 2);
+        assert!(c[1].ends_with("0.1.0.hur") && !c[1].contains("kb-seed"), "{c:?}");
+    }
+
+    #[test]
+    fn find_artifact_prefers_the_new_name_but_still_sees_the_old_one() {
+        let dir = temp_pkg("find-art");
+        let dist = dir.join(DIST);
+        std::fs::create_dir_all(&dist).unwrap();
+        let mut p = base("agent", "A-hotel-demo-abc123");
+        assert!(find_artifact(&dist, &p).is_none(), "什么都没打时不该假装找到");
+
+        // 老名字（改命名之前打的产物）仍然找得到
+        let old = dist.join(format!("{}-{}.hur", p.id, p.version));
+        std::fs::write(&old, b"old").unwrap();
+        assert_eq!(find_artifact(&dist, &p).as_deref(), Some(old.as_path()));
+
+        // 两个都在时以新名字为准
+        p.profile = Some("kb-seed".into());
+        let new = dist.join(artifact_name(&p));
+        std::fs::write(&new, b"new").unwrap();
+        assert_eq!(find_artifact(&dist, &p).as_deref(), Some(new.as_path()));
+    }
+
+    #[test]
+    fn name_token_only_reads_a_real_profile_name() {
+        assert_eq!(name_profile_token("demo.kb-seed.hur").as_deref(), Some("kb-seed"));
+        assert_eq!(name_profile_token("/a/b/demo.mcp.hur").as_deref(), Some("mcp"));
+        // 老名字那一段是版本号 → 认不出来，也说不出人家写错了
+        assert_eq!(name_profile_token("H-demo-0.1.0.hur"), None);
+        assert_eq!(name_profile_token("demo.hur"), None);
+        // 短别名不在规范里：不认（要么用规范名，要么就当没线索）
+        assert_eq!(name_profile_token("demo.kb.hur"), None);
+    }
+
+    #[test]
+    fn name_manifest_disagreement_warns_but_never_blocks() {
+        let mut p = base("agent", "A-hotel-demo-abc123");
+        p.profile = Some("kb-seed".into());
+        // 改个文件名不等于换身份：以**清单**为准，而且只提醒
+        let note = name_mismatch_note("demo.app.hur", &p).expect("应当提醒");
+        assert_eq!(note.level, Level::Warn);
+        assert!(note.msg.contains("kb-seed") && note.msg.contains("app"), "{}", note.msg);
+        assert!(name_mismatch_note("demo.kb-seed.hur", &p).is_none(), "对得上就不吭声");
+        assert!(name_mismatch_note("H-demo-0.1.0.hur", &p).is_none(), "老名字不该冒提醒");
+    }
+
+    #[test]
+    fn rejects_undeclared_network_host() {        let dir = temp_pkg("net");
         std::fs::write(
             dir.join("src/agent.ts"),
             "const u = 'https://api.hotel.example.com/v1/search'\n",
@@ -1037,6 +1993,7 @@ mod tests {
         use crate::tpl::{build_package, files_for, InitInput};
         let dir = temp_pkg("r7-init");
         let pkg = build_package(&InitInput {
+            profile: None,
             kind: "agent".into(),
             name: "Front Desk".into(),
             role: "负责住房接待".into(),
@@ -1079,6 +2036,120 @@ mod tests {
         pkg.deps.skill = vec!["./skills/missing.md".into()];
         let issues = validate(&pkg, &dir, None, false);
         assert!(issues.iter().any(|i| i.rule == "R4"), "{issues:?}");
+    }
+
+    /* ---------------- R11：状态声明（kb / 记忆 / 检查点） ---------------- */
+
+    /// 只挑 R11 的结论。
+    fn r11(pkg: &HurPackage, dir: &Path) -> Vec<Issue> {
+        validate(pkg, dir, None, false).into_iter().filter(|i| i.rule == "R11").collect()
+    }
+
+    fn state_pkg() -> HurPackage {
+        let mut p = base("agent", "A-state-demo-000001");
+        p.permissions.network = vec!["registry.corp.local".into()];
+        p.state = Some(StateDecl {
+            kb: vec![
+                KbRequirement { r#ref: "@team/handbook".into(), mode: "read".into() },
+                KbRequirement { r#ref: "@team/notes".into(), mode: "readwrite".into() },
+            ],
+            memory: Some(MemoryDecl { subject: "self".into(), kinds: vec!["fact".into()], ttl_days: 90 }),
+            checkpoints: Some(CheckpointDecl { enabled: true, label: "episode".into(), keep_local: 2 }),
+            stores: Vec::new(),
+        });
+        p
+    }
+
+    #[test]
+    fn r11_accepts_a_well_formed_state_declaration() {
+        let dir = temp_pkg("r11-ok");
+        let out = r11(&state_pkg(), &dir);
+        assert!(out.iter().all(|i| i.level != Level::Error), "合规声明不该报错：{out:?}");
+    }
+
+    #[test]
+    fn r11_absent_or_empty_state_is_reported_honestly() {
+        let dir = temp_pkg("r11-none");
+        let p = base("agent", "A-state-none-000001");
+        assert!(r11(&p, &dir).is_empty(), "没声明就该完全静默");
+
+        let mut p2 = base("agent", "A-state-empty-000001");
+        p2.state = Some(StateDecl::default());
+        let out = r11(&p2, &dir);
+        assert!(out.iter().any(|i| i.level == Level::Warn), "声明了却什么都不写应当提醒：{out:?}");
+    }
+
+    /// 状态住在节点上：声明了状态却拿不到网络，等于永远读不到自己的数据。
+    #[test]
+    fn r11_requires_network_permission_for_state() {
+        let dir = temp_pkg("r11-net");
+        let mut p = state_pkg();
+        p.permissions.network.clear();
+        let out = r11(&p, &dir);
+        assert!(out.iter().any(|i| i.level == Level::Error && i.msg.contains("permissions.network")), "{out:?}");
+    }
+
+    #[test]
+    fn r11_rejects_bad_refs_modes_and_kinds() {
+        let dir = temp_pkg("r11-bad");
+        let cases: Vec<(&str, Box<dyn Fn(&mut StateDecl)>)> = vec![
+            ("ref 不是引用", Box::new(|st: &mut StateDecl| st.kb[0].r#ref = "team/handbook".into())),
+            ("ref 只有命名空间", Box::new(|st: &mut StateDecl| st.kb[0].r#ref = "@team".into())),
+            ("ref 大写", Box::new(|st: &mut StateDecl| st.kb[0].r#ref = "@Team/Handbook".into())),
+            ("ref 重复", Box::new(|st: &mut StateDecl| st.kb[1].r#ref = st.kb[0].r#ref.clone())),
+            ("mode 不认识", Box::new(|st: &mut StateDecl| st.kb[0].mode = "rw".into())),
+            ("mode 空", Box::new(|st: &mut StateDecl| st.kb[0].mode = String::new())),
+            ("记忆种类不认识", Box::new(|st: &mut StateDecl| {
+                st.memory.as_mut().unwrap().kinds = vec!["feeling".into()]
+            })),
+            ("ttl 太离谱", Box::new(|st: &mut StateDecl| st.memory.as_mut().unwrap().ttl_days = 99_999)),
+            ("打点粒度不认识", Box::new(|st: &mut StateDecl| {
+                st.checkpoints.as_mut().unwrap().label = "whenever".into()
+            })),
+            ("开了打点却没写粒度", Box::new(|st: &mut StateDecl| {
+                st.checkpoints.as_mut().unwrap().label = String::new()
+            })),
+        ];
+        for (label, mutator) in cases {
+            let mut p = state_pkg();
+            mutator(p.state.as_mut().unwrap());
+            let out = r11(&p, &dir);
+            assert!(out.iter().any(|i| i.level == Level::Error), "「{label}」应当被拒：{out:?}");
+        }
+    }
+
+    /// 关掉打点却要留本地副本 —— 这是自相矛盾，但只提醒（不至于拦人）。
+    #[test]
+    fn r11_warns_on_contradictory_checkpoint_settings() {
+        let dir = temp_pkg("r11-ckpt");
+        let mut p = state_pkg();
+        let c = p.state.as_mut().unwrap().checkpoints.as_mut().unwrap();
+        c.enabled = false;
+        c.keep_local = 3;
+        let out = r11(&p, &dir);
+        assert!(out.iter().any(|i| i.level == Level::Warn && i.msg.contains("keep_local")), "{out:?}");
+        assert!(out.iter().all(|i| i.level != Level::Error), "只该提醒：{out:?}");
+    }
+
+    #[test]
+    fn r11_notes_that_only_agents_read_state() {
+        let dir = temp_pkg("r11-kind");
+        let mut p = state_pkg();
+        p.kind = "harness".into();
+        let out = r11(&p, &dir);
+        assert!(out.iter().any(|i| i.msg.contains("kind=agent")), "{out:?}");
+    }
+
+    #[test]
+    fn kb_refs_round_trip() {
+        assert!(valid_kb_ref("*"));
+        assert!(valid_kb_ref("@team/handbook"));
+        assert!(valid_kb_ref("@me/notes-2026"));
+        assert!(!valid_kb_ref("team/handbook"));
+        assert!(!valid_kb_ref("@team"));
+        assert!(!valid_kb_ref("@team/a/b"));
+        assert_eq!(split_kb_ref("@team/handbook"), ("team".to_string(), "handbook".to_string()));
+        assert_eq!(split_kb_ref("*"), ("*".to_string(), String::new()));
     }
 
     /* ---------------- R10：出口声明 ---------------- */
@@ -1299,5 +2370,168 @@ mod tests {
         for bad in ["api.openai.com", "ftp://x/y", "https://", "https://user@host/x", "https://host/a b"] {
             assert!(parse_http_target(bad).is_none(), "应拒绝：{bad}");
         }
+    }
+
+    /* ---------------- R12：state.stores[]（集合需求） ---------------- */
+
+    /// 造一份带集合需求的包。
+    fn store_pkg(items: Vec<StoreRequirement>) -> HurPackage {
+        let mut p = base("agent", "A-issue-demo-abc123");
+        p.state = Some(StateDecl { stores: items, ..Default::default() });
+        p
+    }
+
+    fn req(collection: &str) -> StoreRequirement {
+        StoreRequirement {
+            collection: collection.into(),
+            ..Default::default()
+        }
+    }
+
+    fn r12_msgs(pkg: &HurPackage) -> (Vec<String>, Vec<String>) {
+        let dir = temp_pkg("store");
+        let issues = validate(pkg, &dir, None, false);
+        let errs: Vec<String> = issues
+            .iter()
+            .filter(|i| i.rule == "R12" && i.level == Level::Error)
+            .map(|i| i.msg.clone())
+            .collect();
+        let warns: Vec<String> = issues
+            .iter()
+            .filter(|i| i.rule == "R12" && i.level == Level::Warn)
+            .map(|i| i.msg.clone())
+            .collect();
+        (errs, warns)
+    }
+
+    #[test]
+    fn store_decl_happy_path_is_silent() {
+        let mut r = req("issue");
+        r.mode = "readwrite".into();
+        r.fields = vec!["title:string!".into(), "status:enum:open|closed".into()];
+        r.index = vec!["status".into()];
+        r.shape = "mutable".into();
+        r.visibility = "private".into();
+        // 声明了写就得说清为什么 —— 说清了就不吵（这是那份 warn 想要的形态）
+        r.reason = "认领问题单并回写处理进展".into();
+        let (errs, warns) = r12_msgs(&store_pkg(vec![r]));
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(warns.is_empty(), "{warns:?}");
+    }
+
+    #[test]
+    fn store_decl_index_requires_declared_field() {
+        let mut r = req("issue");
+        r.fields = vec!["title:string".into()];
+        r.index = vec!["status".into()]; // 没声明就想过滤
+        let (errs, _) = r12_msgs(&store_pkg(vec![r]));
+        assert!(
+            errs.iter().any(|m| m.contains("动态 ≠ 无模式")),
+            "该拦：{errs:?}"
+        );
+    }
+
+    #[test]
+    fn store_decl_rejects_bad_names_and_modes() {
+        let mut bad_name = req("Issue-Tracker");
+        bad_name.mode = "read".into();
+        let mut bad_mode = req("log");
+        bad_mode.mode = "rw".into();
+        let mut bad_shape = req("audit");
+        bad_shape.shape = "frozen".into();
+        let (errs, _) = r12_msgs(&store_pkg(vec![bad_name, bad_mode, bad_shape]));
+        assert!(errs.iter().any(|m| m.contains("集合名")), "{errs:?}");
+        assert!(errs.iter().any(|m| m.contains("mode")), "{errs:?}");
+        assert!(errs.iter().any(|m| m.contains("shape")), "{errs:?}");
+    }
+
+    #[test]
+    fn store_decl_duplicate_collection_is_rejected() {
+        let a = req("issue");
+        let b = req("issue");
+        let (errs, _) = r12_msgs(&store_pkg(vec![a, b]));
+        assert!(errs.iter().any(|m| m.contains("出现了两次")), "{errs:?}");
+    }
+
+    #[test]
+    fn store_decl_data_snapshot_cannot_write() {
+        // 快照是只读的：一份 kb-seed 包不该声明它能写集合
+        let dir = temp_pkg("storewrite");
+        let mut p = data_pkg("kb-seed", &dir);
+        let mut r = req("issue");
+        r.mode = "readwrite".into();
+        p.state = Some(StateDecl { stores: vec![r], ..Default::default() });
+        let issues = validate(&p, &dir, None, false);
+        assert!(
+            issues
+                .iter()
+                .any(|i| i.rule == "R12" && i.msg.contains("不该写集合")),
+            "{issues:?}"
+        );
+        // 只读就没事
+        let mut p2 = data_pkg("kb-seed", &dir);
+        p2.state = Some(StateDecl { stores: vec![req("issue")], ..Default::default() });
+        let issues2 = validate(&p2, &dir, None, false);
+        assert!(
+            !issues2.iter().any(|i| i.rule == "R12" && i.msg.contains("不该写集合")),
+            "{issues2:?}"
+        );
+    }
+
+    #[test]
+    fn store_decl_write_only_warns_but_does_not_block() {
+        let mut r = req("audit");
+        r.mode = "write".into();
+        let (errs, warns) = r12_msgs(&store_pkg(vec![r.clone()]));
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(warns.iter().any(|m| m.contains("拿不回自己写的内容")), "{warns:?}");
+        // 说清了理由就不吵
+        r.reason = "只上报，从不回读".into();
+        let (_, warns2) = r12_msgs(&store_pkg(vec![r]));
+        assert!(warns2.is_empty(), "{warns2:?}");
+    }
+
+    #[test]
+    fn store_decl_readwrite_also_warns_about_the_model_face() {
+        // readwrite 在模型面上 = 「模型可以改这些内容」，所以也要让人写清理由
+        let mut r = req("issue");
+        r.mode = "readwrite".into();
+        let (errs, warns) = r12_msgs(&store_pkg(vec![r.clone()]));
+        assert!(errs.is_empty(), "{errs:?}");
+        assert!(warns.iter().any(|m| m.contains("模型可以改这些内容")), "{warns:?}");
+        r.reason = "认领问题单并回写进展".into();
+        let (_, warns2) = r12_msgs(&store_pkg(vec![r]));
+        assert!(warns2.is_empty(), "{warns2:?}");
+        // 只读不吵
+        let (_, warns3) = r12_msgs(&store_pkg(vec![req("log")]));
+        assert!(warns3.is_empty(), "{warns3:?}");
+    }
+
+    #[test]
+    fn store_decl_json_roundtrip() {
+        // hur.json 是别的工具也会写的文件 —— 字段名必须稳定
+        let mut r = req("run-log");
+        r.mode = "write".into();
+        r.fields = vec!["at:string!".into(), "ok:bool".into()];
+        r.index = vec!["ok".into()];
+        r.shape = "append-only".into();
+        r.visibility = "private".into();
+        r.max_bytes = 65536;
+        r.reason = "运行日志".into();
+        let pkg = store_pkg(vec![r]);
+        let text = serde_json::to_string(&pkg).unwrap();
+        assert!(text.contains("\"stores\""), "{text}");
+        assert!(text.contains("append-only"), "{text}");
+        let back: HurPackage = serde_json::from_str(&text).unwrap();
+        let st = back.state.unwrap();
+        assert_eq!(st.stores.len(), 1);
+        assert_eq!(st.stores[0].collection, "run-log");
+        assert_eq!(st.stores[0].mode_norm(), "write");
+        assert!(st.stores[0].writes());
+        assert_eq!(st.stores[0].max_bytes, 65536);
+        assert_eq!(st.stores[0].index, vec!["ok".to_string()]);
+        // 空 state 不该往包里写一堆空数组（省得每份 hur.json 都被撑开）
+        let empty = serde_json::to_string(&StateDecl::default()).unwrap();
+        assert!(!empty.contains("stores"), "{empty}");
     }
 }

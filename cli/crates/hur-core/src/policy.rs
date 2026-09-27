@@ -1232,8 +1232,11 @@ mod tests {
     fn pkg(sec: Option<SecurityReq>) -> HurPackage {
         HurPackage {
             egress: None,
+            state: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),
+            profile: None,
+            data: None,
             id: "A-hotel-front-desk-abc123".into(),
             name: "Front Desk".into(),
             version: "1.0.0".into(),
@@ -1250,6 +1253,7 @@ mod tests {
             security: sec,
         }
     }
+    
 
     fn req_exec(engines: &[&str], entry: &str) -> SecurityReq {
         SecurityReq {

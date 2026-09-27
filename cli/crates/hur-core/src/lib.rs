@@ -9,12 +9,14 @@
 //! 只有 `registry` 与 `install`（远端）需要网络。
 
 pub mod cfg;
+pub mod datapack;
 pub mod dep;
 pub mod install;
 pub mod interop;
 pub mod mcp;
 pub mod pack;
 pub mod policy;
+pub mod profile;
 pub mod publish;
 pub mod registry;
 pub mod sign;

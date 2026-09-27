@@ -231,6 +231,13 @@ pub fn exec(abs: &Path, pkg: &HurPackage, plan: &RunPlan, e: &Effective, entry: 
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
 
+    // 顺带把这次执行收敛成一条 `ncc-trace/v1` 轨迹（放进本地暂存，**不联网**）。
+    // 采集失败不该让"跑过了"这件事变成错误：留痕已经落盘了，轨迹只是它的可评测形态。
+    let trace_id = match serde_json::to_value(&rec).map_err(|e| anyhow::anyhow!("{e:#}")) {
+        Ok(rt) => crate::trace::capture_run_trace(&rt, "digest").unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+
     Ok(json!({
         "package": pkg.id,
         "name": pkg.name,
@@ -242,6 +249,9 @@ pub fn exec(abs: &Path, pkg: &HurPackage, plan: &RunPlan, e: &Effective, entry: 
         "replyPreview": clip(outcome.reply.as_str(), 200),
         "outcome": outcome_v,
         "trace": trace,
+        // 轨迹 id：`ncc trace push` 用它把这台机器上跑过的真实轨迹传给节点。
+        // payload 是 digest —— 留痕本来就不含提示词与输出（见 trace.rs 的说明）。
+        "traceId": trace_id,
         "checks": plan.checks,
         "planReasons": plan.reasons,
         // 整份计划也带上：`--exec --json` 只输出这一份 JSON，

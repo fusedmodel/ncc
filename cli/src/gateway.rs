@@ -32,8 +32,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, TcpListener, TcpStream};
+use std::io::{Read, Write};
+use crate::httpsrv::{read_request, write_resp, ReadError, Req, Resp};
+use std::net::{IpAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -43,7 +44,6 @@ use crate::config;
 /// 单条请求的 body 上限（默认 1 MiB）。超了直接 413，不转发。
 const DEFAULT_MAX_BODY: u64 = 1024 * 1024;
 /// 请求头总量上限。超过就当恶意/异常处理。
-const MAX_HEAD_BYTES: usize = 64 * 1024;
 /// 配额窗口：每分钟。
 const QUOTA_WINDOW: Duration = Duration::from_secs(60);
 
@@ -65,6 +65,30 @@ pub struct GatewayConfig {
     pub max_body_bytes: u64,
     #[serde(default)]
     pub routes: Vec<Route>,
+
+    // ---- 控制面接入（F2/F3/F5；`ncc gateway bind` 自动写，也可手工填）----
+    /// 控制面地址（ncc.ai 或某个内网节点）。空 = 未绑定（审计只落本地）。
+    #[serde(default)]
+    pub api_server: String,
+    /// 注册时下发的网关 id（`GW-…`）。
+    #[serde(default)]
+    pub gateway_id: String,
+    /// 网关令牌（`ncc_gw_…`）：心跳与上报的凭据，**也是摘要签名的密钥材料**
+    /// （签名密钥 = sha256(令牌)）—— 它等价于这个网关的口令，别外传。
+    #[serde(default)]
+    pub gateway_token: String,
+    /// 绑定的命名空间 slug（人看的）。
+    #[serde(default)]
+    pub namespace: String,
+    /// 网关名（控制面列表里显示）。
+    #[serde(default)]
+    pub name: String,
+    /// 心跳间隔（秒，0 = 不心跳）。默认 30s（PRD F3）。
+    #[serde(default)]
+    pub heartbeat_sec: u64,
+    /// 摘要上报间隔（秒，0 = 不自动上报，只用 `ncc gateway report` 手动）。
+    #[serde(default)]
+    pub report_sec: u64,
 }
 
 /// 一条路由。`mode` 决定它是「提供出口」还是「借用出口」。
@@ -149,6 +173,36 @@ fn load_config() -> Result<GatewayConfig> {
     let cfg: GatewayConfig =
         serde_json::from_str(&raw).with_context(|| format!("配置不是合法 JSON：{}", p.display()))?;
     Ok(cfg)
+}
+
+/// 给 `ncc gateway bind/heartbeat/report` 用（它们要读写同一份配置）。
+pub fn load_config_pub() -> Result<GatewayConfig> { load_config() }
+
+/// 写回配置（只动绑定字段；路由那块由人维护）。
+///
+/// **权限 0600**：里面有网关令牌，等同于口令。
+pub fn save_config_pub(cfg: &GatewayConfig) -> Result<()> {
+    let p = config_path();
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    std::fs::write(&p, serde_json::to_string_pretty(cfg)?)
+        .with_context(|| format!("写不了配置 {}", p.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// 审计目录（`report` 聚合本地 JSONL 用同一个判定）。
+pub fn audit_dir_of(cfg: &GatewayConfig) -> PathBuf {
+    if cfg.audit_dir.trim().is_empty() {
+        ncc_dir().join("gateway-audit")
+    } else {
+        PathBuf::from(cfg.audit_dir.trim())
+    }
 }
 
 fn is_loopback_addr(addr: &str) -> bool {
@@ -304,7 +358,7 @@ fn is_loopback_host(h: &str) -> bool {
 /// Unix 秒 → `YYYY-MM-DDTHH:MM:SSZ`（UTC）。
 ///
 /// 自己算而不是引 chrono：只需要一个方向，且要好测。
-fn iso_from_secs(secs: i64) -> String {
+pub(crate) fn iso_from_secs(secs: i64) -> String {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
     let (y, m, d) = civil_from_days(days);
@@ -333,7 +387,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (y + if m <= 2 { 1 } else { 0 }, m, d)
 }
 
-fn now_iso() -> String {
+pub(crate) fn now_iso() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -541,171 +595,6 @@ impl Audit {
             Err(e) => eprintln!("⚠ 打不开审计文件（{}）：{e}", self.path.display()),
         }
     }
-}
-
-/* ============================ 最小 HTTP/1.1 服务端 ============================ */
-
-struct Req {
-    method: String,
-    /// 原始请求目标，如 `/v1/llm/chat/completions`
-    path: String,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-}
-
-impl Req {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(name))
-            .map(|(_, v)| v.as_str())
-    }
-    /// 从 `Authorization: Bearer xxx` 里取令牌。
-    fn bearer(&self) -> Option<&str> {
-        let v = self.header("authorization")?;
-        let (kind, tok) = v.split_once(' ')?;
-        if kind.eq_ignore_ascii_case("bearer") {
-            Some(tok.trim())
-        } else {
-            None
-        }
-    }
-}
-
-enum ReadError {
-    /// 请求本身有问题（400/411/413/414 等），带上想回的状态码与原因
-    Bad(u16, String),
-    Io(std::io::Error),
-}
-
-/// 读一个请求：请求行 + 头 + 定长 body。
-///
-/// 有意**不支持** chunked：我们的调用方是自己人（CLI / Agent），明确拒绝比半吊子解析安全。
-fn read_request(stream: &mut TcpStream, max_body: u64) -> Result<Req, ReadError> {
-    let mut reader = BufReader::new(stream.try_clone().map_err(ReadError::Io)?);
-
-    let mut line = String::new();
-    if reader.read_line(&mut line).map_err(ReadError::Io)? == 0 {
-        return Err(ReadError::Bad(400, "空请求".into()));
-    }
-    let mut it = line.trim_end().split(' ');
-    let method = it.next().unwrap_or("").to_string();
-    let path = it.next().unwrap_or("").to_string();
-    let version = it.next().unwrap_or("");
-    if method.is_empty() || path.is_empty() || !version.starts_with("HTTP/1.") {
-        return Err(ReadError::Bad(400, "请求行不合法".into()));
-    }
-    if path.len() > 2048 {
-        return Err(ReadError::Bad(414, "路径过长".into()));
-    }
-
-    let mut headers: Vec<(String, String)> = Vec::new();
-    let mut head_bytes = line.len();
-    loop {
-        let mut hl = String::new();
-        let n = reader.read_line(&mut hl).map_err(ReadError::Io)?;
-        if n == 0 {
-            return Err(ReadError::Bad(400, "请求头未结束".into()));
-        }
-        head_bytes += n;
-        if head_bytes > MAX_HEAD_BYTES {
-            return Err(ReadError::Bad(431, "请求头过大".into()));
-        }
-        let hl = hl.trim_end_matches(['\r', '\n']);
-        if hl.is_empty() {
-            break;
-        }
-        let (k, v) = hl
-            .split_once(':')
-            .ok_or_else(|| ReadError::Bad(400, format!("请求头不合法：{hl}")))?;
-        headers.push((k.trim().to_string(), v.trim().to_string()));
-    }
-
-    if headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("transfer-encoding")) {
-        return Err(ReadError::Bad(411, "不支持 chunked 传输（请给 Content-Length）".into()));
-    }
-    let clen = headers
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("content-length"))
-        .map(|(_, v)| v.clone())
-        .unwrap_or_default();
-    let clen: u64 = if clen.is_empty() {
-        0
-    } else {
-        clen.parse().map_err(|_| ReadError::Bad(400, "Content-Length 不是数字".into()))?
-    };
-    if clen > max_body {
-        return Err(ReadError::Bad(413, format!("请求体过大（上限 {max_body} 字节）")));
-    }
-    let mut body = vec![0u8; clen as usize];
-    if clen > 0 {
-        reader.read_exact(&mut body).map_err(ReadError::Io)?;
-    }
-    Ok(Req { method, path, headers, body })
-}
-
-struct Resp {
-    status: u16,
-    content_type: &'static str,
-    body: Vec<u8>,
-    extra: Vec<(String, String)>,
-}
-
-impl Resp {
-    fn json(status: u16, v: &serde_json::Value) -> Self {
-        Resp {
-            status,
-            content_type: "application/json",
-            body: v.to_string().into_bytes(),
-            extra: Vec::new(),
-        }
-    }
-    fn text(status: u16, s: &str) -> Self {
-        Resp {
-            status,
-            content_type: "text/plain; charset=utf-8",
-            body: s.as_bytes().to_vec(),
-            extra: Vec::new(),
-        }
-    }
-}
-
-fn reason(status: u16) -> &'static str {
-    match status {
-        200 => "OK",
-        201 => "Created",
-        204 => "No Content",
-        400 => "Bad Request",
-        401 => "Unauthorized",
-        403 => "Forbidden",
-        404 => "Not Found",
-        405 => "Method Not Allowed",
-        411 => "Length Required",
-        413 => "Payload Too Large",
-        414 => "URI Too Long",
-        429 => "Too Many Requests",
-        431 => "Request Header Fields Too Large",
-        500 => "Internal Server Error",
-        502 => "Bad Gateway",
-        504 => "Gateway Timeout",
-        _ => "OK",
-    }
-}
-
-fn write_resp(stream: &mut TcpStream, r: &Resp) {
-    let mut out = Vec::with_capacity(256 + r.body.len());
-    out.extend_from_slice(format!("HTTP/1.1 {} {}\r\n", r.status, reason(r.status)).as_bytes());
-    out.extend_from_slice(format!("content-type: {}\r\n", r.content_type).as_bytes());
-    out.extend_from_slice(format!("content-length: {}\r\n", r.body.len()).as_bytes());
-    out.extend_from_slice(b"x-ncc-gateway: 1\r\n");
-    for (k, v) in &r.extra {
-        out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
-    }
-    out.extend_from_slice(b"connection: close\r\n\r\n");
-    out.extend_from_slice(&r.body);
-    let _ = stream.write_all(&out);
-    let _ = stream.flush();
-    let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 
 /* ============================ 转发 ============================ */
@@ -1078,6 +967,13 @@ pub fn init(force: bool) -> Result<()> {
         "listen": "127.0.0.1:9810",
         "allow_plaintext": false,
         "max_body_bytes": 1048576,
+        "api_server": "",
+        "gateway_id": "",
+        "gateway_token": "",
+        "namespace": "",
+        "name": "",
+        "heartbeat_sec": 30,
+        "report_sec": 300,
         "routes": [
             {
                 "name": "llm",
@@ -1179,10 +1075,44 @@ pub fn run() -> Result<()> {
     });
 
     let listener = TcpListener::bind(&listen).with_context(|| format!("监听不了 {listen}"))?;
-    println!("NCC Gateway（S2a）已在 {listen} 上运行");
+    println!("NCC Gateway 已在 {listen} 上运行");
     println!("   {route_count} 条路由 · 审计 {audit_path}");
     println!("   健康检查：curl http://{listen}/healthz");
     println!("   Ctrl+C 停止。本进程**不向任何 NCC 服务端上报载荷**。");
+
+    // 控制面接入（F2/F3/F5）：绑了才起心跳与上报线程。
+    // 没绑也能跑 —— 审计照落本地（本地优先，控制面只是"看得到摘要"）。
+    let bound = !shared.ready.cfg.gateway_token.trim().is_empty()
+        && !shared.ready.cfg.api_server.trim().is_empty();
+    if bound {
+        let hb = if shared.ready.cfg.heartbeat_sec == 0 {
+            crate::gwreport::DEFAULT_HEARTBEAT_SEC
+        } else {
+            shared.ready.cfg.heartbeat_sec
+        };
+        let rp = if shared.ready.cfg.report_sec == 0 {
+            crate::gwreport::DEFAULT_REPORT_SEC
+        } else {
+            shared.ready.cfg.report_sec
+        };
+        println!(
+            "   控制面 {}（{}）· 心跳 {hb}s · 摘要上报 {rp}s",
+            shared.ready.cfg.api_server,
+            shared.ready.cfg.gateway_id
+        );
+        println!(
+            "   ⚠ 上传的是**聚合摘要**（计数 / 字节总量 / 主机名 / 状态码桶 / 分位），\
+             逐条审计（含路径）只在本机：{audit_path}"
+        );
+        // 上报线程要一份 CLI 配置（`load()` 自带兜底，缺文件也能构造出来）；
+        // 控制面连不上时线程内部只会打日志 —— 网关的可用性不该因此打折。
+        crate::gwreport::spawn(crate::config::load(), hb, rp);
+    } else {
+        println!(
+            "   控制面：未绑定 —— 审计只落本地（`ncc gateway bind --namespace @你的组织` 可接入，\
+             接入后控制面只收到**摘要**）"
+        );
+    }
 
     for conn in listener.incoming() {
         let stream = match conn {
@@ -1235,6 +1165,21 @@ pub fn status() -> Result<()> {
             println!("  状态 ✅ 在跑（{body}）");
         }
         Err(_) => println!("  状态 ○ 没在跑（或不在这个地址上）"),
+    }
+    // 控制面接入状态（F2/F3/F5）。
+    if ready.cfg.gateway_token.trim().is_empty() || ready.cfg.api_server.trim().is_empty() {
+        println!("  控制面 ○ 未绑定（审计只落本地；`ncc gateway bind` 可接入）");
+    } else {
+        let hb = if ready.cfg.heartbeat_sec == 0 { 30 } else { ready.cfg.heartbeat_sec };
+        let rp = if ready.cfg.report_sec == 0 { 300 } else { ready.cfg.report_sec };
+        println!(
+            "  控制面 ✅ {} · {} · @{} · 心跳 {}s · 上报 {}s",
+            ready.cfg.api_server, ready.cfg.gateway_id, ready.cfg.namespace, hb, rp
+        );
+        let hint = crate::gwreport::pending_hint();
+        if !hint.is_empty() {
+            println!("  待传 {hint}");
+        }
     }
     for r in &ready.cfg.routes {
         println!(
@@ -1407,7 +1352,12 @@ mod tests {
         methods: &[&str],
         inject: &[&str],
     ) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ncc-gw-test-{tag}-{}", std::process::id()));
+        // ⚠️ 目录必须**每次调用唯一**：测试是并发跑的，两个测试共用同一个夹具目录
+        // 会互相把对方的 hur.json 写坏（曾因此出现"单跑绿、一起跑红"的假失败）。
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let uniq = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir()
+            .join(format!("ncc-gw-test-{tag}-{}-{uniq}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let host = target.split('/').nth(2).unwrap_or("");
         let pkg = serde_json::json!({

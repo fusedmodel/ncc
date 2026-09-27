@@ -639,8 +639,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let pkg = HurPackage {
             egress: None,
+            state: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),
+            profile: None,
+            data: None,
             id: "A-hotel-front-desk-abc123".into(),
             name: "Front Desk".into(),
             version: "0.2.0".into(),

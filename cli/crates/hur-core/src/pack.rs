@@ -156,10 +156,12 @@ pub fn archive_bytes(dir: &Path, allow_build_lock: bool) -> Result<(Vec<u8>, Str
         }
         zw.finish()?;
     }
-    Ok((buf.into_inner(), format!("{}-{}.hur", pkg.id, pkg.version)))
+    // 文件名带 profile 段（`<id>-<version>.<profile>.hur`）：一眼看得出这是能跑的包
+    // 还是一份数据快照。`.hur` 仍是最后的扩展名 → 侧车与解包机制全不受影响。
+    Ok((buf.into_inner(), crate::spec::artifact_name(&pkg)))
 }
 
-/// 产包：`dist/<id>-<version>.hur` + `.sha256`
+/// 产包：`dist/<id>-<version>.<profile>.hur` + `.sha256`
 pub fn pack(dir: &Path) -> Result<PackOutcome> {
     let (bytes, name) = archive_bytes(dir, true)?;
     let dist = dir.join(DIST);
@@ -247,6 +249,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let pkg = build_package(&InitInput {
+            profile: None,
             kind: "agent".into(),
             name: "Pack Test".into(),
             role: "负责住房事务".into(),

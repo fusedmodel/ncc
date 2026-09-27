@@ -300,7 +300,9 @@ impl Store {
 
     /// 核一个**工程目录**：重算规范字节（不落盘），再核签名
     pub fn check_dir(&self, dir: &Path, pkg: &HurPackage, required: bool, pub_override: Option<&Path>) -> SigReport {
-        let artifact = dir.join(crate::spec::DIST).join(format!("{}-{}.hur", pkg.id, pkg.version));
+        // 产物名走同一份实现（新名字在前、老名字兜底）—— 名字格式变了不该让"找不到产物"
+        let artifact = crate::spec::find_artifact(&dir.join(crate::spec::DIST), pkg)
+            .unwrap_or_else(|| dir.join(crate::spec::DIST).join(crate::spec::artifact_name(pkg)));
         let sig = find_sig(&artifact);
         // 产物在就直接核它（下发给别人的也是这一份）；不在就重算规范字节到临时文件核
         if artifact.is_file() {
@@ -419,11 +421,24 @@ pub struct OwnKey {
     pub encrypted: bool,
 }
 
-/// 签名 trusted comment 里的声明（hur 自己的部分；**该 comment 被签名保护**）
+/// 签名 trusted comment 里的声明（**该 comment 被签名保护**）。
+///
+/// 两种语法并存，解析器都认：
+///
+/// * `hur <包 id> <版本> sha256=<hex>` —— 包（HUR）的声明，`package` / `version`；
+/// * `ncc <kind> <引用> <版本> sha256=<hex>` —— **非包制品**（一个 SKILL.md、一个
+///   mcp.json…）的声明，`kind` 有值，`package` 放的是引用（命名空间/slug）。
+///
+/// 引用/版本缺省时写 `-`（占位，不是空串）：comment 是按空白切词的，空串会塌掉
+/// 后面的位置，宁可留一个显式占位让字段对得上。
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Claim {
+    /// 包 id，或非包制品的引用（命名空间/slug）；缺省 `-` 表示发布方没标
     pub package: String,
     pub version: String,
+    /// 非包制品的种类（skill / mcp / …）；包的声明里没有这一项
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub sha256: Option<String>,
     pub raw: String,
 }
@@ -432,16 +447,45 @@ impl Claim {
     pub fn parse(comment: &str) -> Claim {
         let mut c = Claim { raw: comment.trim().to_string(), ..Default::default() };
         let mut it = comment.split_whitespace();
-        if it.next() == Some("hur") {
-            c.package = it.next().unwrap_or_default().to_string();
-            c.version = it.next().unwrap_or_default().to_string();
-            for tok in it {
-                if let Some(v) = tok.strip_prefix("sha256=") {
-                    c.sha256 = Some(v.to_ascii_lowercase());
-                }
+        match it.next() {
+            Some("hur") => {
+                c.package = it.next().unwrap_or_default().to_string();
+                c.version = it.next().unwrap_or_default().to_string();
+            }
+            Some("ncc") => {
+                c.kind = Some(it.next().unwrap_or_default().to_string());
+                c.package = it.next().unwrap_or_default().to_string();
+                c.version = it.next().unwrap_or_default().to_string();
+            }
+            _ => return c,
+        }
+        for tok in it {
+            if let Some(v) = tok.strip_prefix("sha256=") {
+                c.sha256 = Some(v.to_ascii_lowercase());
             }
         }
         c
+    }
+
+    /// 人读一行（两种语法统一表述；没标清楚的地方就写"未标注"，不编）。
+    pub fn summary(&self) -> String {
+        let dash = |s: &str| if s.trim().is_empty() || s.trim() == "-" { "未标注".to_string() } else { s.trim().to_string() };
+        match &self.kind {
+            Some(k) => format!(
+                "{} {} @{} sha256={}",
+                k,
+                dash(&self.package),
+                dash(&self.version),
+                self.sha256.clone().unwrap_or_else(|| "（未声明）".to_string())
+            ),
+            None if !self.package.is_empty() => format!(
+                "包 {} v{} sha256={}",
+                dash(&self.package),
+                dash(&self.version),
+                self.sha256.clone().unwrap_or_else(|| "（未声明）".to_string())
+            ),
+            None => "（签名者没写可解析的声明）".to_string(),
+        }
     }
 }
 
@@ -528,6 +572,25 @@ pub fn comment_for(pkg: &HurPackage, sha256: &str) -> String {
     format!("hur {} {} sha256={}", pkg.id, pkg.version, sha256)
 }
 
+/// **非包制品**的签名声明：`ncc <kind> <引用> <版本> sha256=<hex>`。
+///
+/// 与包的 `hur <id> <version> sha256=…` 并列（解析见 [`Claim::parse`]）。签的是**那份
+/// 发布出去的字节**，摘要就是它的 sha256 —— 第三方拿公钥 `minisign -V` 就能独立核对，
+/// 不需要知道 NCC 是什么。
+pub fn comment_for_artifact(kind: &str, reference: &str, version: &str, sha256: &str) -> String {
+    let pick = |s: &str, dflt: &str| {
+        let t = s.trim();
+        if t.is_empty() { dflt.to_string() } else { t.to_string() }
+    };
+    format!(
+        "ncc {} {} {} sha256={}",
+        pick(kind, "artifact"),
+        pick(reference, "-"),
+        pick(version, "-"),
+        sha256
+    )
+}
+
 /// 从公钥文件文本（两行 box）或单行 base64 解析公钥
 pub fn parse_public(text: &str) -> Result<PublicKey> {
     let t = text.trim();
@@ -588,8 +651,11 @@ mod tests {
     fn pkg() -> HurPackage {
         HurPackage {
             egress: None,
+            state: None,
             spec: crate::spec::PKG_SPEC.into(),
             kind: "agent".into(),
+            profile: None,
+            data: None,
             id: "A-test-sign-000001".into(),
             name: "签名测试".into(),
             version: "0.1.0".into(),
@@ -606,6 +672,7 @@ mod tests {
             security: None,
         }
     }
+    
 
     /// 造一个最小可打包工程
     fn project(t: &Tmp) -> PathBuf {
@@ -812,5 +879,24 @@ mod tests {
         assert_eq!(c.sha256.as_deref(), Some("abcdef"));
         assert!(Claim::parse("别的工具写的注释").sha256.is_none());
         assert_eq!(keynum_hex(&[0x0a, 0xff]), "0AFF");
+    }
+
+    #[test]
+    fn claim_parses_artifact_grammar() {
+        // 非包制品（skill / mcp / …）：`ncc <kind> <引用> <版本> sha256=`
+        let a = Claim::parse(&comment_for_artifact("skill", "@me/demo", "0.1.0", "AAbb"));
+        assert_eq!(a.kind.as_deref(), Some("skill"));
+        assert_eq!(a.package, "@me/demo");
+        assert_eq!(a.version, "0.1.0");
+        assert_eq!(a.sha256.as_deref(), Some("aabb"));
+        // 缺省位是显式占位 `-`，不是空串：按空白切词才不会把字段挤错位
+        let b = Claim::parse(&comment_for_artifact("", "", "", "cc"));
+        assert_eq!(b.kind.as_deref(), Some("artifact"));
+        assert_eq!(b.package, "-");
+        assert_eq!(b.version, "-");
+        // 包的语法不带 kind —— 别把"包"说成"artifact"
+        assert!(Claim::parse("hur A-x 0.2.0 sha256=x").kind.is_none());
+        // 小结不给没标注的东西编名字
+        assert!(b.summary().contains("未标注"));
     }
 }

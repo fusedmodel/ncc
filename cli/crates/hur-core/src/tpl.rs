@@ -62,6 +62,8 @@ pub fn acronym(name: &str) -> String {
 
 pub struct InitInput {
     pub kind: String,
+    /// 这份包**是什么**（`crate::profile::PROFILES` 里的名字）。`None` = 按 kind 推导。
+    pub profile: Option<String>,
     pub name: String,
     /// kind=agent：角色/职责（写进 agent.system_prompt）
     pub role: String,
@@ -75,6 +77,10 @@ pub struct InitInput {
 
 pub fn build_package(input: &InitInput) -> HurPackage {
     let slug_name = slug(&input.name);
+    // 先算出**生效的 profile**（写了就用它，没写按 kind 推导）—— 生成什么文件、要不要 entry
+    // 都由它决定，不然 `hur init --profile skill` 会生出一份自己校验不过的包。
+    let profile_name = crate::profile::of(input.profile.as_deref(), &input.kind);
+    let data_like = crate::profile::is_data(profile_name) || profile_name == "skill";
     let domain = if input.domain.trim().is_empty() { "generic".to_string() } else { slug(&input.domain) };
     let id = match input.kind.as_str() {
         "repo" => slug_name.clone(),
@@ -92,15 +98,20 @@ pub fn build_package(input: &InitInput) -> HurPackage {
     };
     HurPackage {
         egress: None,
+        state: None,
         spec: PKG_SPEC.to_string(),
         kind: input.kind.clone(),
+        // 写了就写进清单；没写就不写（老包不带这个字段，照样能被校验）
+        profile: input.profile.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string),
         id,
+        data: None,
         name: input.name.trim().to_string(),
         version: if input.version.trim().is_empty() { "0.1.0".to_string() } else { input.version.trim().to_string() },
         short,
         domain: domain.clone(),
         summary: input.summary.trim().to_string(),
-        entry: if input.kind == "repo" { String::new() } else { "src/agent.ts".to_string() },
+        // 数据快照与技能包**不该有代码入口**（R12 会因此判不合规）—— 生成的时候就别写。
+        entry: if input.kind == "repo" || data_like { String::new() } else { "src/agent.ts".to_string() },
         runtime: "local-v0".to_string(),
         capabilities: if input.kind == "agent" {
             vec!["discover".into(), "describe".into(), "rank".into(), "reply".into()]

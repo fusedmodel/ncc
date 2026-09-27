@@ -1,6 +1,6 @@
 ---
 name: ncc-registry
-description: 使用 NCC 检索、取回与发布能力制品（skill / mcp / harness / plugin 等），按意图匹配对外服务，读取团队托管配置，以及按工作角色找人。当用户提到「发布能力/skill 到目录」「找一个现成的 skill / MCP」「复用别人的能力包」「帮我订酒店/找能办这件事的服务」「团队的网络/基础设施配置是什么」「谁做过 FDE/AIGC」时使用。
+description: 使用 NCC 检索、取回与发布能力制品（skill / mcp / harness / plugin 等），按意图匹配对外服务，读取团队托管配置，按工作角色找人，读 Agent 的知识库 / 记忆 / 检查点与运行轨迹，以及查自己组织的 NCC Gateway 在线状态与合规审计摘要。当用户提到「发布能力/skill 到目录」「找一个现成的 skill / MCP」「复用别人的能力包」「帮我订酒店/找能办这件事的服务」「团队的网络/基础设施配置是什么」「谁做过 FDE/AIGC」「上次那件事的结论是什么 / 这个 Agent 的记忆里有什么」「这个包跑了多少次、成不成」「我们有哪些网关 / 哪台掉线了 / 这周多少请求被拒」时使用。
 ---
 
 # NCC Registry：能力的目录与分发
@@ -22,11 +22,12 @@ ncc 有两个世界，同一个 CLI / 同一套 MCP 工具都可能连到其中�
 
 | 世界 | 目标名 | 提供什么 |
 |---|---|---|
-| **云端 ncc.ai** | `hub` | 公共目录、服务市场（`ncc_match_services`）、名片与找人、分享页，以及 P2P 的**控制面**（信令 / 票据 / ICE 配置） |
-| **内网 registry 节点** | 自定（`local` / `office` …） | 制品、节点、**团队配置**（`ncc_list_configs`）、分享链接、**节点侧打洞画像与入口**（`ncc_p2p_node`） |
+| **云端 ncc.ai** | `hub` | 公共目录、服务市场（`ncc_match_services`）、名片与找人、分享页、P2P **控制面**（信令 / 票据 / ICE 配置），以及**网关控制面**（`ncc_list_gateways` / `ncc_gateway_audit` / `ncc_gateway_usage`） |
+| **内网 registry 节点** | 自定（`local` / `office` …） | 制品、节点、**团队配置**（`ncc_list_configs`）、分享链接、**节点侧打洞画像与入口**（`ncc_p2p_node`）、**运行轨迹**（`ncc_list_traces` / `ncc_trace_stats`）、**三样状态**（`ncc_list_kb` / `ncc_get_kb` / `ncc_list_mem` / `ncc_get_mem` / `ncc_list_ckpt`） |
 
 每个节点在 `GET /api/meta` 里**声明自己的能力**（`registry` / `services` / `profile` /
-`config` / `nodes` / `grants` / `p2p` …），工具按这份清单放行。所以：
+`config` / `nodes` / `grants` / `p2p` / `gateway` / `trace` / `kb` / `mem` / `ckpt` …），
+工具按这份清单放行。所以：
 
 - **工具清单是变化的**，以 `tools/list` 为准；调不通时先看错误信息里的「这个目标没有声明 X 能力」
   与它给的切换建议，不要反复重试。
@@ -56,7 +57,7 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp", "--base", "http://localhost:8282"] } } }
 ```
 
-提供的工具（23 个，按能力分组；不在当前目标能力清单里的会明确报错）：
+提供的工具（33 个，按能力分组；不在当前目标能力清单里的会明确报错）：
 
 | 能力 | 工具 | 用途 |
 |---|---|---|
@@ -78,6 +79,14 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 | | `ncc_p2p_node` | **目标节点那台机器**的 NAT 画像 + 可被打洞入口状态 |
 | 团队配置（内网节点） | `ncc_list_configs` | 托管配置目录（公开配置无需凭据） |
 | | `ncc_get_config` | 取一份配置（**内容默认打码**，`reveal=true` 才出明文） |
+| 运行轨迹（内网节点） | `ncc_list_traces` | 这个包 / 这个 Agent 跑过什么（`payload=digest` = 只有哈希与结构） |
+| | `ncc_trace_stats` | 轨迹的**聚合结论**：成功率 / 耗时 / token / 花费 / 按版本分组 / 标注覆盖率 |
+| 三样状态（内网节点） | `ncc_list_kb` / `ncc_get_kb` | 知识库：查语料（关键词加权）/ 取正文（带 checksum，可核对） |
+| | `ncc_list_mem` / `ncc_get_mem` | 记忆：按键读（Agent 读自己记忆的主路径）/ 带 TTL 与来源 |
+| | `ncc_list_ckpt` | 检查点：不可变快照与血缘（**不给字节通道**，取字节要 `ncc ckpt pull`） |
+| 网关控制面（云端） | `ncc_list_gateways` | 我/我们名下的网关：在线状态（**推导**）、最近心跳、用量 |
+| | `ncc_gateway_audit` | 某台网关留存的**审计摘要**（计数 / 主机名 / 状态桶 / 延迟分位） |
+| | `ncc_gateway_usage` | 某台网关的用量汇总（**自报计数**，口径写在返回里） |
 
 ### 方式二：HTTP API（无需 MCP 客户端）
 
@@ -118,6 +127,24 @@ GET  /api/p2p/tickets?mine=1                      # 我发出的 P2P 票据（�
 POST /api/registry/uploads               # 上传字节（raw body + X-Filename 头）
 POST /api/registry                       # 创建条目
 POST /api/shares                         # 建分享链接（ref / uses / expiresInDays）
+
+# 内网 registry 节点专用：运行轨迹 / 三样状态（读）
+GET  /api/traces?ref=&kind=&status=&tag=&since=&size=   # 轨迹列表（默认看不到别人的）
+GET  /api/traces/stats?ref=&kind=&since=                # 聚合结论
+GET  /api/traces/{id}                                   # 一条轨迹
+GET  /api/kb?namespace=&kind=&tag=&q=&size=             # 知识库目录（关键词加权）
+GET  /api/kb/{@ns/slug 或 KD-…}?revision=N              # 知识库正文（带 checksum）
+GET  /api/mem?namespace=&subject=&prefix=&kind=         # 记忆列表（过期默认不算）
+GET  /api/mem/{key}?subject=&namespace=                 # 一条记忆
+GET  /api/ckpt?ref=&label=&q=&size=                     # 检查点列表
+
+# 云端 ncc.ai 专用：网关控制面（只读；需要凭据 + gateways:read）
+GET  /api/gateways/summary                              # 我名下的网关 + 各自用量 + 合计
+GET  /api/gateways?namespace=@team                      # 按命名空间过滤
+GET  /api/gateways/{GW-…}                               # 单台（含推导出的在线状态）
+GET  /api/gateways/{GW-…}/audit?since=&limit=&format=csv   # 留存摘要（csv = 合规导出）
+GET  /api/gateways/{GW-…}/usage?since=                  # 用量汇总（自报计数，口径在 basis 字段）
+GET  /api/meta                                          # 云端也声明 `gateway` 能力
 ```
 
 错误体统一是 `{"error":{"code":"…","message":"…"}}`，HTTP 状态码同时反映语义
@@ -153,6 +180,23 @@ ncc p2p check --addr 1.2.3.4:5678   # 不走信令，直接对打（对端 mappe
 ncc registry p2p self               # 内网节点那台机器的画像
 ncc registry p2p serve --on --peer <对端 mapped>   # 在节点上开可被打洞入口（只应答 STUN）
 ncc p2p ticket create --peer @team/nas --ref @team/db-backup --expires-in 300
+
+# 轨迹（节点）：采集在本地，上传才出机器
+ncc trace add --file ./run.jsonl        # 采集（ncc-trace/v1 / HUR 运行轨迹 / 事件流）
+ncc trace push --dataset eval           # 上传到节点，成为可评估的数据集
+ncc trace ls --ref @aya/agent --limit 20
+
+# 三样状态（节点）：`pull` 会按包的 state{} 声明增量拉取
+ncc kb set @team/handbook --title … --file ./handbook.md
+ncc kb pull --package ./my-agent        # 读包的声明，按 checksum 增量拉到 ~/.ncc/kb
+ncc mem get planner.last_plan           # Agent 读记忆的主路径
+ncc ckpt save --name step-3 --file ./state.bin --parent-last
+
+# 网关控制面（云端）：注册/心跳/上报都是**网关那台机器上**的人的动作
+ncc gateway init --accept llm           # 本机网关配置（白名单代理，S2a）
+ncc gateway bind --namespace @team      # 注册到控制面（令牌只回一次，写进 gateway.json 0600）
+ncc gateway run                         # 常驻：周期心跳 + 摘要上报（先落盘再发送）
+ncc gateway audit --remote --csv        # 看/导出控制面留存的摘要
 ```
 
 ## 常用工作流
@@ -225,6 +269,61 @@ ncc p2p ticket create --peer @team/nas --ref @team/db-backup --expires-in 300
 - **入口开关不是 Agent 能拍的事**：`ncc registry p2p serve --on` 会在 UDP 上对外开放一个入口，
   必须由用户在节点上显式执行（工具里只有**只读**的状态查看）。
 
+### G. 「这个包 / 这个 Agent 到底行不行」——运行轨迹（内网节点）
+
+1. `ncc_trace_stats`（可加 `ref` 只看某个制品版本）拿**聚合结论**：成功/失败/取消各多少、
+   耗时 p50/p90、token 与花费、按制品版本分组、标注覆盖率与结论分布；
+2. 要下钻就 `ncc_list_traces` 过滤（`ref` / `kind` / `status` / `tag` / `since`）；
+3. ⚠️ 两条别搞错：
+   - `payload=digest` 表示这条轨迹**只有哈希与结构**（没有提示词与输出原文）——那是默认档，
+     适合评估与统计，**不能当训练材料**；要原文得由采集方重新采。
+   - `score` 只对**打过分的**轨迹求平均：没标注就别下结论，如实说「没有标注，无法评价」；
+4. 采集与上传（`ncc trace add` / `ncc trace push`）**不在工具里**：把轨迹推给哪个节点是用户的事。
+
+### H. 三样状态：知识库 / 记忆 / 检查点（内网节点）
+
+Agent 自己的**状态**住节点上（不是制品：制品是能力，状态是数据）。三样都**只有读工具**：
+
+| 你想干什么 | 工具 | 注意 |
+|---|---|---|
+| 找语料 | `ncc_list_kb`（`namespace` / `kind` / `tag` / `query`） | 检索是**关键词加权**（标题 3 / 摘要 2 / 正文 1），换个说法不一定命中 |
+| 读正文 | `ncc_get_kb`（`ref` = `@ns/slug` 或 `KD-…`，可 `revision`） | 正文带 `checksum`，要核对就自己算一遍 |
+| 读记忆 | `ncc_get_mem`（`key` + 可选 `subject`，默认 `self`） | **Agent 读自己记忆的主路径**；带 TTL 的过期即视为不存在 |
+| 列记忆 | `ncc_list_mem`（`subject` / `prefix` / `kind` / `source`） | 记忆**默认私有**，没有公开档 |
+| 看检查点 | `ncc_list_ckpt`（`ref` / `label` / `query`） | 不可变（没有"改"这个动作）+ 血缘（`parent`） |
+
+几条语义（回答用户时要说清）：
+
+- **包只声明，字节住节点**：`hur.json` 的 `state{}`（规则 R11）声明这个 Agent 要哪些知识库/记忆/
+  检查点，`ncc kb pull --package <目录>` 按声明**增量**拉下来（按 `checksum` 比对）；
+- **写不进工具**：`ncc kb set` / `ncc mem set` / `ncc ckpt save` 都要用户自己跑 —— 让一次工具调用
+  悄悄改写 Agent 的记忆或知识，出问题没人能复盘是谁改的；
+- 检查点**不给字节通道**：工具只回元数据与摘要，取字节走 `ncc ckpt pull`（客户端会核对摘要）。
+
+### I. 「我们有哪些出口、被用了多少、被拒了多少」——网关与合规审计（云端）
+
+客户自装一台 `ncc gateway`（固定路由的白名单代理）之后，它把**逐请求审计留在那台机器上**，
+只把**窗口摘要**上报控制面。Agent 能读的就是控制面这一侧：
+
+1. `ncc_list_gateways` —— 有哪些网关、命名空间、**在线状态**、版本、最近心跳、摘要窗口数、用量；
+   回答"我们有几台 / 哪台掉线了 / 最近多少请求被拒"；
+2. `ncc_gateway_audit`（`gateway` + 可选 `since` / `limit`）—— 某台网关留存的**窗口摘要**：
+   请求/放行/拒绝、出站入站字节、延迟 p50/p95/max、**主机名聚合**、状态码桶、拒绝理由、路由与方向；
+3. `ncc_gateway_usage`（`gateway`）—— 用量汇总（窗口数、活跃天数、首末窗口）。
+
+三条必须说给用户听的边界（**别把摘要说成"完整审计"**）：
+
+- **控制面只有摘要**：路径、请求载荷、凭据一律不在 —— 路径里常带订单号这类业务标识，
+  那是**故意不上报**的（NFR-1：NCC 不碰业务数据）。所以**不要**用这些工具回答
+  "谁调了哪个 URL"；那要去**那台网关本机**跑 `ncc gateway audit`（本地 JSONL 才有路径）；
+- **在线状态是控制面按心跳超时推导的**（默认 90s），不是网关自报：`status` 是推导结果，
+  `statusReported` 才是网关自己说的（`online` / `draining`）；
+- **用量是网关自报的计数**：签名（`HMAC-SHA256(key = sha256(网关令牌))`）只证明「是持有那枚令牌的
+  进程报的、内容没被改过」，**不证明内容为真** —— 被入侵的网关可以少报。要"可核对"得先有网关侧的
+  证明（今天没有）；
+- 注册网关、改名、**吊销**、让网关开始上报（`ncc gateway bind|unbind|report`）都是**那台机器上的人**的
+  动作，不在工具里；吊销之后网关心跳/上报会立刻 401，但**本地审计一条不丢**（进待传队列）。
+
 ## 约定与边界
 
 - **发布前先征求用户同意**：发布是公开可见的对外动作，除非用户明确要求，不要自动发布。
@@ -233,10 +332,31 @@ ncc p2p ticket create --peer @team/nas --ref @team/db-backup --expires-in 300
   要给人长期权限得用 `ncc grant`。分享只能由「本来就能读那条制品」的人创建。
 - **节点治理（admin）不进 MCP**：禁用账号、重置密码、摘除节点、归档服务条目只走 CLI，
   而且需要管理员身份 —— 这是**对人的动作**，必须由用户自己执行。
+- **加签不进 MCP**：`ncc sign` 要动**用户设备的私钥**（`~/.harnessuse/keys`），
+  而工具面是只读的 —— 给制品签名必须由用户自己执行：`ncc sign <文件> --attach @you/slug`。
+  你可以替用户读签名：条目 JSON 的顶层 `signature`（`keynum` / `sha256` / `signer`）说明
+  「谁签了哪份字节」；但**不要**把 `signature` 存在说成"可信"——
+  公钥是否认识、自带的 `pubkey` 只是发布方声明（自证），确认得跑 `ncc verify --pubkey`。
 - **P2P 的写动作也不进 MCP**：开/关可被打洞入口（`ncc registry p2p serve --on|--off`）、
   发/撤票据（`ncc p2p ticket create|revoke`）、授权（`ncc grant set --kind p2p`）都属于
   「改变谁能进来 / 谁能取什么」的动作，必须由用户显式执行；工具里只有读（画像、入口状态）与探测（打洞实测）。
+- **摘要 ≠ 完整审计**：控制面的网关审计**只有摘要**（计数 / 主机名 / 状态桶 / 延迟分位），
+  路径与载荷留在网关本机。用户问"谁调了哪个 URL / 传了什么"时，如实说"控制面看不到，
+  要去那台网关本机 `ncc gateway audit`"，不要用摘要硬答。
+- **自报计数不等于事实**：网关的在线状态是控制面**推导**的，用量是网关**自报**的，
+  签名只证明来源与完整。给合规结论时要带上这句限定。
 - **private 需要付费套餐**，免费账号只能用 `public`。
+- **profile 与数据快照不在工具面里**：`ncc hur profile`（读一份包是什么 / 要什么 / 给什么 / 怎么接）、
+  `ncc hur match`、以及四种数据快照包（`kb bundle --as-package` / `mem export` / `ckpt export` /
+  `trace export` + `ncc hur data import`）都是 **CLI 动作** —— 导出要挑数据范围、导入会改节点上的数据，
+  这两件事必须由用户自己拍板。你能做的是：
+  - 从条目清单里读 `profile`（`manifest.profile`，以及 `profile_declared` 区分"作者写的"与"按 kind 推的"），
+    从而知道"这份包能不能跑、接哪个宿主、是不是一份数据快照"；
+  - 读 `manifest.data`（`source` / `snapshot_at` / `privacy` / `license` / `payload` / `docs_count`）
+    判断"这份数据能不能用在我这里"；
+  - 要完整四问与逐份明细，让用户跑 `ncc hur profile <包或引用>`；要取用数据快照，
+    让用户跑 `ncc hur data import --package <目录> --apply`（**默认只出计划**，这一步会改数据）。
+  - ⚠️ 别把"有 profile/有签名"说成"可信/安全"：profile 只说明**它是什么**，两者都不是安全背书。
 - **认领来源**：引用别人的制品时写清 `@命名空间/slug@版本`，便于回溯。
 - 检索、取回、人才目录、服务匹配、公开配置都**不需要登录**；发布、看自己的配置、分享需要凭据
   （`ncc login` 或 API-Key）。

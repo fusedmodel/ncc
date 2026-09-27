@@ -1,8 +1,12 @@
 //! 发布到 registry 的请求体构造（CLI 与桌面端 GUI 共用，避免两处漂移）。
 //!
 //! 约定：
-//! - 包内 `kind` → registry `kind`：`agent` → `hur`（Harness Use 制品）、`harness` → `harness`、`repo` → `hur`；可用 `--kind` 覆盖。
-//! - `manifest` 里放**完整 hur.json**；`kind=harness` 时额外附 `harness.loader/entry`（registry 对该 kind 有契约校验）。
+//! - 目录 `kind` 来自 **profile 的规范映射**（`profile::registry_kinds`）：
+//!   `agent` → `hur`、`harness` → `harness`、`plugin` → `plugin`、`mcp` → `mcp`、
+//!   `skill` → `skill`、`scaffold`（含老的 `kind=repo`）→ `scaffold`；数据快照
+//!   （`kb-seed` / `mem-seed` / `ckpt-set` / `trace-set`）→ `hur`。可用 `--kind` 覆盖。
+//! - `manifest` 里放**完整 hur.json**（含 `profile`）；`kind=harness` 时额外附
+//!   `harness.loader/entry`（registry 对该 kind 有契约校验）。
 //! - `storage` 由调用方在上传完成后填（`{url, sha256, size}`）。
 
 use serde_json::{json, Value};
@@ -11,9 +15,19 @@ use crate::spec::{HurPackage, PKG_SPEC};
 use crate::tpl::slug;
 
 /// 包内 kind → registry kind（`override_kind` 非空时优先）
+///
+/// 优先级：显式 `--kind` > **profile 的规范映射** > 包内 kind 的兼容映射。
+/// 中间那一层是后加的：profile 才是"这份包是什么"，包内 kind（agent/harness/repo）
+/// 只决定 id 前缀与模板；让目录跟着包内 kind 走，会把"一份 MCP 声明"记成 hur（过去就是这样）。
 pub fn registry_kind(pkg: &HurPackage, override_kind: &str) -> String {
     if !override_kind.trim().is_empty() {
         return override_kind.trim().to_string();
+    }
+    let from_profile = crate::profile::registry_kinds(pkg.profile_name());
+    if let Some(first) = from_profile.first() {
+        // 不需要显式 profile 的包（老包）也走同一份映射：profile 由 kind 推导而来，
+        // 所以结果与历史行为一致（agent→hur / harness→harness / repo→hur）。
+        return (*first).to_string();
     }
     match pkg.kind.as_str() {
         "harness" => "harness".to_string(),
@@ -84,6 +98,7 @@ mod tests {
     fn pkg(kind: &str, name: &str) -> HurPackage {
         build_package(&InitInput {
             kind: kind.into(),
+            profile: None,
             role: String::new(),
             name: name.into(),
             domain: "hotel".into(),
@@ -108,6 +123,25 @@ mod tests {
         assert_eq!(hb["kind"], "harness");
         assert_eq!(hb["manifest"]["harness"]["loader"], PKG_SPEC);
         assert_eq!(hb["manifest"]["harness"]["entry"], h.entry);
+    }
+
+    /// 映射表是**规范的一部分**：profile 决定目录记成什么 kind。
+    #[test]
+    fn profile_decides_the_registry_kind() {
+        let mut p = pkg("agent", "Cursor Notes");
+        // 没写 profile：按 kind 推导 —— 与历史行为一致（agent→hur / harness→harness）
+        assert_eq!(registry_kind(&p, ""), "hur");
+        assert_eq!(registry_kind(&pkg("harness", "X"), ""), "harness");
+        // repo（脚手架）以前被记成 hur，现在如实记成 scaffold —— 模板不是能跑的包
+        assert_eq!(registry_kind(&pkg("repo", "X"), ""), "scaffold");
+        // 写了 profile 就跟着 profile 走（这才是"这份包是什么"）
+        for (prof, want) in [("plugin", "plugin"), ("mcp", "mcp"), ("skill", "skill"), ("kb-seed", "hur")] {
+            p.profile = Some(prof.into());
+            assert_eq!(registry_kind(&p, ""), want, "profile={prof}");
+        }
+        // 未知 profile 不乱认：退回 harness（`profile::of` 的兜底）
+        p.profile = Some("bogus".into());
+        assert_eq!(registry_kind(&p, ""), "harness");
     }
 
     #[test]
