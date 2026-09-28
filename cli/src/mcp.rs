@@ -327,7 +327,7 @@ fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "ncc_find_people",
-            "description": "按角色 / 技能 / 关键词检索人才目录，找到定位匹配的人（回答「谁做过这类事」）。",
+            "description": "按角色 / 技能 / 关键词检索人才目录，找到定位匹配的人（回答「谁做过这类事」）。也看得到粉丝数与评分（`ncc profile rate` 给人打分的结果）。",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -335,6 +335,7 @@ fn tools() -> Vec<Value> {
                     "skill": { "type": "string", "description": "技能标签，如 RAG" },
                     "query": { "type": "string", "description": "关键词（匹配名字/头衔/技能）" },
                     "availability": { "type": "string", "description": "接洽状态：open|collab|hiring|busy" },
+                    "following": { "type": "boolean", "description": "true = 只看我关注的人（需登录）" },
                     "limit": { "type": "integer", "description": "返回条数，默认 20，最大 50" }
                 },
                 "additionalProperties": false
@@ -1255,6 +1256,7 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
     let narg = |k: &str, d: i64, max: i64| -> i64 {
         args.get(k).and_then(|v| v.as_i64()).unwrap_or(d).clamp(1, max)
     };
+    let barg = |k: &str| -> bool { args.get(k).and_then(|v| v.as_bool()).unwrap_or(false) };
     let token = config::token_opt(cfg);
 
     // 工具级失败按 MCP 约定回 isError=true，而不是 JSON-RPC error
@@ -1498,6 +1500,10 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                 qs.push(format!("availability={}", urlenc(&a)));
             }
             qs.push(format!("size={}", narg("limit", 20, 50)));
+            // 只看我关注的人（服务端需要登录；没登录时它会如实 401，这里直接透传那句话）
+            if barg("following") {
+                qs.push("following=1".into());
+            }
             let d = api::get(cfg, &format!("/api/profiles?{}", qs.join("&")), token.as_deref())?;
             let total = d.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
             let ps = d.get("profiles").and_then(|v| v.as_array()).cloned().unwrap_or_default();

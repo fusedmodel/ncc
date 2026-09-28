@@ -476,6 +476,30 @@ enum ProfileCmd {
     /// 作品集：list | add | rm
     #[command(subcommand)]
     Work(profile::WorkCmd),
+    /// 关注一个人（--note 是只给自己看的备注；关注**不放行任何数据**）
+    Follow {
+        username: String,
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// 取消关注（幂等）
+    Unfollow { username: String },
+    /// 谁关注了 TA（缺省看自己）
+    Followers { username: Option<String> },
+    /// TA 关注了谁（缺省看自己，那时会带出你自己写的备注）
+    Following { username: Option<String> },
+    /// 给名片打分（1~5 星 + 可选一句评语；一人一条，再打是**改分**）
+    Rate {
+        username: String,
+        #[arg(long)]
+        score: i64,
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// 撤销自己给出的评价（幂等）
+    Unrate { username: String },
+    /// TA 收到的评价（缺省看自己）
+    Ratings { username: Option<String> },
 }
 
 /// `ncc registry` 子命令。
@@ -972,6 +996,13 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Some(ProfileCmd::Set(a)) => profile::set(cfg, a),
             Some(ProfileCmd::Username { name }) => profile::set_username(cfg, name),
             Some(ProfileCmd::Work(cmd)) => profile::work(cfg, cmd),
+            Some(ProfileCmd::Follow { username, note }) => profile::follow(cfg, username, note),
+            Some(ProfileCmd::Unfollow { username }) => profile::unfollow(cfg, username),
+            Some(ProfileCmd::Followers { username }) => profile::follow_list(cfg, username.as_deref(), false),
+            Some(ProfileCmd::Following { username }) => profile::follow_list(cfg, username.as_deref(), true),
+            Some(ProfileCmd::Rate { username, score, note }) => profile::rate(cfg, username, *score, note),
+            Some(ProfileCmd::Unrate { username }) => profile::unrate(cfg, username),
+            Some(ProfileCmd::Ratings { username }) => profile::ratings(cfg, username.as_deref()),
         },
         Cmd::Nodes(n) => match &n.action {
             None => nodes::list(cfg, &nodes::ListArgs { kind: None, q: None, can: Vec::new() }),
@@ -1449,6 +1480,7 @@ fn cmd_key(cfg: &CliConfig, k: &KeyCmd) -> anyhow::Result<()> {
                 ("registry:publish", "发布/修改/删除条目（含上传字节）"),
                 ("profile:read", "读名片"),
                 ("profile:write", "改自己的名片"),
+                ("social:write", "关注 / 取关他人、给名片打分（不放行任何数据）"),
                 ("nodes:read", "读我的节点与可连接节点（含区域聚合与推荐）"),
                 ("nodes:write", "连 / 断节点、改 Name 标签、上报节点心跳"),
                 ("grants:read", "查看授权关系"),

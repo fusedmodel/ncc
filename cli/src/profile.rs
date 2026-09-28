@@ -133,7 +133,7 @@ fn availability_label(v: &str) -> &str {
 pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
     let catalog = api::get(cfg, "/api/profile/roles", None).unwrap_or(Value::Null);
 
-    let (p, works, items, shares) = match target {
+    let (p, works, items, shares, social) = match target {
         Some(name) => {
             let name = name.trim_start_matches('@');
             let d = api::get(cfg, &format!("/api/profiles/{}", name), config::token_opt(cfg).as_deref())?;
@@ -143,6 +143,7 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
                 d.get("works").cloned().unwrap_or(json!([])),
                 d.get("items").cloned().unwrap_or(json!([])),
                 d.get("shares").cloned().unwrap_or(json!([])),
+                d.get("social").cloned().unwrap_or(Value::Null),
             )
         }
         None => {
@@ -158,6 +159,7 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
                 d.get("works").cloned().unwrap_or(json!([])),
                 json!([]),
                 json!([]),
+                d.get("social").cloned().unwrap_or(Value::Null),
             )
         }
     };
@@ -205,6 +207,42 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
     }
     if !s("bio").is_empty() {
         println!("简介 {}", s("bio"));
+    }
+
+    // 关注与评价：名片上的两个社会化数字（没数据时**不占屏**）。
+    let cnt = |k: &str| social.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
+    let followers = cnt("followers");
+    let following = cnt("following");
+    let rcount = social.pointer("/rating/count").and_then(|v| v.as_i64()).unwrap_or(0);
+    let ravg = social.pointer("/rating/avg").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let mine = social.pointer("/viewer/score").and_then(|v| v.as_i64()).unwrap_or(0);
+    let i_follow = social.pointer("/viewer/following").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_self = social.pointer("/viewer/isSelf").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mut line: Vec<String> = Vec::new();
+    if followers > 0 || following > 0 {
+        line.push(format!("{followers} 粉丝 · 关注 {following}"));
+    }
+    if rcount > 0 {
+        line.push(format!("评价 {ravg:.1} 分（{rcount} 人）"));
+    }
+    if !line.is_empty() {
+        println!("{}", line.join(" · "));
+    }
+    if is_self && !target.is_none() {
+        println!("这是你自己的名片");
+    }
+    if !is_self {
+        // 把「能不能动」写清楚：能关注就提示能关注，打过分别忘了能改
+        if i_follow {
+            println!("已关注（`ncc profile unfollow {username}` 取消；关注**不放行**任何数据）");
+        } else if !username.is_empty() && !social.is_null() {
+            println!("用 `ncc profile follow {username}` 关注（单向，且不放行任何数据）");
+        }
+        if mine > 0 {
+            println!("你给 TA 打了 {}（`ncc profile rate {username} --score N` 改分）", stars(mine));
+        } else if !username.is_empty() && !social.is_null() {
+            println!("用 `ncc profile rate {username} --score 1..5 [--note \"…\"]` 打分（一人一条，再打是改分）");
+        }
     }
 
     if let Some(ws) = works.as_array() {
@@ -447,4 +485,196 @@ pub fn work(cfg: &CliConfig, cmd: &WorkCmd) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/* ---------------- 关注（Follow） ---------------- */
+
+/// `ncc profile follow <username> [--note "…"]`
+///
+/// 关注是**单向**的，而且**不放行任何数据** —— 关注了也拿不到对方的私有制品
+/// （那要 `ncc grant`）。重复关注是幂等的；`--note` 是写给**你自己**看的备注，
+/// 别人看你的关注列表时看不到它。
+pub fn follow(cfg: &CliConfig, username: &str, note: &str) -> Result<()> {
+    let token = config::require_token(cfg)?;
+    let u = username.trim().trim_start_matches('@');
+    let body = json!({ "note": note.trim() });
+    let d = api::post_json(cfg, &format!("/api/profiles/{u}/follow"), Some(&token), &body)?;
+    let followers = d.get("followers").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mine = d.get("myFollowing").and_then(|v| v.as_i64()).unwrap_or(0);
+    println!("✅ 已关注 @{u}（TA 有 {followers} 个粉丝 · 你关注了 {mine} 个人）");
+    if !note.trim().is_empty() {
+        println!("   备注只给你自己看：{}", note.trim());
+    }
+    Ok(())
+}
+
+/// `ncc profile unfollow <username>` —— 幂等（没关注过也不报错）。
+pub fn unfollow(cfg: &CliConfig, username: &str) -> Result<()> {
+    let token = config::require_token(cfg)?;
+    let u = username.trim().trim_start_matches('@');
+    let d = api::del(cfg, &format!("/api/profiles/{u}/follow"), Some(&token))?;
+    let removed = d.get("removed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mine = d.get("myFollowing").and_then(|v| v.as_i64()).unwrap_or(0);
+    if removed {
+        println!("✅ 已取消关注 @{u}（你现在关注 {mine} 个人）");
+    } else {
+        println!("本来就没关注 @{u}（你关注 {mine} 个人）");
+    }
+    Ok(())
+}
+
+/// 关注列表 / 粉丝列表的共用实现。
+///
+/// `username` 为空 + `mine` → 我关注的人（含备注）；为空 + 非 mine → 关注我的人
+/// （先问自己的 handle 再查）。
+pub fn follow_list(cfg: &CliConfig, username: Option<&str>, mine: bool) -> Result<()> {
+    let token = config::token_opt(cfg);
+    let path = match username {
+        Some(u) => {
+            let u = u.trim().trim_start_matches('@');
+            format!("/api/profiles/{u}/{}", if mine { "following" } else { "followers" })
+        }
+        None if mine => "/api/profile/me/following".to_string(),
+        None => {
+            // 自己的粉丝：先拿 handle（没名片也能拿 —— handle 来自个人命名空间）
+            let t = config::require_token(cfg)?;
+            let me = api::get(cfg, "/api/profile/me", Some(&t))?;
+            let u = me
+                .get("username")
+                .and_then(|v| v.as_str())
+                .or_else(|| me.pointer("/profile/username").and_then(|v| v.as_str()))
+                .unwrap_or("");
+            if u.is_empty() {
+                bail!("拿不到你的用户名：先 `ncc login`，或用一个已经建过名片的账号");
+            }
+            format!("/api/profiles/{u}/followers")
+        }
+    };
+    let d = api::get(cfg, &path, token.as_deref())?;
+    let key = if mine { "following" } else { "followers" };
+    let rows = d.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let total = d.get("total").and_then(|v| v.as_i64()).unwrap_or(rows.len() as i64);
+    if rows.is_empty() {
+        println!(
+            "{}",
+            if mine { "还没有关注任何人。用 `ncc profile follow <用户名>` 关注。" } else { "还没有粉丝。" }
+        );
+        return Ok(());
+    }
+    println!("共 {total} 个：");
+    for r in &rows {
+        let handle = r.get("handle").and_then(|v| v.as_str()).unwrap_or("");
+        let name = r.get("displayName").and_then(|v| v.as_str()).filter(|s| !s.is_empty())
+            .or_else(|| r.get("name").and_then(|v| v.as_str()))
+            .unwrap_or("");
+        let headline = r.get("headline").and_then(|v| v.as_str()).unwrap_or("");
+        let followers = r.get("followers").and_then(|v| v.as_i64()).unwrap_or(0);
+        let rating = r.pointer("/rating/count").and_then(|v| v.as_i64()).unwrap_or(0);
+        let avg = r.pointer("/rating/avg").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let note = r.get("note").and_then(|v| v.as_str()).unwrap_or("");
+        let mut meta = vec![format!("{followers} 粉丝")];
+        if rating > 0 {
+            meta.push(format!("{avg:.1} 分（{rating}）"));
+        }
+        let head = if headline.is_empty() { String::new() } else { format!(" · {headline}") };
+        println!("  {handle}  {name}{head}   [{}]", meta.join(" · "));
+        if !note.is_empty() {
+            println!("      备注 {note}");
+        }
+    }
+    Ok(())
+}
+
+/* ---------------- 评价（Rating） ---------------- */
+
+/// 1~5 星的展示（CLI 用，别让用户自己数）。
+fn stars(score: i64) -> String {
+    let n = score.clamp(0, 5) as usize;
+    format!("{}{}", "★".repeat(n), "☆".repeat(5 - n))
+}
+
+/// `ncc profile rate <username> --score 1..5 [--note "…"]`
+///
+/// **一人一条**：再打一次是改分，不是加一票（否则同一个人能自己把均分刷上去）。
+/// 不能给自己打分；分数必须是 1~5。
+pub fn rate(cfg: &CliConfig, username: &str, score: i64, note: &str) -> Result<()> {
+    if !(1..=5).contains(&score) {
+        bail!("--score 只能是 1~5（1 差 / 2 一般 / 3 可用 / 4 好 / 5 很好）");
+    }
+    let token = config::require_token(cfg)?;
+    let u = username.trim().trim_start_matches('@');
+    let body = json!({ "score": score, "note": note.trim() });
+    let d = api::put_json(cfg, &format!("/api/profiles/{u}/rating"), Some(&token), &body)?;
+    let created = d.get("created").and_then(|v| v.as_bool()).unwrap_or(false);
+    let avg = d.pointer("/summary/avg").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let count = d.pointer("/summary/count").and_then(|v| v.as_i64()).unwrap_or(0);
+    println!(
+        "✅ {} @{u} {}（现在 {avg:.1} 分 · {count} 人评过）",
+        if created { "已给" } else { "已改评" },
+        stars(score)
+    );
+    if !note.trim().is_empty() {
+        println!("   评语（公开可见）：{}", note.trim());
+    }
+    Ok(())
+}
+
+/// `ncc profile unrate <username>` —— 撤销自己给出的评价（幂等）。
+pub fn unrate(cfg: &CliConfig, username: &str) -> Result<()> {
+    let token = config::require_token(cfg)?;
+    let u = username.trim().trim_start_matches('@');
+    let d = api::del(cfg, &format!("/api/profiles/{u}/rating"), Some(&token))?;
+    let removed = d.get("removed").and_then(|v| v.as_bool()).unwrap_or(false);
+    let count = d.pointer("/summary/count").and_then(|v| v.as_i64()).unwrap_or(0);
+    if removed {
+        println!("✅ 已撤销对 @{u} 的评价（现在 {count} 人评过）");
+    } else {
+        println!("你本来就没给 @{u} 打过分");
+    }
+    Ok(())
+}
+
+/// `ncc profile ratings [<username>]` —— TA（缺省自己）收到的评价。
+pub fn ratings(cfg: &CliConfig, username: Option<&str>) -> Result<()> {
+    let token = config::token_opt(cfg);
+    let u = match username {
+        Some(u) => u.trim().trim_start_matches('@').to_string(),
+        None => {
+            let t = config::require_token(cfg)?;
+            let me = api::get(cfg, "/api/profile/me", Some(&t))?;
+            me.get("username")
+                .and_then(|v| v.as_str())
+                .or_else(|| me.pointer("/profile/username").and_then(|v| v.as_str()))
+                .unwrap_or("")
+                .to_string()
+        }
+    };
+    if u.is_empty() {
+        bail!("拿不到用户名：先 `ncc login`，或显式给一个用户名");
+    }
+    let d = api::get(cfg, &format!("/api/profiles/{u}/ratings"), token.as_deref())?;
+    let rows = d.get("ratings").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let avg = d.pointer("/summary/avg").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let count = d.pointer("/summary/count").and_then(|v| v.as_i64()).unwrap_or(0);
+    let mine = d.get("mine").and_then(|v| v.as_i64()).unwrap_or(0);
+    if count == 0 {
+        println!("@{u} 还没有收到评价。");
+        return Ok(());
+    }
+    println!("@{u} 的评价：{avg:.1} 分 · {count} 人");
+    for r in &rows {
+        let handle = r.get("handle").and_then(|v| v.as_str()).unwrap_or("");
+        let score = r.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
+        let note = r.get("note").and_then(|v| v.as_str()).unwrap_or("");
+        let at = r.get("updatedAt").and_then(|v| v.as_str()).unwrap_or("");
+        let day = at.split('T').next().unwrap_or("");
+        println!("  {} {handle}  {day}", stars(score));
+        if !note.is_empty() {
+            println!("      {note}");
+        }
+    }
+    if mine > 0 {
+        println!("（你给 TA 打了 {} —— 再打一次是**改分**，不是加一票）", stars(mine));
+    }
+    Ok(())
 }

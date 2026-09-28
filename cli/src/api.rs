@@ -132,6 +132,11 @@ pub fn post_json(cfg: &CliConfig, path: &str, token: Option<&str>, body: &Value)
     request(cfg, "POST", path, token, Some(body), None, &[])
 }
 
+/// PUT：**覆盖**语义的写入（如「一人一条」的评价 —— 重复提交是改分，不是新增）。
+pub fn put_json(cfg: &CliConfig, path: &str, token: Option<&str>, body: &Value) -> anyhow::Result<Value> {
+    request(cfg, "PUT", path, token, Some(body), None, &[])
+}
+
 /// 取原始字节**并带上响应头**。
 ///
 /// 导出数据集要它：数据集摘要（`X-NCC-Dataset-Digest`）与条数在响应头里 ——
