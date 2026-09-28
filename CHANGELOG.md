@@ -12,7 +12,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 「怎么用」看 `README.zh-CN.md` 与各组件 README；**本文件只回答「这一版比上一版多了什么」**。
 
-## [未发布]
+## [0.2.0] — 2026-09-28
 
 ### 变更 · `ncc store list --q` 从子串改为**关键词匹配 + 加权排序**
 
