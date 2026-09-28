@@ -4,8 +4,8 @@
 //! 签名的价值在于**别人也能独立核对**。用 Minisign（ed25519）格式，第三方不必装 hur：
 //!
 //! ```text
-//! minisign -V -p hur.pub -m dist/A-xxx-0.1.0.hur      # 官方 CLI
-//! rsign2 -V -p hur.pub -m dist/A-xxx-0.1.0.hur        # 纯 Rust 实现
+//! minisign -V -p hur.pub -m dist/A-xxx-0.1.0.hur.gz      # 官方 CLI
+//! rsign2 -V -p hur.pub -m dist/A-xxx-0.1.0.hur.gz        # 纯 Rust 实现
 //! ```
 //!
 //! 我们自己也不解释密码学：`minisign` crate 负责 ed25519 / 预哈希 / 口令加密，
@@ -20,7 +20,7 @@
 //!
 //! ## 签什么
 //! **永远签"规范打包字节"**（`pack::archive_bytes`）。于是目录与产物两条路都能核：
-//! - 产物：直接核 `dist/<id>-<version>.hur` 的字节；
+//! - 产物：直接核 `dist/<id>-<version>.<profile>.hur.gz` 的字节；
 //! - 工程目录：把目录重算成同样的规范字节再核（不落盘、无副作用）。
 //!
 //! 签名覆盖 `hur.lock`，所以锁没定下来就拒绝签/核（避免"签了一份自己都不确定的字节"）。
@@ -325,7 +325,7 @@ impl Store {
         self.report(&artifact, None, required, pub_override, "工程目录")
     }
 
-    /// 核一个 `.hur` 产物文件
+    /// 核一个 `.hur` / `.hur.gz` 产物文件
     pub fn check_archive(&self, archive: &Path, required: bool, pub_override: Option<&Path>) -> SigReport {
         let sig = find_sig(archive);
         self.report(archive, sig, required, pub_override, "产物")
@@ -684,7 +684,7 @@ mod tests {
         dir
     }
 
-    /// 按规范把产物落到 `dir/dist/<id>-<version>.hur`（`check_dir` 找的就是这里）
+    /// 按规范把产物落到 `dir/dist/<id>-<version>.<profile>.hur.gz`（`check_dir` 找的就是这里）
     fn pack_into_dist(dir: &Path, p: &HurPackage) -> (PathBuf, String) {
         let (bytes, name) = crate::pack::archive_bytes(dir, false).unwrap();
         let dist = dir.join(crate::spec::DIST);

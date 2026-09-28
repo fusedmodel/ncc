@@ -95,7 +95,7 @@ pub fn sign(cfg: &CliConfig, a: &SignArgs) -> Result<()> {
     let attach = a.attach.trim().to_string();
 
     // ① 包 → 转交 hur 那条链路（它签的是规范打包字节，语义不同，别硬凑）
-    if p.is_dir() || p.extension().and_then(|e| e.to_str()) == Some("hur") {
+    if p.is_dir() || spec::is_archive_path(&p) {
         if !attach.is_empty() {
             bail!(
                 "包（目录 / .hur）请用 `ncc hur attach --ref {attach}`：包的加签要连包身份、版本与 hur.lock 一起核对，两套语义别混"

@@ -370,8 +370,8 @@ ncc sign SKILL.md --kind skill --attach @me/release-notes
 
 Three things this deliberately does **not** do:
 
-* **A package is not one file.** Point `ncc sign` at a HUR package directory (or a `.hur`
-  artifact) and it hands over to `ncc hur sign`, which signs the canonical packed bytes
+* **A package is not one file.** Point `ncc sign` at a HUR package directory (or a `.hur` /
+  `.hur.gz` artifact) and it hands over to `ncc hur sign`, which signs the canonical packed bytes
   together with the package identity, version and `hur.lock`. Two shapes, one implementation each.
 * **An unknown key is not "verified".** `ncc verify` reports `⚠️ has a signature, but this
   machine does not know the key` and exits non-zero for `--require-signature`.
@@ -629,10 +629,17 @@ ncc hur match --profile plugin --host cursor
 `permissions.network` — a knowledge-base snapshot must not run code or reach the network on its own
 (new rule R12; legacy packages without a profile are unaffected).
 
-The artifact file name carries the same segment: `dist/…-0.1.0.kb-seed.hur`, `…-0.1.0.plugin.hur` —
-so a `dist/` full of `.hur` files is scannable at a glance. **The name is a hint, the manifest is the
+The artifact file name carries the same segment: `dist/…-0.1.0.kb-seed.hur.gz`, `…-0.1.0.plugin.hur.gz` —
+so a `dist/` full of artifacts is scannable at a glance. **The name is a hint, the manifest is the
 authority**: renaming a file does not change what it is (it only adds a warning), and a name we do not
 recognise is never treated as a mistake.
+
+**`hur` is only a spec; the file itself ends with the archive format**: `.hur` answers “this is a HUR
+artifact”, the trailing `.gz` answers “this is a gzip container” — `file x.hur.gz` reports gzip, and
+`gunzip -c x.hur.gz > x.zip` yields a plain zip anyone can list. The outer layer does the compressing,
+the inner one only carries structure and traversal-safe unpacking, and **identical content still
+produces an identical sha256**. Packages built before the switch (`.hur`, bare zip) keep verifying and
+installing. The suffix follows the container format — swapping containers changes one constant.
 
 All four data kinds (`kb` / `mem` / `ckpt` / `trace`) export as immutable **snapshot packages** that can
 be poured back into any node:

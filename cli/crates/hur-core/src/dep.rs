@@ -64,7 +64,7 @@ impl DepStatus {
 pub struct DepItem {
     /// 依赖分组：harness / agent / skill / kb / mcp
     pub kind: String,
-    /// 声明里的原始引用（`./x` / `@ns/slug` / `x.hur`）
+    /// 声明里的原始引用（`./x` / `@ns/slug` / `x.hur.gz`）
     pub reference: String,
     /// local-file | local-dir | registry
     pub source: String,

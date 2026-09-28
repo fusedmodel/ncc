@@ -751,7 +751,7 @@ pub(crate) fn write_seed(
             "{}",
             serde_json::to_string_pretty(&json!({
                 "dir": out, "package": pkg, "docs": n,
-                "next": format!("ncc hur verify {dir} → ncc hur sign {dir} → ncc hur publish --file {dir}/dist/*.hur"),
+                "next": format!("ncc hur verify {dir} → ncc hur sign {dir} → ncc hur publish --file {dir}/dist/*.hur.gz"),
             }))?
         );
         return Ok(());

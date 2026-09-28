@@ -29,7 +29,7 @@ use crate::mcp;
 
 #[derive(Subcommand)]
 pub enum HurCmd {
-    /// 校验包目录或 .hur 产物（R1~R11，全程离线；R9 = 制品签名）
+    /// 校验包目录或 `.hur` / `.hur.gz` 产物（R1~R11，全程离线；R9 = 制品签名）
     Verify(HurVerifyArgs),
     /// 读包：清单 / 依赖 / 权限面 / 安全策略 / 签名状态
     Inspect {
@@ -50,7 +50,7 @@ pub enum HurCmd {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// 产包：dist/<id>-<version>.hur + .sha256（确定性字节）
+    /// 产包：dist/<id>-<version>.<profile>.hur.gz + .sha256（**gzip 容器** · 确定性字节）
     Pack {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -101,7 +101,7 @@ pub enum HurCmd {
     Env(HurEnvArgs),
     /// 执行留痕与投递任务：ncc hur task ls | inspect（谁在什么限额下跑了什么）
     Task(HurTaskArgs),
-    /// 导出**可分发产物**：.hur + .minisig + .sha256 + export.json（离线；先自己校验）
+    /// 导出**可分发产物**：`.hur.gz` + `.minisig` + `.sha256` + `export.json`（离线；先自己校验）
     Export(HurExportArgs),
     /// 信任一个**已发布条目**的签名公钥（先下载产物与签名核对通过，才进信任表）
     Trust(HurTrustArgs),
@@ -113,7 +113,7 @@ pub enum HurCmd {
         #[arg(long)]
         list_tools: bool,
     },
-    /// 安装包：`@ns/slug`（远端）或本地 `.hur` → `~/.ncc/packages/<id>/`
+    /// 安装包：`@ns/slug`（远端）或本地 `.hur` / `.hur.gz` → `~/.ncc/packages/<id>/`
     Install(HurInstallArgs),
     /// 把**工程目录**写进包落点并登记（桌面端「写入本机」用；不产包）
     Write {
@@ -247,7 +247,7 @@ pub enum HurTaskCmd {
 
 #[derive(Args, Clone)]
 pub struct HurInstallArgs {
-    /// `@命名空间/slug[@版本]`、条目 id，或本地 `.hur` 文件路径
+    /// `@命名空间/slug[@版本]`、条目 id，或本地 `.hur` / `.hur.gz` 文件路径
     pub reference: String,
     /// 期望的 sha256（远端不给则用条目登记的；本地文件可不给）
     #[arg(long, default_value = "")]
@@ -433,7 +433,7 @@ pub struct HurPolicySetArgs {
 
 #[derive(Args, Clone)]
 pub struct HurVerifyArgs {
-    /// 包目录，或 .hur 产物
+    /// 包目录，或 `.hur` / `.hur.gz` 产物
     #[arg(default_value = ".")]
     pub path: PathBuf,
     /// 要求产物带**可核对**签名（不给则跟随生效策略的 verify.require_signature）
@@ -451,7 +451,7 @@ pub struct HurVerifyArgs {
 
 #[derive(Args, Clone)]
 pub struct HurSignArgs {
-    /// 包目录（会先按规范打包）或现成的 .hur 产物
+    /// 包目录（会先按规范打包）或现成的 `.hur` / `.hur.gz` 产物
     #[arg(default_value = ".")]
     pub path: PathBuf,
     /// 私钥文件（默认 ~/.harnessuse/keys/hur.key）
@@ -493,7 +493,7 @@ pub struct HurDataImportArgs {
 
 #[derive(Args, Clone)]
 pub struct HurProfileArgs {
-    /// 包目录、`.hur` 产物，或已发布条目的引用（`@命名空间/slug`）
+    /// 包目录、`.hur` / `.hur.gz` 产物，或已发布条目的引用（`@命名空间/slug`）
     #[arg(default_value = ".")]
     pub path: String,
     /// 列出规范里的全部 profile 就退出（不需要 path）
@@ -744,11 +744,15 @@ fn print_issues(issues: &[spec::Issue]) -> (usize, usize) {
 }
 
 fn verify(a: HurVerifyArgs) -> Result<()> {
-    let is_archive = a.path.extension().and_then(|e| e.to_str()) == Some("hur");
+    // 产物 = 文件（`.hur` / `.hur.gz`），工程 = 目录 —— 判据只该有一份（`spec::is_archive_path`）
+    let is_archive = spec::is_archive_path(&a.path);
     let mut issues: Vec<spec::Issue> = Vec::new();
     let mut ctx = json!({});
     let dir: PathBuf;
     let mut tmp: Option<PathBuf> = None;
+    // 输入是 `.hur` 产物时留一份原路径：R9 要核的是**手里这份字节**（`.minisig` 就躺在它旁边），
+    // 不能拿解包出来的临时目录去核 —— 签名的覆盖面是打包字节，不是散开的文件。
+    let mut archive: Option<PathBuf> = None;
 
     if is_archive {
         let file = std::fs::canonicalize(&a.path).unwrap_or_else(|_| a.path.clone());
@@ -763,6 +767,7 @@ fn verify(a: HurVerifyArgs) -> Result<()> {
         let (files, id, version) = pack::unpack(&file, &t)?;
         dir = t.clone();
         tmp = Some(t);
+        archive = Some(file.clone());
         let pkg = spec::read_pkg(&dir)?;
         issues.extend(spec::validate(&pkg, &dir, spec::read_lock(&dir).as_ref(), false));
         // 文件名里那段 profile 与清单对不上？**只提醒**：文件会被下载、改名、塞进压缩包、
@@ -783,7 +788,10 @@ fn verify(a: HurVerifyArgs) -> Result<()> {
     let pol = policy::resolve(&dir, Some(&pkg))?.policy;
     let required = a.require_signature || policy::effective(&pol).require_signature;
     let pub_override = if a.pub_key.trim().is_empty() { None } else { Some(PathBuf::from(a.pub_key.trim())) };
-    let rep = sign::store().check_dir(&dir, &pkg, required, pub_override.as_deref());
+    let rep = match &archive {
+        Some(file) => sign::store().check_archive(file, required, pub_override.as_deref()),
+        None => sign::store().check_dir(&dir, &pkg, required, pub_override.as_deref()),
+    };
     if let Some(i) = &rep.info {
         ctx["signature"] = json!({
             "verified": true, "keynum": i.keynum, "signer": i.signer, "trusted": i.trusted,
@@ -911,6 +919,7 @@ fn pack_cmd(path: &Path, json_out: bool) -> Result<()> {
             }
             println!("已打包 {}（{} 字节）", out.file.display(), out.bytes);
             println!("  sha256    {}", out.sha256);
+            println!("  容器      gzip 包住的 zip（`gunzip -c x.hur.gz > x.zip` 后仍是标准 zip，包内清单能直接看）");
             println!("  登记已刷新  ");
             return Ok(());
         }
@@ -920,6 +929,7 @@ fn pack_cmd(path: &Path, json_out: bool) -> Result<()> {
     } else {
         println!("已打包 {}（{} 字节）", out.file.display(), out.bytes);
         println!("  sha256    {}", out.sha256);
+        println!("  容器      gzip 包住的 zip（`gunzip -c x.hur.gz > x.zip` 后仍是标准 zip，包内清单能直接看）");
     }
     Ok(())
 }
@@ -930,7 +940,7 @@ fn pack_cmd(path: &Path, json_out: bool) -> Result<()> {
 /// 加签只能是**同一套实现**，否则两边会慢慢长歪。
 pub(crate) fn sign_cmd(a: HurSignArgs) -> Result<()> {
     let s = sign::store();
-    let is_archive = a.path.extension().and_then(|e| e.to_str()) == Some("hur");
+    let is_archive = spec::is_archive_path(&a.path);
     let (artifact, pkg) = if is_archive {
         let file = std::fs::canonicalize(&a.path).unwrap_or_else(|_| a.path.clone());
         let t = std::env::temp_dir().join(format!("ncc-hur-sign-{}", std::process::id()));

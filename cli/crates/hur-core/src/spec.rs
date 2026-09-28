@@ -128,27 +128,63 @@ impl HurPackage {
     }
 }
 
-/// 产物文件名：`<id>-<version>.<profile>.hur`。
+/// 产物文件名：`<id>-<version>.<profile>.hur.gz`。
 ///
-/// 为什么把 profile 放进**文件名**：一个 `dist/` 里可能躺着几十个 `.hur`，
+/// 为什么把 profile 放进**文件名**：一个 `dist/` 里可能躺着几十个包，
 /// "这是能跑的包、还是一份数据快照"应当一眼看得出来 —— 这不是安全问题
 /// （真正的身份在清单里，R12 按清单判），而是**别让人把一份轨迹数据当 app 发出去**。
 ///
-/// 两条约束保证这么做是安全的：
-/// 1. `.hur` 仍是**最后一个扩展名**，所以 `.minisig` / `.sha256` 侧车、
-///    `find_sig` / `sidecar_sha` / `unpack` 全部照旧（它们都是往完整路径后面追加）。
-/// 2. 名字**只是线索**：任何解析都必须读清单，不许解析文件名 ——
-///    `valid_id` 本来就允许 id 里带 `.`，靠点号切文件名迟早切错。
+/// 为什么末尾还跟一个容器后缀（用户口径：**hur 只是一种规范**，文件本身用通用压缩格式结尾）：
+/// `.hur` 回答"这是 HUR 规范产物"，`.gz` 回答"外面这层是什么容器" —— 于是
+/// `file`、双击、`gunzip`、编辑器、IM 预览都认得出它，不用先知道 hur 是什么。
+/// 侧车（`.minisig` / `.sha256`）继续往完整路径后面追加，所以不受影响。
+///
+/// ⚠️ 名字**只是线索**：任何解析都必须读清单，不许靠点号切文件名 ——
+/// `valid_id` 本来就允许 id 里带 `.`。
+///
+/// ⚠️ **换容器只改 [`ARTIFACT_CONTAINER_EXT`]**（gzip → 别的时连同 `pack.rs` 一起改）。
+pub const ARTIFACT_CONTAINER_EXT: &str = "gz";
+
+/// 产物名字里的规范段（`.hur`）：这是"HUR 规范产物"的标记，容器段跟在它后面。
+pub const ARTIFACT_SPEC_EXT: &str = "hur";
+
 pub fn artifact_name(pkg: &HurPackage) -> String {
-    format!("{}-{}.{}.hur", pkg.id, pkg.version, pkg.profile_name())
+    format!(
+        "{}-{}.{}.{}.{}",
+        pkg.id,
+        pkg.version,
+        pkg.profile_name(),
+        ARTIFACT_SPEC_EXT,
+        ARTIFACT_CONTAINER_EXT
+    )
+}
+
+/// 这个路径像不像**打包产物**（而不是工程目录）：`….hur` / `….hur.gz`。
+///
+/// 为什么按名字判而不是"是不是文件"：`ncc hur verify <产物>` 与 `<工程目录>` 是两条路，
+/// 判错的代价是拿一份 `SKILL.md` 去当包解（报一句莫名其妙的 zip 错）。
+/// 老包（加容器后缀之前打的 `.hur`）一律还算产物 —— 已发出去的字节不该因为改名失宠。
+pub fn is_archive_path(p: &Path) -> bool {
+    let name = p
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    name.ends_with(&format!(".{ARTIFACT_SPEC_EXT}"))
+        || name.ends_with(&format!(".{ARTIFACT_SPEC_EXT}.{ARTIFACT_CONTAINER_EXT}"))
 }
 
 /// 产物的候选文件名：**新名字在前，老名字兜底**。
 ///
-/// 为什么要兜底：`dist/` 里可能还躺着改命名之前打出来的 `.hur`（没有 profile 段）。
+/// 为什么要兜底：`dist/` 里可能还躺着两个时代的产物 —— 加容器后缀之前的
+/// `<id>-<version>.<profile>.hur`，以及连 profile 段都还没加的 `<id>-<version>.hur`。
 /// 因为"名字格式变了"就说"找不到产物"，那是在惩罚用户什么都没做错的事。
 pub fn artifact_candidates(pkg: &HurPackage) -> Vec<String> {
-    vec![artifact_name(pkg), format!("{}-{}.hur", pkg.id, pkg.version)]
+    vec![
+        artifact_name(pkg),
+        format!("{}-{}.{}.hur", pkg.id, pkg.version, pkg.profile_name()),
+        format!("{}-{}.hur", pkg.id, pkg.version),
+    ]
 }
 
 /// 在 `dir`（一般是 `dist/`）里找这个包的产物：先新名字，再老名字。
@@ -159,8 +195,9 @@ pub fn find_artifact(dir: &Path, pkg: &HurPackage) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// 从文件名里认出 profile 那一段（`demo.kb-seed.hur` → `kb-seed`）。
+/// 从文件名里认出 profile 那一段（`demo.kb-seed.hur.gz` → `kb-seed`）。
 ///
+/// 两个后缀都要先摘掉：容器段（`.gz`）与规范段（`.hur`）都不是 profile 段。
 /// 只认**规范里的 profile 名**：老名字（`H-demo-0.1.0.hur`，那一段是版本号）、
 /// 人手改的、或者别的工具生成的名字一律返回 `None` —— 认不出来就说"没有线索"，
 /// 不要说人家写错了。
@@ -169,7 +206,10 @@ pub fn name_profile_token(file: &str) -> Option<String> {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or(file);
-    let stem = base.strip_suffix(".hur").unwrap_or(base);
+    let stem = base
+        .strip_suffix(&format!(".{ARTIFACT_CONTAINER_EXT}"))
+        .unwrap_or(base);
+    let stem = stem.strip_suffix(&format!(".{ARTIFACT_SPEC_EXT}")).unwrap_or(stem);
     let token = stem.rsplit('.').next()?;
     crate::profile::get(token).map(|p| p.name.to_string())
 }
@@ -1829,15 +1869,29 @@ mod tests {
     #[test]
     fn artifact_name_carries_the_profile_and_never_breaks_the_sidecars() {
         let mut p = base("agent", "A-hotel-demo-abc123");
-        assert_eq!(artifact_name(&p), "A-hotel-demo-abc123-0.1.0.agent.hur");
+        assert_eq!(artifact_name(&p), "A-hotel-demo-abc123-0.1.0.agent.hur.gz");
         p.profile = Some("kb-seed".into());
-        assert_eq!(artifact_name(&p), "A-hotel-demo-abc123-0.1.0.kb-seed.hur");
-        // `.hur` 始终是**最后的扩展名** —— `.minisig` / `.sha256` 侧车与 unpack 都靠它
-        assert!(artifact_name(&p).ends_with(".hur"));
-        // 候选名：新名字在前，老名字兜底（改命名之前打的包还得能用）
+        assert_eq!(artifact_name(&p), "A-hotel-demo-abc123-0.1.0.kb-seed.hur.gz");
+        // `.hur` = 这是 HUR 规范产物；末尾的 `.gz` = 外面这层是 gzip 容器。
+        // 侧车（`.minisig` / `.sha256`）往完整路径后面追加，所以容器段换了也不受影响。
+        assert!(artifact_name(&p).ends_with(".hur.gz"));
+        // 候选名：新名字在前，两个老名字兜底（改命名之前打的包还得能用）
         let c = artifact_candidates(&p);
-        assert_eq!(c.len(), 2);
-        assert!(c[1].ends_with("0.1.0.hur") && !c[1].contains("kb-seed"), "{c:?}");
+        assert_eq!(c.len(), 3, "{c:?}");
+        assert_eq!(c[1], "A-hotel-demo-abc123-0.1.0.kb-seed.hur");
+        assert!(c[2].ends_with("0.1.0.hur") && !c[2].contains("kb-seed"), "{c:?}");
+    }
+
+    /// 产物 vs 工程目录按名字分路，两种产物名（最新 / 老）都得认。
+    #[test]
+    fn archive_paths_are_recognised_with_and_without_the_container_suffix() {
+        assert!(is_archive_path(Path::new("dist/x-0.1.0.skill.hur.gz")));
+        assert!(is_archive_path(Path::new("dist/x-0.1.0.skill.hur")));
+        assert!(is_archive_path(Path::new("/a/b/X-0.1.0.HUR.GZ")), "大小写不该让人白跑一趟");
+        // 工程目录与技能正文不是产物（把它们当包解会报一句莫名其妙的 zip 错）
+        assert!(!is_archive_path(Path::new(".")));
+        assert!(!is_archive_path(Path::new("skills/x/SKILL.md")));
+        assert!(!is_archive_path(Path::new("x.hur.bak")));
     }
 
     #[test]
@@ -1864,8 +1918,12 @@ mod tests {
     fn name_token_only_reads_a_real_profile_name() {
         assert_eq!(name_profile_token("demo.kb-seed.hur").as_deref(), Some("kb-seed"));
         assert_eq!(name_profile_token("/a/b/demo.mcp.hur").as_deref(), Some("mcp"));
+        // 带容器段的最新名字：两个后缀都要摘掉才看得到 profile 那一段
+        assert_eq!(name_profile_token("demo.kb-seed.hur.gz").as_deref(), Some("kb-seed"));
+        assert_eq!(name_profile_token("/a/b/demo.plugin.hur.gz").as_deref(), Some("plugin"));
         // 老名字那一段是版本号 → 认不出来，也说不出人家写错了
         assert_eq!(name_profile_token("H-demo-0.1.0.hur"), None);
+        assert_eq!(name_profile_token("H-demo-0.1.0.hur.gz"), None);
         assert_eq!(name_profile_token("demo.hur"), None);
         // 短别名不在规范里：不认（要么用规范名，要么就当没线索）
         assert_eq!(name_profile_token("demo.kb.hur"), None);

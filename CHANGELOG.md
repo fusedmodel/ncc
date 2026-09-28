@@ -12,6 +12,60 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 「怎么用」看 `README.zh-CN.md` 与各组件 README；**本文件只回答「这一版比上一版多了什么」**。
 
+## [未发布]
+
+### 变更 · 产物文件名末尾加**容器后缀**：`….hur.gz`
+
+口径（用户 2026-09-29）：**hur 本身只是一种规范，文件本身用通用压缩包格式结尾** ——
+于是 `file`、双击、`gunzip`、编辑器、IM 预览都认得出它，不用先知道 hur 是什么。
+
+```text
+dist/html-deck-to-pptx-0.1.0.skill.hur.gz
+                            └──┘ └┬─┘
+                        这是 HUR 产物 └ 外面这层是 gzip 容器
+```
+
+- 后缀由**容器**决定（`spec::ARTIFACT_CONTAINER_EXT`）：以后换容器（比如不再压缩）只改一个常量。
+- 侧车跟着往后加：`x.hur.gz.minisig` / `x.hur.gz.sha256`。
+- **老名字全认**：`….profile.hur`（上一代）与 `….hur`（上上代）照旧能找、能校验、能装、能签
+  —— 候选名 `spec::artifact_candidates` 三条，`spec::is_archive_path` 同时认 `.hur` 与 `.hur.gz`。
+- 「这是产物还是工程目录」现在**只有一处实现**（`spec::is_archive_path`）：`ncc hur verify` /
+  `ncc hur sign` / `ncc sign`（转交）/ MCP 装包 / `interop` 同步判定全走它 ——
+  以前各地自己写 `extension() == "hur"`，加一个后缀就要改一圈。
+
+### 变更 · `.hur` 现在是**压过的**（容器改为 gzip 包住 zip）
+
+在此之前 `.hur` 里的条目一律以 `Stored` 写入 —— **不压缩**。包一多、数据包一大，
+分享与上传就白白多传几倍字节（实测一个技能包：61958 → 24244 字节）。
+
+新容器：
+
+```text
+.hur = gzip( zip( hur.json · hur.lock · 内容文件… ) )
+         ↑ 压缩在这里          ↑ 结构 / 防穿越解包在这里
+```
+
+- 外层 gzip：`file x.hur.gz` 报 gzip，`gunzip -c x.hur.gz > x.zip` 出来的**仍是标准 zip**，
+  任何 zip 工具都能看包内清单（不牺牲"能一眼看进去"这点）。
+- 内层 zip 仍是 `Stored`：不二次压缩（压两遍只会更慢更大），只保留条目名 / 路径顺序 /
+  防穿越解包。
+- **确定性照旧**：条目排序 + 时间戳固定 + gzip 头部写死（`mtime=0` / `OS=255` / 不带文件名）
+  × 级别固定 ⇒ 同样内容仍得同样 sha256。⚠️ 一点新代价：确定性现在也依赖 **flate2 的版本**
+  （同一份 `Cargo.lock` 内稳定）；包里 `hur.lock` 的逐文件摘要是内容级真值，不受影响。
+- **老包继续能装**：`unpack` 按魔数辨认（`1f 8b` = gzip，`PK` = 裸 zip）。格式升级不该让
+  已经发出去的字节变成废纸。
+- 签名语义不变，但**换容器 = 换字节**：格式升级前签过的**本地工程目录**重打包后要
+  `ncc hur sign` 重签一次（已发布/已下载的 `.hur` 不受影响 —— 核的仍是那份字节）。
+
+### 修复 · `.hur` 产物的签名核对：`ncc hur verify x.hur.gz --require-signature` 一律失败
+
+拿 `.hur` 产物核签名时，R9 会跑去**解包出来的临时目录**里找 `.minisig`（那里永远不会有），
+于是"有签名、公钥也认识、签名本身有效"的包照样报「找不到签名文件」并以退出码 1 结束 ——
+`ncc hur export` 印给收件人的那两行命令**照抄就是错的**。
+
+现在按**手里这份字节**核（`.minisig` 就躺在产物旁边），收件人视角实测通过：不认识公钥时
+如实说「有签名，但公钥不在本机受信列表」，认了之后 ✔。
+
 ## [0.2.1] — 2026-09-28
 
 ### 修复 · `ncc download` / `ncc install` **完全不可用**

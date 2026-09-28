@@ -368,7 +368,7 @@ ncc sign SKILL.md --kind skill --attach @me/release-notes
 
 三件**故意不做**的事：
 
-* **包不是一份文件。** 把 `ncc sign` 指到 HUR 包目录（或 `.hur` 产物）它会转交 `ncc hur sign`——
+* **包不是一份文件。** 把 `ncc sign` 指到 HUR 包目录（或 `.hur` / `.hur.gz` 产物）它会转交 `ncc hur sign`——
   那里签的是**规范打包字节**，要连包身份、版本与 `hur.lock` 一起核对。两种形态各一套实现。
 * **公钥不认识就不是"已验证"。** `ncc verify` 会如实报 `⚠️ 有签名，但公钥本机不认识`，
   并且带 `--require-signature` 时非 0 退出。
@@ -642,9 +642,14 @@ ncc hur match --profile plugin --host cursor
 **profile 的价值在约束，不在宽容**：数据类 profile 明确禁止 `entry` 与 `permissions.network` ——
 一份知识库快照不该能跑代码、也不该自己出网（新规则 R12，老包不受影响）。
 
-产物文件名也带上这一段：`dist/…-0.1.0.kb-seed.hur`、`…-0.1.0.plugin.hur` —— 一个 `dist/` 里
-躺着几十个 `.hur` 时，一眼看得出哪个是能跑的包、哪个是一份数据。**名字只是线索，清单才是权威**：
+产物文件名也带上这一段：`dist/…-0.1.0.kb-seed.hur.gz`、`…-0.1.0.plugin.hur.gz` —— 一个 `dist/` 里
+躺着几十个产物时，一眼看得出哪个是能跑的包、哪个是一份数据。**名字只是线索，清单才是权威**：
 改名不会改变它是什么（只多一条提醒），认不出来的名字也不会被当成写错。
+
+**`hur` 只是一种规范，文件本身用通用压缩包格式结尾**：`.hur` 回答“这是 HUR 产物”，末尾的 `.gz`
+回答“外面这层是什么容器” —— `file x.hur.gz` 报 gzip，`gunzip -c x.hur.gz > x.zip` 出来的仍是
+标准 zip（包内清单谁都能看）。外层负责压、内层只管结构与防穿越解包，**同样内容仍得同样 sha256**；
+升级前打的老包（`.hur`，裸 zip）继续能核、能装。后缀由**容器格式**决定（只改一个常量就能换）。
 
 数据类的四样（`kb` / `mem` / `ckpt` / `trace`）都能导出成**不可变快照包**，再灌回任意节点：
 

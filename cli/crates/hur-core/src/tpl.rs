@@ -295,7 +295,7 @@ export default {{ systemPrompt, capabilities, handle }}
 hur ls                 # 看包结构 / 依赖 / 权限面
 hur verify             # 离线校验（R1~R5）
 hur build              # 生成 hur.lock（依赖锁定）
-hur pack               # 产出 dist/{id}-{version}.hur + sha256
+hur pack               # 产出 dist/{id}-{version}.{profile}.hur.gz + sha256
 hur publish --registry <url>   # 上传 + 发布到 registry
 hur install <ns/slug>          # 装进 ~/.harnessuse/packages/ 供桌面 Agent 使用
 ```
@@ -310,6 +310,7 @@ hur install <ns/slug>          # 装进 ~/.harnessuse/packages/ 供桌面 Agent 
             id = pkg.id,
             kind = pkg.kind,
             version = pkg.version,
+            profile = pkg.profile_name(),
             short = pkg.short,
             entry = pkg.entry
         ),

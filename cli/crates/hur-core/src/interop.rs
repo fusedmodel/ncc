@@ -495,7 +495,7 @@ pub fn render_plan(pkg: &HurPackage, artifacts: &[Artifact], out_dir: &str) -> S
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectAgent {
-    /// `@ns/slug`（registry）· `./x.hur`（产物）· `/path/to/pkg`（目录）
+    /// `@ns/slug`（registry）· `./x.hur.gz`（产物）· `/path/to/pkg`（目录）
     pub r#ref: String,
     #[serde(default)]
     pub registry: String,
@@ -656,7 +656,7 @@ fn read_tree(dir: &Path) -> Result<Vec<(String, String)>> {
     Ok(out)
 }
 
-/// 把三种来源（registry / `.hur` 产物 / 本地目录）落到 `<root>/.hur/packages/<id>/`
+/// 把三种来源（registry / `.hur` / `.hur.gz` 产物 / 本地目录）落到 `<root>/.hur/packages/<id>/`
 pub fn materialize(root: &Path, a: &ProjectAgent, force: bool) -> Result<Materialized> {
     let ref_ = a.r#ref.trim();
     let dest_root = root.join(PROJECT_DIR).join("packages");
@@ -673,8 +673,11 @@ pub fn materialize(root: &Path, a: &ProjectAgent, force: bool) -> Result<Materia
             local = cwd_rel;
         }
     }
-    // 判定来源：`@ns/slug`（或 `ns/slug`）= registry；`.hur` / 路径 = 本地制品
-    let looks_like_path = ref_.starts_with('.') || ref_.starts_with('/') || ref_.starts_with('~') || ref_.ends_with(".hur");
+    // 判定来源：`@ns/slug`（或 `ns/slug`）= registry；`.hur` / `.hur.gz` / 路径 = 本地制品
+    let looks_like_path = ref_.starts_with('.')
+        || ref_.starts_with('/')
+        || ref_.starts_with('~')
+        || spec::is_archive_path(Path::new(ref_));
     let is_registry = !looks_like_path && (ref_.starts_with('@') || ref_.contains('/'));
 
     if is_registry {
@@ -734,7 +737,7 @@ pub fn materialize(root: &Path, a: &ProjectAgent, force: bool) -> Result<Materia
     }
 
     if !local.is_file() {
-        bail!("找不到来源「{ref_}」（可以用 @ns/slug、./x.hur 或包目录）");
+        bail!("找不到来源「{ref_}」（可以用 @ns/slug、./x.hur.gz 或包目录）");
     }
     let sha = spec::sha256_file(&local)?;
     if !a.sha256.trim().is_empty() && a.sha256.trim().to_ascii_lowercase() != sha {

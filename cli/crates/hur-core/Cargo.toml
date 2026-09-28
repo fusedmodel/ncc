@@ -19,8 +19,11 @@ anyhow = "1"
 ureq = { version = "2.10", default-features = false, features = ["tls", "json"] }
 sha2 = "0.10"
 hex = "0.4"
-# 只读 deflate（兼容别人用普通 zip 工具重打的包），写一律 Stored 以保证确定性
+# 内层容器：条目结构 + 防穿越解包靠它。只读 deflate（兼容别人用普通 zip 工具重打的包），
+# 写一律 Stored —— 压缩交给**外层 gzip**（见 pack.rs 头注释）。
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
+# 外层容器压缩：`.hur` = gzip(zip)。miniz_oxide 纯 Rust 后端，无 C 依赖、不影响交叉编译。
+flate2 = "1"
 # 制品签名：Minisign 格式（ed25519）—— 用「别人也能验」的格式，而不是自造信封：
 # 第三方拿 `minisign -V -p hur.pub -m x.hur` 就能独立核对，不必信 hur 自己。
 minisign = "0.10"

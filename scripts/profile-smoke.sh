@@ -216,9 +216,10 @@ not_contains "按别的 profile 找不会误召回" "kb-seed-demo" "${OUT}"
 say "12. 文件名带上 profile 段（一眼看出这是包还是快照）"
 OUT="$("${CLI}" hur pack "${WORK}/kbseed" 2>&1)"
 contains "产包成功" "已打包" "${OUT}"
-HUR="$(ls "${WORK}/kbseed/dist/"*.hur)"
-if [[ "$(basename "${HUR}")" == *.kb-seed.hur ]]; then good "文件名以 .kb-seed.hur 结尾（段 = profile 名）"; else bad "文件名没带 profile 段：$(basename "${HUR}")"; fi
-[[ -f "${HUR}.sha256" ]] && good "侧车跟着新名字（.hur 仍是最后的扩展名）" || bad "侧车没跟上新名字"
+HUR="$(ls "${WORK}/kbseed/dist/"*.hur.gz)"
+if [[ "$(basename "${HUR}")" == *.kb-seed.hur.gz ]]; then good "文件名以 .kb-seed.hur.gz 结尾（profile 段 + 容器段）"; else bad "文件名没带 profile / 容器段：$(basename "${HUR}")"; fi
+check "产物外层是 gzip（1f 8b）" "1f8b" "$(python3 -c "print(open('${HUR}','rb').read(2).hex())")"
+[[ -f "${HUR}.sha256" ]] && good "侧车跟着新名字（后缀都往完整路径后面追加）" || bad "侧车没跟上新名字"
 OUT="$("${CLI}" hur verify "${HUR}" 2>&1)"
 contains "新名字校验通过" "✔" "${OUT}"
 not_contains "名字与清单一致时不吭声" "文件名叫" "${OUT}"
@@ -236,7 +237,7 @@ not_contains "认不出来的名字不当成写错" "文件名叫" "${OUT}"
 "${CLI}" hur sign "${WORK}/kbseed" >/dev/null 2>&1
 [[ -f "${HUR}.minisig" ]] && good "签名落在带 profile 段的产物旁边（不是找一个不存在的旧名字）" || bad "签名没落在产物旁"
 "${CLI}" hur install "${HUR}" --force >/dev/null 2>&1 || true
-check "本地 .hur（新名字）能装进本机" "yes" \
+check "本地 .hur.gz（新名字）能装进本机" "yes" \
   "$(python3 -c "
 import json,glob
 f=glob.glob('${NCC_HOME}/.ncc/packages/*/_install.json')

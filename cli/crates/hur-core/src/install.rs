@@ -1,4 +1,4 @@
-//! 安装：把 `.hur` 或 registry 上的制品装进 `~/.ncc/packages/<id>/`，
+//! 安装：把 `.hur` / `.hur.gz` 或 registry 上的制品装进 `~/.ncc/packages/<id>/`，
 //! 并在桌面端 `config.json` 的 `packages[]` 里登记（桌面 Agent 据此展示/启用）。
 //!
 //! 落点 2026-09-25 从 `~/.harnessuse/packages` 搬到 `~/.ncc/packages`（与顶层 `ncc install` 一致）：
@@ -54,8 +54,8 @@ pub struct Source {
 
 /// 给**已经落盘**的包目录补登记（GUI「写入本机 / 打包」后用，不重新解包）。
 ///
-/// 产物的 sha256 取自 `dist/` 里那个 `.hur`（新名字 `<id>-<version>.<profile>.hur`
-/// 与改命名之前的老名字都认，见 `spec::find_artifact`）。
+/// 产物的 sha256 取自 `dist/` 里那个产物（最新 `<id>-<version>.<profile>.hur.gz`，
+/// 两个老名字 `<…>.hur` 也认，见 `spec::find_artifact`）。
 ///
 /// ⚠️ `nur write` 这条路上它**通常是空的**，而且这是对的：`write` 只把**工程源文件**
 /// 写进包落点（`copy_tree` 显式跳过 `dist/`），产物并不在那儿。给一份不在场的字节登记摘要，
@@ -87,7 +87,7 @@ pub fn register_dir(dir: &Path, source: Option<Source>) -> Result<InstallRecord>
     Ok(rec)
 }
 
-/// 把 `.hur` 落盘安装（`expected_sha` 有值时先验 sha256 —— 验签输入）
+/// 把 `.hur` / `.hur.gz` 落盘安装（`expected_sha` 有值时先验 sha256 —— 验签输入）
 pub fn install_archive(hur: &Path, expected_sha: Option<&str>, source: Option<Source>, force: bool) -> Result<InstallRecord> {
     let sha = sha256_file(hur)?;
     if let Some(expect) = expected_sha {

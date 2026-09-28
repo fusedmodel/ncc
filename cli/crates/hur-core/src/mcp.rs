@@ -78,8 +78,8 @@ fn tools() -> Value {
         },
         {
             "name": "hur_verify",
-            "description": "离线校验一个包目录或 .hur 产物（R1~R10：规范/版本/入口/依赖/权限面/摘要一致性/Agent 声明/制品签名），返回结构化结论。装包或信任一个包之前先跑它。",
-            "inputSchema": { "type": "object", "properties": { "path": s("包目录或 .hur 文件") }, "required": ["path"] }
+            "description": "离线校验一个包目录或 `.hur` / `.hur.gz` 产物（R1~R10：规范/版本/入口/依赖/权限面/摘要一致性/Agent 声明/制品签名），返回结构化结论。装包或信任一个包之前先跑它。",
+            "inputSchema": { "type": "object", "properties": { "path": s("包目录或 `.hur` / `.hur.gz` 文件") }, "required": ["path"] }
         },
         {
             "name": "hur_export_agent",
@@ -93,9 +93,9 @@ fn tools() -> Value {
         },
         {
             "name": "hur_install_agent",
-            "description": "安装一个 hur 包到本机（@ns/slug 走 registry、./x.hur 走本地产物）。安装后本机所有 Agent 都能 `hur export` 出来用。sha256 不一致会被拒绝。",
+            "description": "安装一个 hur 包到本机（@ns/slug 走 registry、./x.hur.gz 走本地产物）。安装后本机所有 Agent 都能 `hur export` 出来用。sha256 不一致会被拒绝。",
             "inputSchema": { "type": "object", "properties": {
-                "ref": s("@ns/slug 或 .hur 路径"),
+                "ref": s("@ns/slug 或 `.hur` / `.hur.gz` 路径"),
                 "registry": s("registry 地址（可选）"),
                 "sha256": s("期望摘要（可选，来自 registry 元数据）"),
                 "force": { "type": "boolean" }
@@ -113,7 +113,7 @@ fn tools() -> Value {
         },
         {
             "name": "hur_pack",
-            "description": "把一个 hur 包目录打成 dist/<id>-<version>.hur + .sha256（条目排序 + 固定时间戳 → 同内容同摘要）。发布或离线分发前用。",
+            "description": "把一个 hur 包目录打成 dist/<id>-<version>.<profile>.hur.gz + .sha256（条目排序 + 固定时间戳 → 同内容同摘要）。发布或离线分发前用。",
             "inputSchema": { "type": "object", "properties": { "path": s("包目录") }, "required": ["path"] }
         }
     ])
@@ -400,7 +400,9 @@ fn call_tool(ctx: &Ctx, name: &str, args: &Value) -> Value {
             let sha = str_arg("sha256");
             let force = bool_arg("force");
             let local = PathBuf::from(&ref_);
-            let res = if local.is_file() && ref_.ends_with(".hur") {
+            // 产物名有两种（`.hur.gz` 最新、`.hur` 老包）—— 判据走 `spec::is_archive_path`，
+            // 别在这里又写一套后缀判断（写两套迟早只改一处）。
+            let res = if local.is_file() && crate::spec::is_archive_path(&local) {
                 install::install_archive(&local, if sha.is_empty() { None } else { Some(&sha) }, None, force)
             } else {
                 let cfg = crate::cfg::load_cfg();
