@@ -12,6 +12,32 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 「怎么用」看 `README.zh-CN.md` 与各组件 README；**本文件只回答「这一版比上一版多了什么」**。
 
+## [0.2.1] — 2026-09-28
+
+### 修复 · `ncc download` / `ncc install` **完全不可用**
+
+```
+$ ncc download @you/hotel-skill -o out.md
+✗ 没有名为 @you/hotel-skill 的目标
+```
+
+条目引用被当成了**服务目标名**，于是这两个命令**没有任何办法**能跑通 ——
+换条目 ID、加 `--target`、加 `--base` 全一样。
+
+根因是 clap 的 arg id 撞车：顶层 `--target` 是 `global = true`，位置参数与它
+**arg id 相同**时，clap 会把位置参数的值塞进全局项。`ncc info` 早就因此把字段名
+改成了 `reference`（源码里还留着注释），`download` / `install` 当时漏了。
+这次一并改成 `reference`，并补上同样的警示注释 —— 同一个坑在 `info` /
+`verify` / `mem rm` / `download` / `install` 上已经出现过五次。
+
+### 修复 · `ncc hur run . --exec` 被策略拒绝时不说理由
+
+原来只在**不带** `--exec` 时才渲染执行计划，带 `--exec` 时只留下一句
+「当前策略不允许执行该包（理由见上）」—— 而上面空无一物。
+拒绝本身是对的（比如 `hur init` 脚手架包自己声明了 `exec.enabled=false`，
+只走声明式装配），但用户看不到**为什么**被拒。现在被拒时不论有没有 `--exec`
+都先把计划与拒绝理由打出来。
+
 ## [0.2.0] — 2026-09-28
 
 ### 变更 · `ncc store list --q` 从子串改为**关键词匹配 + 加权排序**
