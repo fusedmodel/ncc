@@ -1043,7 +1043,11 @@ fn run_plan(path: &Path, exec: bool, json_out: bool) -> Result<()> {
                 "version": pkg.version,
             }))?
         );
-    } else if !exec {
+    } else if !exec || !plan.allowed {
+        // 被拒时**不管有没有 --exec** 都要把理由打出来。
+        // 原先只在 `!exec` 时渲染计划，于是 `ncc hur run . --exec` 被策略拒绝时
+        // 只留下「理由见上」四个字，而上面空无一物 —— 拒绝是对的（比如脚手架包
+        // 自己声明了 exec.enabled=false），但用户看不到是**为什么**被拒。
         print!("{}", policy::render_plan(&plan));
     }
     if !plan.allowed {

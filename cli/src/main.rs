@@ -109,14 +109,22 @@ enum Cmd {
     /// 下载条目字节：ncc download <id | @org/slug> [-o 文件]
     Download {
         /// 条目引用：R-… 或 @org/slug
-        target: String,
+        ///
+        /// ⚠️ 同 `Info`：字段名**不能**叫 `target`。顶层 `--target` 是 `global = true`，
+        /// 位置参数与它 arg id 相同时，clap 会把位置参数的值塞进全局项，于是
+        /// `ncc download @you/x` 会去找一个**名叫 `@you/x` 的目标**并报
+        /// 「没有名为 @you/x 的目标」—— 加 `--target`、加 `--base` 都绕不过去。
+        /// （这个坑在 info / verify / mem rm 上都修过，download / install 漏了。）
+        reference: String,
         #[arg(short = 'o', long)]
         out: Option<String>,
     },
     /// 安装条目到本地包目录：ncc install <id | @org/slug> [--dir 目录] [--force]
     Install {
         /// 条目引用：R-… 或 @org/slug
-        target: String,
+        ///
+        /// ⚠️ 同 `Download`：字段名不能叫 `target`（理由见上）。
+        reference: String,
         /// 本地安装根目录（默认 ~/.ncc/packages）
         #[arg(short = 'd', long)]
         dir: Option<String>,
@@ -857,8 +865,8 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&data["item"])?);
             Ok(())
         }
-        Cmd::Download { target, out } => cmd_download(cfg, target, out.as_deref()),
-        Cmd::Install { target, dir, force } => cmd_install(cfg, target, dir.as_deref(), *force),
+        Cmd::Download { reference, out } => cmd_download(cfg, reference, out.as_deref()),
+        Cmd::Install { reference, dir, force } => cmd_install(cfg, reference, dir.as_deref(), *force),
         Cmd::Terminal { action } => match action {
             Some(TermAction::Status) => {
                 println!("{}", terminal::status(cfg));
