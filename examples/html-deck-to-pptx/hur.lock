@@ -1,0 +1,13 @@
+{
+  "spec": "harness-use-lock/v1",
+  "package": "html-deck-to-pptx",
+  "version": "0.1.0",
+  "deps": {},
+  "files": {
+    "README.md": "df9113a8c4a84d85cddc496b08f5750fc2d261b86816508cc0a2259a584c5b0f",
+    "skills/html-deck-to-pptx/SKILL.md": "976784c4aa87db83affc03f051f2de26a608179552a0777cf0384bbd177ec7da",
+    "skills/html-deck-to-pptx/scripts/deck2pptx.py": "d7ef6897716b7a51c517f62c6deae18dee8ece4e8b0dc3a78bcb147244e5623f",
+    "skills/html-deck-to-pptx/scripts/extract-deck.mjs": "61d44c9a0689b2f65670f332fd5c23f62db3b9fb557c91abf6870473483743a7",
+    "skills/html-deck-to-pptx/scripts/verify-pptx.py": "d588df7333987540c9f890918102181a994c32b9c1d51ee7c0e51800462b5971"
+  }
+}

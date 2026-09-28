@@ -14,6 +14,18 @@
 
 ## [未发布]
 
+### 新增 · `examples/`：能跑的真包示例
+
+[`examples/html-deck-to-pptx/`](examples/html-deck-to-pptx/) —— 一个 `profile=skill` 的完整 HUR
+工程（`skills/<名字>/SKILL.md` + 同目录 python / node 脚本），连同「怎么接进 Claude Code / Codex /
+Cursor、怎么签名发布分享」一起写在它自己的 README 里。它不是文档片段：真的过 `ncc hur verify`、
+真的 `pack` 得出产物、真的发布得出去。
+
+新增 [`scripts/examples-smoke.sh`](scripts/examples-smoke.sh)（**全程离线**，pack 在副本上跑，不往仓库写
+`dist/`）：把 `examples/*/` 逐个走一遍 `verify` → `pack`，并断言产物名带容器后缀、`id` 与 `profile`
+段跟**清单**一致、外层是 gzip（`1f 8b`）、侧车跟着新名字。理由很简单：**示例会烂** —— 今天合规、
+明天改了 R 规则或产物命名谁都不知道，读者照抄一个错的比没有示例更糟。
+
 ### 变更 · 产物文件名末尾加**容器后缀**：`….hur.gz`
 
 口径（用户 2026-09-29）：**hur 本身只是一种规范，文件本身用通用压缩包格式结尾** ——

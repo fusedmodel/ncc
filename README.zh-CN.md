@@ -664,6 +664,10 @@ ncc hur data import --package ./kbseed --apply    # 真写
 **快照必须说清**来源 / 时刻 / 隐私 / 许可；**隐私级别说了算**（`privacy != public` ⇒ 导入后全部 `private`）；
 **载荷如实声明**（`trace-set` 的 `full` + `public` 直接拒）。设计见 `ncc-platform/prd/ncc-hur-spec.md`。
 
+想拿一个**真包**照着改：`examples/html-deck-to-pptx`（`profile=skill`，带 python + node 脚本的
+技能包）—— 怎么摆目录、怎么接进 Claude Code / Codex / Cursor、怎么签名发布都在那儿。
+`scripts/examples-smoke.sh` 守着"示例必须真的能过 `ncc hur verify`"这条。
+
 ### `ncc key`
 
 API-Key 是**能力令牌**，有两个独立约束：`scopes`（能做什么）与 `namespaces`（能拉谁的东西）。
@@ -977,6 +981,7 @@ bash scripts/build-release.sh --all    # 交叉编译全部目标（需 `rustup 
 ```
 cli/                 Rust crate（bin: ncc）
 packages/ncc-cli/    npm 包装（@fusedmodel/ncc-cli）—— 启动器 + 二进制下载
+examples/            能跑的真包示例（每个子目录一个完整 HUR 工程，见 examples/README.md）
 ncc-registry/        内网自托管节点 —— git submodule → github.com/fusedmodel/ncc-registry
                      （Go：单二进制 + 可 import 的库）：制品托管 + 节点托管 + master/worker 多节点
 agent/               Agent 接入包（MCP 配置、SKILL.md、harness 契约）

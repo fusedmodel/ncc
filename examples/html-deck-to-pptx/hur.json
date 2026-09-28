@@ -1,0 +1,32 @@
+{
+  "spec": "harness-use-package/v1",
+  "kind": "repo",
+  "profile": "skill",
+  "id": "html-deck-to-pptx",
+  "name": "HTML Deck to PPTX",
+  "version": "0.1.0",
+  "short": "HDTP",
+  "domain": "generic",
+  "summary": "HTML deck（1920×1080 + .slide 分页）→ 原生可编辑 PPTX（形状 / 文本框 / 演讲者备注）",
+  "entry": "",
+  "runtime": "local-v0",
+  "capabilities": [],
+  "deps": {
+    "harness": [],
+    "agent": [],
+    "skill": [],
+    "kb": [],
+    "mcp": []
+  },
+  "permissions": {
+    "network": [],
+    "local": []
+  },
+  "publish": {
+    "registry": "",
+    "namespace": "",
+    "visibility": "public",
+    "slug": ""
+  },
+  "agent": null
+}

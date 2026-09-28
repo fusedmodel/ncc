@@ -657,6 +657,11 @@ it, and under what licence; **the privacy level decides** (`privacy != public` �
 `private`); **payloads are declared honestly** (`full` + `public` is refused). Design:
 `ncc-platform/prd/ncc-hur-spec.md`.
 
+Want a **real package** to copy from? `examples/html-deck-to-pptx` (`profile=skill`, a host skill with
+python + node scripts) shows how to lay the directory out, how to hook it into Claude Code / Codex /
+Cursor, and how to sign and publish it. `scripts/examples-smoke.sh` guards the rule that every example
+must actually pass `ncc hur verify`.
+
 ### `ncc key`
 
 API keys are **capability tokens**: two independent constraints — `scopes` (what it may do) and
@@ -977,6 +982,7 @@ Prebuilt targets: `darwin` (x86_64, arm64), `linux` (x86_64, arm64), `windows` (
 ```
 cli/                 Rust crate (bin: ncc)
 packages/ncc-cli/    npm wrapper (@fusedmodel/ncc-cli) — launcher + binary downloader
+examples/            Runnable package examples (one full HUR project per subdirectory; see examples/README.md)
 ncc-registry/        Self-hosted intranet node — git submodule → github.com/fusedmodel/ncc-registry
                      (Go: single binary + importable library): artifacts + nodes + master/worker cluster
 agent/               Agent integration pack (MCP config, SKILL.md, harness manifest)
