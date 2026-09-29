@@ -12,7 +12,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 「怎么用」看 `README.zh-CN.md` 与各组件 README；**本文件只回答「这一版比上一版多了什么」**。
 
-## [未发布]
+## [0.3.0] — 2026-09-29
 
 ### 新增 · 名片社交的 **CLI 面与 Agent 面**：关注 / 评价
 
@@ -802,7 +802,8 @@ stdout —— 而 MCP 的 stdio 约定是 **stdout 只能出 JSON-RPC 帧**，�
 首个可发布版本：**`ncc`** 单二进制客户端（注册 / 登录 / 发布 / 检索 / 下载 / 安装 / API-Key / Terminal…）、
 npm 包装 `@fusedmodel/ncc-cli`、发布工作流与 `publishConfig`。
 
-[未发布]: https://github.com/fusedmodel/ncc/compare/v0.1.3...HEAD
+[未发布]: https://github.com/fusedmodel/ncc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fusedmodel/ncc/releases/tag/v0.3.0
 [0.1.3]: https://github.com/fusedmodel/ncc/releases/tag/v0.1.3
 [0.1.2]: https://github.com/fusedmodel/ncc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/fusedmodel/ncc/releases/tag/v0.1.1
