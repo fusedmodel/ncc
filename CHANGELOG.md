@@ -14,6 +14,33 @@
 
 ## [未发布]
 
+### 新增 · `ncc auth`：凭据 + 设备码登录 + 授权管理（对第三方平台的授权颁发方）
+
+服务端那侧是 `ncc-platform` 的 NCC Auth（OIDC 授权服务器 + RFC 8628 设备码，设计见
+`prd/ncc-auth.md`）；客户端这一侧只有三件事，且每件都对应一条边界。
+
+- **`ncc auth key new [--purpose identity] [--label …]`**：在本机生成一份身份持有密钥
+  （Ed25519，落 `~/.ncc/cred/<purpose>.key`，`0600`）并把**公钥**登记到服务端，拿回 `CR-…`。
+  ⚠️ **与发布者签名密钥故意分开**：发布签名在 `~/.harnessuse/keys`，混用会导致
+  「换密钥 = 已发布制品验签全废」。私钥永不出本机；服务端永远只见到公钥。
+  **登记凭据 ≠ 有权取东西** —— 能拿什么仍然看 scope 与 `ncc grant`。
+- **`ncc auth key ls` / `rm <CR-…>`**：列出 / 撤销服务端登记的凭据。
+- **`ncc auth login --client <id> [--secret …] [--scope …] [--credential CR-…]`**：
+  走设备码（与 `gh auth login` 同一条路）—— 终端打印 `verification_uri` 与 `user_code`，
+  用户在浏览器确认，CLI 按 `interval` 轮询换令牌；`authorization_pending` / `slow_down`
+  按规范继续等。令牌**按目标单独存**（不覆盖会话）：它受众是某一个平台、只能走数据面，
+  账号面（key、授权）仍然用 `ncc login` 的会话。
+- **`ncc auth consents [--revoked]` / `revoke <id>` / `status`**：我授出去的应用（含
+  scope 与绑定凭据）、**按平台撤销**（撤一个不影响另一个，且立刻失效）。
+- 新增依赖 `ring`（Ed25519；本来就在依赖树里，是显式用它而不是多引一套密码学库）。
+- **`--auth` 全局开关**：以对外令牌跑这条命令（数据面）。令牌若绑了凭据，CLI 自动附上
+  持有证明 `NCC-Proof`（规范串 `METHOD\nPATH\nb64url(sha256(token))`，与服务端逐字节一致）；
+  账号面仍然会 403 `auth_token_path`（这是设计）。
+- **MCP 只读两件**：`ncc_list_credentials` / `ncc_list_consents`（走 `auth` 能力位）；
+  登录 / 绑凭据 / 撤销都是「改变别人能拿到什么」的动作，仍然只在 CLI。
+- 验收：`ncc-platform/scripts/auth-smoke.sh`（协议与红线 70/70）与
+  `auth-cli-smoke.sh`（客户端四条链，含 cnf 与 --auth）。
+
 ### 新增 · 索引与匹配：`ncc index` / `ncc list` / `ncc match`
 
 把「我有什么 / 我要什么」登记进一个**自由频道**，别人用一句需求就能检索到（服务端那侧是

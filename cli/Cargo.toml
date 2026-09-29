@@ -43,6 +43,9 @@ anyhow = "1"
 # `ncc upgrade` 用它比对 release 里的 checksums.txt —— 校验不过就拒绝替换。
 # 纯 Rust、无 C 依赖，不影响交叉编译。
 sha2 = "0.10"
+# NCC Auth 的身份持有密钥与持有证明（Ed25519）。ring 已经在依赖树里
+# （minisign → ring），这里是显式直接用它的 Ed25519KeyPair：不再多引一套密码学库。
+ring = "0.17"
 ratatui = "0.26"
 crossterm = "0.27"
 

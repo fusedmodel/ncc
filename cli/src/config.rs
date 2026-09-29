@@ -29,6 +29,13 @@ pub struct Target {
     pub base_url: String,
     #[serde(default)]
     pub token: Option<String>,
+    /// NCC Auth 的**对外访问令牌**（`ncc auth login` 拿到的）。
+    ///
+    /// 它**不是会话**：受众是某一个第三方平台，只能走数据面（服务端按路径拒掉账号面）。
+    /// 所以单存一个字段，不与 `token` 混用 —— 混起来会出现「以为登录了，其实只是拿到了
+    /// 一张只能读目录的令牌」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_token: Option<String>,
     #[serde(default)]
     pub email: Option<String>,
     #[serde(default)]
@@ -51,6 +58,7 @@ impl Default for Target {
             kind: String::new(),
             base_url: default_base(),
             token: None,
+            auth_token: None,
             email: None,
             name: None,
             admin_key: None,
@@ -296,8 +304,40 @@ pub fn require_token(cfg: &CliConfig) -> anyhow::Result<String> {
 }
 
 /// 已登录则返回 token（可选鉴权：公开资源带上登录态可看到更多，如自己的 unlisted 名片）。
+///
+/// `--auth` 模式下优先返回**对外访问令牌**：那条命令就以「被授权的 Agent」身份跑
+/// （服务端只看数据面，账号面会 403）。
 pub fn token_opt(cfg: &CliConfig) -> Option<String> {
+    if auth_mode() {
+        if let Some(t) = auth_token_opt(cfg) {
+            return Some(t);
+        }
+    }
     cfg.target().token.clone().filter(|t| !t.is_empty())
+}
+
+/// `--auth`：这条命令用对外令牌（而不是会话）跑。
+///
+/// 用全局量而不是层层传参：令牌的读取点很多（`token_opt` / `api::request`），
+/// 而这是一个「进程级身份选择」，与 `--base` / `--target` 同一层次。
+static AUTH_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_auth_mode(on: bool) {
+    AUTH_MODE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+pub fn auth_mode() -> bool {
+    AUTH_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// NCC Auth 的对外访问令牌（按目标存，**与会话分开**）。
+pub fn auth_token_opt(cfg: &CliConfig) -> Option<String> {
+    cfg.target().auth_token.clone().filter(|t| !t.is_empty())
+}
+
+/// 保存对外访问令牌（写进当前目标）。
+pub fn save_auth_token(cfg: &mut CliConfig, token: &str) -> anyhow::Result<()> {
+    cfg.target_mut().auth_token = Some(token.to_string());
+    save(cfg)
 }
 
 /// 保存登录会话（写进**当前目标**，不影响其它目标）。
@@ -317,8 +357,7 @@ pub fn save_session(cfg: &mut CliConfig, token: &str, email: &str, name: &str) -
 
 /// 清掉当前目标的登录态（其它目标不受影响）。
 pub fn clear_session(cfg: &mut CliConfig) -> anyhow::Result<()> {
-    cfg.target_mut().token = None;
-    save(cfg)
+    cfg.target_mut().token = None;    save(cfg)
 }
 
 /// 节点管理凭据（当前目标；可被 `--key/--secret` 或环境变量覆盖）。

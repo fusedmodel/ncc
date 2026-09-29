@@ -940,6 +940,7 @@ dependencies = [
  "hur-core",
  "hur-sandbox",
  "ratatui",
+ "ring",
  "serde",
  "serde_json",
  "sha2",

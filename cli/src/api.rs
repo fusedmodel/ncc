@@ -48,6 +48,13 @@ pub fn request(
     let mut req = agent().request(method, &url);
     if let Some(t) = token {
         req = req.set("Authorization", &format!("Bearer {t}"));
+        // 对外访问令牌自动附持有证明：令牌可能绑定了凭据（cnf.jkt），
+        // 那时服务端要求出示私钥签的东西 —— 客户端不配合就是 401。
+        if cfg.target().auth_token.as_deref() == Some(t) {
+            if let Some(proof) = crate::auth::proof_for(method, path, t) {
+                req = req.set("NCC-Proof", &proof);
+            }
+        }
     }
     for (k, v) in extra_headers {
         req = req.set(k, v);
@@ -130,6 +137,27 @@ pub fn get_bytes(cfg: &CliConfig, path_or_url: &str, token: Option<&str>) -> any
 
 pub fn post_json(cfg: &CliConfig, path: &str, token: Option<&str>, body: &Value) -> anyhow::Result<Value> {
     request(cfg, "POST", path, token, Some(body), None, &[])
+}
+
+/// 表单 POST（`application/x-www-form-urlencoded`）。
+///
+/// OAuth / OIDC 的端点（token、device_authorization、introspect、revoke）都只吃表单，
+/// 不吃 JSON —— 这是协议规定的，不是偏好。额外头用来带 `NCC-Proof`（持有证明）。
+pub fn post_form(
+    cfg: &CliConfig,
+    path: &str,
+    token: Option<&str>,
+    form: &[(&str, String)],
+    extra_headers: &[(&str, &str)],
+) -> anyhow::Result<Value> {
+    let body = form
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlenc(k), urlenc(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    let mut headers: Vec<(&str, &str)> = vec![("Content-Type", "application/x-www-form-urlencoded")];
+    headers.extend_from_slice(extra_headers);
+    request(cfg, "POST", path, token, None, Some(body.as_bytes()), &headers)
 }
 
 /// PUT：**覆盖**语义的写入（如「一人一条」的评价 —— 重复提交是改分，不是新增）。

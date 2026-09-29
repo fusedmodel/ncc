@@ -229,6 +229,10 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc services` / `catalog` / `match` / `show` | Services offered: catalog / match by intent / full details of one |
 | `ncc services add` / `rm` | Declare or take down your own services (provider side) |
 | `ncc grant list` / `set` / `rm` | Per-person access grants (`artifact` \| `service` \| `share` \| `p2p`) |
+| `ncc auth key new` / `ls` / `rm` | Bind a **proof-of-possession credential** (`CR-…`): Ed25519 key under `~/.ncc/cred/` (0600), only the public key is registered. Deliberately **separate** from the publishing key in `~/.harnessuse/keys`. Binding a credential ≠ being allowed to use anything |
+| `ncc auth login --client <id>` | **Device flow** (RFC 8628, like `gh auth login`): the terminal prints `verification_uri` + `user_code`, you approve in a browser, the CLI polls. The token is stored per target and stays on the data plane (account commands still use `ncc login`) |
+| `ncc auth consents` / `revoke` / `status` | What I granted to which platform (scopes + bound credential) / revoke **per platform** (immediate, and it never touches other platforms) |
+| `ncc --auth <cmd>` | Run that command as an **outward access token** (data plane only); when the token is key-bound the CLI attaches the `NCC-Proof` holder proof automatically |
 | `ncc p2p probe` | Hole-punch preflight — local NAT profile, no server needed |
 | `ncc p2p check <node>` | Real connectivity check against a peer node (both sides run it; ≈ ICE connectivity check) |
 | `ncc p2p ticket create` / `list` / `verify` / `revoke` | P2P tickets: which node may pull which resource from you |

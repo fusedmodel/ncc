@@ -2,8 +2,11 @@
 //
 // 每个节点都会在 `GET /api/meta` 自述它是谁、**声明支持哪些能力**：
 //
-//      ncc-platform（kind=hub）  registry · nodes · grants · living · services · index · profile · share · billing · admin
+//      ncc-platform（kind=hub）  registry · nodes · grants · living · services · index · profile · share · p2p · gateway · auth · billing · admin
 //      ncc-registry（kind=node） registry · config · share · nodes · grants · access · cluster · index · admin
+//
+// `auth`（NCC 作为对第三方平台的授权颁发方）**默认关**：只有运维把 NCC_AUTH_ENABLED 打开，
+// 服务端才会声明它 —— 客户端不靠猜。
 //
 // 命令面按**能力**放行，而不是按「云端/本地」硬编码：
 // 将来本地节点也声明 services / profile 时，同一个 `ncc services match` 在那台节点上直接可用。

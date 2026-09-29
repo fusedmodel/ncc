@@ -61,7 +61,13 @@ NCC Registry 是中立、跨协议的能力制品目录（api / skill / mcp / ha
    ② 排序含**内部信誉权重**，但**评分不对外显示** —— 工具不会给出任何分数，别去猜，
    也别把「分高」当成承诺：接入仍然照旧要授权（制品要 grant、非公开服务要 service 授权）。
 
-边界：节点（ncc_list_nodes / ncc_discover_nodes）、授权（ncc_list_grants）与你自己声明的服务属于用户的私人数据，
+12. 对外授权（NCC Auth 的读面）：ncc_list_credentials 看我登记过的**持有证明凭据**（CR-…）；
+   ncc_list_consents 看我授给第三方平台的应用与实际同意的 scope。
+   边界：NCC 发的是**凭据不是权限**（拿令牌 ⊥ 能取私有东西）；**登录 / 绑凭据 / 撤销都不在工具里**
+   （都会改变「别人能拿到什么」，由用户自己跑 ncc auth …）；NCC 从不采集硬件指纹。
+
+边界：节点（ncc_list_nodes / ncc_discover_nodes）、授权（ncc_list_grants）、对外授权
+（ncc_list_credentials / ncc_list_consents）与你自己声明的服务属于用户的私人数据，
 只在用户问起时用，不要转发给第三方。
 声明服务、连接节点、授权这类会改变「别人能拿到什么」的动作只有读工具 —— 需要变更时，
 让用户自己跑 CLI（ncc services add / ncc nodes link / ncc grant set / ncc index publish），并先征得同意。
@@ -86,6 +92,9 @@ fn tool_capability(tool: &str) -> Option<&'static str> {
             Some("nodes")
         }
         "ncc_list_grants" => Some("grants"),
+        // NCC Auth（对第三方平台的授权颁发方）：**只给读**。
+        // 登录 / 绑凭据 / 撤销授权都是「改变别人能拿到什么」的动作，留在 CLI。
+        "ncc_list_credentials" | "ncc_list_consents" => Some("auth"),
         // 轨迹读取属于 trace 能力（节点侧声明了才有：轨迹默认私有，写入口留给 CLI）。
         "ncc_list_traces" | "ncc_trace_stats" => Some("trace"),
         // 三样状态：**只有读工具**（写是"改变 Agent 自己的认知/状态"，交给持有凭据的人）。
@@ -527,6 +536,26 @@ fn tools() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": { "direction": { "type": "string", "description": "outgoing（默认）| incoming" } },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_list_credentials",
+            "description": "列出我登记过的**持有证明凭据**（CR-…）：指纹、用途、来源机器。凭据回答的是「是不是这份凭据在说话」，**不是权限** —— 拿到凭据不代表能取任何东西（那要看 scope 与 ncc_list_grants）。NCC 不会采集也不会外发硬件指纹。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_list_consents",
+            "description": "列出我授给第三方平台的应用（同意记录）：对方的 client_id、实际同意的 scope、绑定的凭据。撤销**不在工具里**（改「别人能拿到什么」的动作由用户自己跑 ncc auth revoke），但可以在这里看清单。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "revoked": { "type": "boolean", "description": "true = 连已撤销的一起列出来（审计用）" }
+                },
                 "additionalProperties": false
             }
         }),
@@ -1996,6 +2025,16 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             Ok(text(clip(&crate::nodes::render_grants(&v, &dir))))
         })()),
 
+        // NCC Auth：只读两件（凭据 / 我授出的应用）。
+        "ncc_list_credentials" => ok_or_text((|| {
+            let v = crate::auth::fetch_credentials(cfg)?;
+            Ok(text(clip(&crate::auth::render_credentials(&v))))
+        })()),
+        "ncc_list_consents" => ok_or_text((|| {
+            let v = crate::auth::fetch_consents(cfg, barg("revoked"))?;
+            Ok(text(clip(&crate::auth::render_consents(&v))))
+        })()),
+
         "ncc_list_traces" => ok_or_text((|| {
             let q = [
                 ("ref", sarg("ref")),
@@ -2897,7 +2936,9 @@ mod tests {
                 assert!(
                     [
                         "services", "config", "nodes", "grants", "trace", "kb", "mem", "ckpt",
-                        "p2p", "profile", "gateway", "index"
+                        "p2p", "profile", "gateway", "index",
+                        // `auth` = NCC 作为对第三方平台的授权颁发方（默认关，开了才声明）
+                        "auth"
                     ]
                     .contains(&cap),
                     "{name} 的能力名 `{cap}` 不在共享词表里"

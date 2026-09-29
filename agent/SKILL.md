@@ -78,6 +78,8 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 | 节点与授权 | `ncc_list_nodes` / `ncc_discover_nodes` | 我的节点与连接表 / 发现可连接的节点 |
 | | `ncc_region_profile` / `ncc_recommend_nodes` | 区域覆盖 / 按区域要推荐 |
 | | `ncc_list_grants` | 我给出与收到的授权 |
+| 对外授权（NCC Auth，目标声明 `auth` 才有） | `ncc_list_credentials` | 我登记过的**持有证明凭据**（CR-…）：指纹、用途、来源机器。凭据回答「是不是这份在说话」，不是权限 |
+| | `ncc_list_consents` | 我授给第三方平台的应用与实际同意的 scope。**登录 / 绑凭据 / 撤销不在工具里**（会改变别人能拿到什么） |
 | 跨网直连（P2P） | `ncc_p2p_probe` | **本机**打洞条件预检（纯本地：UDP 出站 / 公网映射 / NAT 映射与过滤行为） |
 | | `ncc_p2p_check` | 真实打洞实测（0 字节）：`addr` 直接对打 / `peer` 走控制面信令 |
 | | `ncc_p2p_node` | **目标节点那台机器**的 NAT 画像 + 可被打洞入口状态 |

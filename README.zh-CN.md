@@ -235,6 +235,10 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc services` / `catalog` / `match` / `show` | 对外服务：目录 / 按意图匹配 / 单条接入信息 |
 | `ncc services add` / `rm` | 声明 / 下架自己的对外服务（提供方） |
 | `ncc grant list` / `set` / `rm` | 按人授权（`artifact` / `service` / `share`） |
+| `ncc auth key new` / `ls` / `rm` | 绑定**持有证明凭据**（`CR-…`）：Ed25519 私钥落 `~/.ncc/cred/`（0600），只把公钥登记出去。与 `~/.harnessuse/keys` 的发布者签名密钥**故意分开**；绑定凭据 ≠ 有权用 |
+| `ncc auth login --client <id>` | **设备码登录**（RFC 8628，同 `gh auth login`）：终端给出 `verification_uri` + `user_code`，浏览器里确认，CLI 轮询换令牌。令牌按目标单独存，只走数据面（账号面仍用 `ncc login`） |
+| `ncc auth consents` / `revoke` / `status` | 我授给了哪些平台（scope + 绑定凭据）/ **按平台撤销**（立刻失效，且不影响别的平台） |
+| `ncc --auth <命令>` | 以**对外令牌**跑这条命令（只走数据面）；令牌绑了凭据时会自动附持有证明 `NCC-Proof` |
 | `ncc registry add` | 用一条内网短链（或 key/secret）把内网 registry 接进来 |
 | `ncc registry login` / `join` | 登入自托管内网节点 / 把本机托管进去（注册 + 心跳） |
 | `ncc registry status` / `nodes` | 本节点 + 集群（master/worker）/ 发现该实例上的节点 |

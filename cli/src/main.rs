@@ -1,6 +1,7 @@
 mod admin;
 mod api;
 mod app;
+mod auth;
 mod capability;
 mod config;
 mod configs;
@@ -69,6 +70,13 @@ struct Cli {
     /// 本次命令用哪个目标（ncc target list 看全部）
     #[arg(long, global = true)]
     target: Option<String>,
+    /// 以**对外访问令牌**执行这条命令（`ncc auth login` 拿到的）
+    ///
+    /// 它受众是某一个第三方平台，**只能走数据面**（目录 / 服务 / 索引 / 名片）——
+    /// 账号面（key、授权、凭据）会 403，这是设计而不是缺功能。
+    /// 若该令牌绑定了凭据（`--credential`），CLI 会自动附上持有证明 `NCC-Proof`。
+    #[arg(long, global = true)]
+    auth: bool,
 
     #[command(subcommand)]
     cmd: Cmd,
@@ -249,6 +257,14 @@ enum Cmd {
     /// 制品/分享授权：ncc grant set --user @someone --kind artifact | list | rm <id>
     #[command(subcommand)]
     Grant(GrantCmd),
+    /// NCC Auth：对第三方平台的身份与授权颁发方（凭据 / 设备码登录 / 授权管理）
+    ///
+    /// 需要目标声明 `auth` 能力（云端要 NCC_AUTH_ENABLED 打开，默认关）。
+    /// 三条边界：**注册凭据 ≠ 有权用**、**撤销按平台独立**、**私钥永不出本机**。
+    Auth {
+        #[command(subcommand)]
+        action: auth::AuthCmd,
+    },
     /// NCC P2P：跨局域网节点直连（打洞条件预检 / 真实建连检查 / 信令 / 票据）
     ///
     /// 需要目标声明 `p2p` 能力（ncc.ai 云端已声明）；`probe` 是纯本地命令，不需要服务器。
@@ -765,6 +781,7 @@ fn main() {
             &Cli {
                 base: None,
                 target: None,
+                auth: false,
                 cmd: Cmd::Target(target::TargetArgs { action: None }),
             },
             hub_prefix,
@@ -802,6 +819,9 @@ fn main() {
     if matches!(cli.cmd, Cmd::Mcp(_)) {
         PROTOCOL_STDOUT.store(true, Ordering::Relaxed);
     }
+    // `--auth`：这条命令以「被授权的 Agent」身份跑（用对外令牌而不是会话）。
+    // 在 resolve_target 之前设定，因为目标解析本身也可能发请求。
+    config::set_auth_mode(cli.auth);
     if let Err(e) = resolve_target(&mut cfg, &cli, hub_prefix) {
         eprintln!("✗ {:#}", e);
         std::process::exit(1);
@@ -937,6 +957,8 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Services(_) => Some("services"),
         Cmd::Index(_) | Cmd::List(_) | Cmd::Match(_) => Some("index"),
         Cmd::Grant(_) => Some("grants"),
+        // 对外授权颁发方（OIDC / device flow）只在目标声明 auth 时才放行。
+        Cmd::Auth { .. } => Some("auth"),
         Cmd::P2p(p) => match p {
             // 预检纯本地（要 STUN，但不要 NCC 服务端）：老服务端/离线环境也应当能用。
             p2p::P2pCmd::Probe(_) => None,
@@ -1201,6 +1223,9 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             GrantCmd::Set(a) => nodes::grant_set(cfg, a),
             GrantCmd::Rm { id } => nodes::grant_rm(cfg, id),
         },
+        // NCC Auth：NCC 当**授权颁发方**（第三方平台用 NCC 登录 + Agent 用凭据接入）。
+        // 能力位 `auth` —— 关着的时候服务端一律 404，命令面给的也是可读的报错。
+        Cmd::Auth { action } => auth::run(cfg, action),
         Cmd::P2p(p) => match p {
             p2p::P2pCmd::Probe(a) => p2p::probe(cfg, &a),
             p2p::P2pCmd::Ice => p2p::ice(cfg),
