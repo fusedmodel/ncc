@@ -90,7 +90,7 @@ enum Cmd {
     Logout,
     /// 当前用户与命名空间
     Me,
-    /// 命名空间管理：ncc ns list | ncc ns create --slug …
+    /// 命名空间与组织计划：ncc ns list | ns plans | ns create --slug … [--plan free]
     #[command(subcommand)]
     Ns(NsCmd),
     /// 发布条目：ncc publish --kind skill --name X --file ./x.SKILL.md
@@ -476,30 +476,35 @@ enum ProfileCmd {
     /// 作品集：list | add | rm
     #[command(subcommand)]
     Work(profile::WorkCmd),
-    /// 关注一个人（--note 是只给自己看的备注；关注**不放行任何数据**）
-    Follow {
-        username: String,
-        #[arg(long, default_value = "")]
-        note: String,
+    /// 关注某人（单向、幂等；--note 只有自己看得到）
+    Follow(profile::FollowArgs),
+    /// 取消关注
+    Unfollow {
+        /// 用户名（不带 @）
+        handle: String,
     },
-    /// 取消关注（幂等）
-    Unfollow { username: String },
-    /// 谁关注了 TA（缺省看自己）
-    Followers { username: Option<String> },
-    /// TA 关注了谁（缺省看自己，那时会带出你自己写的备注）
-    Following { username: Option<String> },
-    /// 给名片打分（1~5 星 + 可选一句评语；一人一条，再打是**改分**）
-    Rate {
-        username: String,
-        #[arg(long)]
-        score: i64,
-        #[arg(long, default_value = "")]
-        note: String,
+    /// 谁关注了我（可指定用户名看别人的粉丝）
+    Followers {
+        /// 省略则看自己
+        handle: Option<String>,
     },
-    /// 撤销自己给出的评价（幂等）
-    Unrate { username: String },
-    /// TA 收到的评价（缺省看自己）
-    Ratings { username: Option<String> },
+    /// 我关注的人（带只给自己看的备注）
+    Following {
+        /// 省略则看自己
+        handle: Option<String>,
+    },
+    /// 给某人打分（1~5 星，一人一条，重复提交是覆盖）
+    Rate(profile::RateArgs),
+    /// 撤销自己给出的评价
+    Unrate {
+        /// 用户名（不带 @）
+        handle: String,
+    },
+    /// 某人收到的评价（均分 + 分布 + 评语）
+    Ratings {
+        /// 省略则看自己收到的
+        handle: Option<String>,
+    },
 }
 
 /// `ncc registry` 子命令。
@@ -1001,13 +1006,13 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Some(ProfileCmd::Set(a)) => profile::set(cfg, a),
             Some(ProfileCmd::Username { name }) => profile::set_username(cfg, name),
             Some(ProfileCmd::Work(cmd)) => profile::work(cfg, cmd),
-            Some(ProfileCmd::Follow { username, note }) => profile::follow(cfg, username, note),
-            Some(ProfileCmd::Unfollow { username }) => profile::unfollow(cfg, username),
-            Some(ProfileCmd::Followers { username }) => profile::follow_list(cfg, username.as_deref(), false),
-            Some(ProfileCmd::Following { username }) => profile::follow_list(cfg, username.as_deref(), true),
-            Some(ProfileCmd::Rate { username, score, note }) => profile::rate(cfg, username, *score, note),
-            Some(ProfileCmd::Unrate { username }) => profile::unrate(cfg, username),
-            Some(ProfileCmd::Ratings { username }) => profile::ratings(cfg, username.as_deref()),
+            Some(ProfileCmd::Follow(a)) => profile::follow(cfg, a),
+            Some(ProfileCmd::Unfollow { handle }) => profile::unfollow(cfg, handle),
+            Some(ProfileCmd::Followers { handle }) => profile::followers(cfg, handle.as_deref()),
+            Some(ProfileCmd::Following { handle }) => profile::following(cfg, handle.as_deref()),
+            Some(ProfileCmd::Rate(a)) => profile::rate(cfg, a),
+            Some(ProfileCmd::Unrate { handle }) => profile::unrate(cfg, handle),
+            Some(ProfileCmd::Ratings { handle }) => profile::ratings(cfg, handle.as_deref()),
         },
         Cmd::Nodes(n) => match &n.action {
             None => nodes::list(cfg, &nodes::ListArgs { kind: None, q: None, can: Vec::new() }),
@@ -1534,12 +1539,14 @@ fn cmd_key(cfg: &CliConfig, k: &KeyCmd) -> anyhow::Result<()> {
                 ("grants:read", "查看授权关系"),
                 ("grants:write", "授予 / 撤销授权"),
                 ("living:write", "上报设备心跳（Living）"),
+                ("social:write", "关注 / 取关他人、给名片打分（不放行任何数据）"),
                 ("keys:write", "签发 / 吊销 API-Key（默认不发给 key）"),
             ] {
                 println!("  {s:<22} {d}");
             }
             println!("\n蕴含关系：publish ⇒ download ⇒ read；nodes:write ⇒ nodes:read；");
             println!("          grants:write ⇒ grants:read；profile:write ⇒ profile:read；* = 全部。");
+            println!("          social:write 不被任何作用域蕴含（要关注 / 打分就得显式给）。");
             println!("\n提示：给 Agent/CI 的 key 一般只需 registry:read,registry:download；");
             println!("      要让它发布制品再加 registry:publish；要让它读节点与连接再加 nodes:read。");
             Ok(())

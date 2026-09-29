@@ -13,7 +13,9 @@ NCC 是**中立、跨协议的能力制品目录** —— 可以理解成「能�
 - **制品（artifact）**：一个可版本化的能力单元，`kind` 决定它是什么。
 - **kind**：`api` / `skill` / `mcp` / `harness` / `hur` / `plugin` / `scaffold` / `docker-image` / `benchmark` / `living`。
 - **引用**：`@命名空间/slug`（例如 `@aya/hotel-skill`），也可用 `R-…` 形式的 id。
-- **命名空间**：个人（`@you`）或组织（`@team`）。
+- **命名空间**：个人（`@you`）或组织（`@team`）。组织**免费就能建**（1 个 / 5 名成员，
+  创建时要选一档计划：`ncc ns plans` 看目录，`ncc ns create --plan` 指定）；计划里
+  **列着但没开放的档选不了** —— 报错会说原因，不会悄悄按免费档给你建。
 - **状态**：`draft` / `published` / `archived`；**可见性**：`public` / `private`（private 需付费套餐）。
 
 ## 先确认「在跟谁说话」：目标与能力
@@ -221,7 +223,8 @@ ncc gateway audit --remote --csv        # 看/导出控制面留存的摘要
 ### C. 找人 / 找定位
 
 1. `ncc_list_roles` 拿角色 id；
-2. `ncc_find_people` 按 `role` / `skill` / `query` 检索；
+2. `ncc_find_people` 按 `role` / `skill` / `query` 检索；加 `following: true` 则**只看我关注的人**
+   （需要已登录 —— 它问的是「我」关注了谁；结果里也只有公开名片）；
 3. `ncc_get_profile` 看某人的作品集与他已发布的能力 —— 这比简历更能反映实际产出。
 
 ### D. 「这件事该找谁办」——服务匹配（云端）

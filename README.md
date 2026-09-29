@@ -202,8 +202,9 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc register` | Create an account; auto-creates your personal namespace |
 | `ncc login` / `ncc logout` | Start / end a session |
 | `ncc me` | Show the signed-in user, plan and namespaces |
-| `ncc ns list` | List the namespaces you own or belong to |
-| `ncc ns create` | Create a namespace |
+| `ncc ns list` | List the namespaces you own or belong to (organizations show a **plan** column) |
+| `ncc ns plans` | List the **organization plan** catalog (unavailable tiers are shown but cannot be picked) |
+| `ncc ns create --slug <slug> --name <name> [--plan free]` | Create an org namespace (`plan` defaults to `free`) |
 | `ncc publish` | Publish an artifact from a file upload or a BYO URL |
 | `ncc search [query]` | Search the catalog |
 | `ncc info <target>` | Print an artifact's full record as JSON |
@@ -1010,7 +1011,7 @@ service to run (33 tools, gated by what the connected target declares):
 | `ncc_publish_artifact` | Publish an artifact (needs credentials) |
 | `ncc_whoami` | Current account and namespaces |
 | `ncc_list_roles` | Work-role catalog |
-| `ncc_find_people` | Find people by role / skill |
+| `ncc_find_people` | Find people by role / skill / who you follow |
 | `ncc_get_profile` | Someone's card: roles + portfolio + published capabilities |
 | `ncc_match_services` | Match services by intent: scores, reasons, connection steps |
 | `ncc_list_services` | Browse the service catalog (category / tag / region) |
@@ -1047,7 +1048,9 @@ out loud: online status is *derived* by the control plane from a heartbeat timeo
 **self-reported** (the signature proves source and integrity, not truth). Registering, revoking or
 starting a gateway are actions taken by a person on that machine.
 
-Search, fetch and the people directory need **no login**; only publishing does. `ncc mcp` writes only
+Search, fetch and the people directory need **no login** (the one exception is the `following`
+filter, which asks "who do *I* follow" and so needs to know who you are); publishing does too.
+`ncc mcp` writes only
 protocol messages to stdout and all logs to stderr — required by MCP's stdio transport.
 
 [`agent/`](agent) holds the distributable integration pack: the MCP setup, a `SKILL.md` for agents

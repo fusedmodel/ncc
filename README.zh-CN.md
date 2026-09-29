@@ -204,8 +204,9 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc register` | 注册账号；自动创建个人命名空间 |
 | `ncc login` / `ncc logout` | 登录 / 登出 |
 | `ncc me` | 显示当前用户、套餐与命名空间 |
-| `ncc ns list` | 列出你拥有或加入的命名空间 |
-| `ncc ns create` | 创建命名空间 |
+| `ncc ns list` | 列出你拥有或加入的命名空间（组织会多一列**计划**）|
+| `ncc ns plans` | 列出**组织计划**目录（含尚未开放的档：看得见，选不了）|
+| `ncc ns create --slug <标识> --name <名称> [--plan free]` | 创建组织命名空间（计划缺省 `free`）|
 | `ncc publish` | 通过上传文件或 BYO URL 发布制品 |
 | `ncc search [query]` | 目录检索 |
 | `ncc info <target>` | 以 JSON 打印制品完整记录 |
@@ -1008,7 +1009,7 @@ scripts/             build-release.sh（交叉编译 + 校验和）
 | `ncc_publish_artifact` | 发布制品（需凭据） |
 | `ncc_whoami` | 当前账号与命名空间 |
 | `ncc_list_roles` | 工作角色目录 |
-| `ncc_find_people` | 按角色 / 技能找人 |
+| `ncc_find_people` | 按角色 / 技能 / 我关注的人找人 |
 | `ncc_get_profile` | 某人的名片：角色 + 作品集 + 已发布能力 |
 | `ncc_match_services` | 按意图匹配对外服务：分数、命中理由、接入步骤 |
 | `ncc_list_services` | 浏览服务目录（分类 / 标签 / 区域） |
@@ -1042,7 +1043,8 @@ scripts/             build-release.sh（交叉编译 + 校验和）
 另外两条口径：在线状态是控制面按心跳超时**推导**的，用量是网关**自报**的（签名只证明来源与完整，
 不证明内容为真）。注册/吊销网关、让网关开始上报，都是**那台机器上**的人的动作。
 
-检索、取回与人才目录**无需登录**；只有发布需要凭据。`ncc mcp` 的 stdout 只输出协议消息、
+检索、取回与人才目录**无需登录**（唯一的例外是 `following` 过滤 —— 它问的是「**我**关注了谁」，
+就得知道你是谁）；发布则需要凭据。`ncc mcp` 的 stdout 只输出协议消息、
 日志全部走 stderr —— 这是 MCP stdio 的硬要求。
 
 [`agent/`](agent) 是可分发的接入包：MCP 配置、给不支持 MCP 的 Agent 用的 `SKILL.md`，

@@ -14,6 +14,51 @@
 
 ## [未发布]
 
+### 新增 · 组织计划：`ncc ns plans` / `ncc ns create --plan`
+
+组织在服务端改成**免费也能建（1 个 / 5 名成员）**、创建时**选一档计划**（`ncc-platform`
+那侧的事），CLI 这一版把这件事接到命令面：
+
+- **`ncc ns plans`** 列组织计划目录：可选档标 `✓`、未开放档标 `·` 并带出**原因**；
+  登录时连「已拥有 n / m 个组织」一起显示（目录本身公开，那两个数只有你自己有）。
+  目录**原样来自服务端**（`GET /api/namespaces/plans`）—— CLI 不另抄一份计划表，
+  否则两边必然慢慢长歪。
+- **`ncc ns create --slug <标识> --name <名称> [--plan free]`** 创建组织时带上计划
+  （缺省 `free`）—— 创建是**这件事唯一发生的地方**，建完再补计划等于没选。
+- **`ncc ns list`** 的组织行多一列**计划**（个人空间打 `-`：它固定 free，打出来只是噪声）。
+- 边界跟服务端一致，CLI 不自己判：认不出的计划 id → `400 unknown_plan`（**列出可选值**）；
+  目录里列着但没开放的档 → `400 plan_not_available`（**附原因**）—— **绝不静默降级成
+  free**：让人以为拿到了 Pro 额度是最糟的失败方式。超额度是 `402 org_quota_exceeded`。
+- 验收：`ncc-platform/scripts/org-plan-smoke.sh` **61/61**（其中第 9 节 8 条是 CLI 面：
+  列目录 / 标未开放 / 显示已用额度 / 建组织回显计划 / 建 pro 档被拒且回显服务端原因）。
+
+## [0.3.0] — 2026-09-29
+
+### 新增 · 名片社交的 **CLI 面与 Agent 面**：关注 / 评价
+
+服务端与 Web 早就上线了（在 `ncc-platform` 那侧），这次补的是**客户端两面** ——
+在此之前 `ncc profile` 只有名片与作品集，MCP 也完全看不到关注关系。
+
+- **CLI**：`ncc profile follow / unfollow / followers / following` 与
+  `rate / unrate / ratings`。`follow --note` 是**只给关注方自己看**的备注；
+  `rate --score 1~5` 一人一条，**重复提交是覆盖，不是加一票** —— 刷分从结构上就不可能。
+- `ncc profile show` 现在带出**粉丝数 / 关注数 / 评分**，并按 `viewer.canFollow / canRate`
+  提示下一步能做什么。
+- ⚠️ **两个 `note` 的语义故意不同**，别当成一回事：关注的备注**私密**、空串 = **不改动**；
+  评价的评语**公开**、空串 = **清空**。所以 `rate` 不带 `--note` 会清掉已有评语，
+  CLI 在这种情况下会明确警告（`follow` 则不会）。
+- `--score` 越界**在本地就拦**（退出码 1，消息里说清 `1~5`），不发请求去等服务端 400。
+- **Agent**：MCP `ncc_find_people` 加 `following` 参数 —— 只看我关注的人。
+  该参数需要登录，未登录会明确回 `[unauthorized] following=1 需要登录`，而不是给一个空列表
+  让人以为「我关注的人都不在目录里」。
+- 写动作**仍然只在 CLI**：关注 / 打分要动服务端上的身份，不做成 Agent 的自主动作。
+- `ncc key scopes` 补上 `social:write`（`Risky`，且**不被任何作用域蕴含** ——
+  要让它关注 / 打分必须显式给，`profile:write` 不算）。
+
+验收：平台冒烟 `scripts/profile-social-smoke.sh` 第 11 节的 10 条 CLI 断言全绿。
+（该脚本没找到 CLI 时会**静默跳过**这一节，所以别只看总数：不带 CLI 是 63 通过，
+带上 CLI 才是 72 —— 差的 9 条就是这一节。）
+
 ### 新增 · `examples/`：能跑的真包示例
 
 [`examples/html-deck-to-pptx/`](examples/html-deck-to-pptx/) —— 一个 `profile=skill` 的完整 HUR
@@ -777,7 +822,8 @@ stdout —— 而 MCP 的 stdio 约定是 **stdout 只能出 JSON-RPC 帧**，�
 首个可发布版本：**`ncc`** 单二进制客户端（注册 / 登录 / 发布 / 检索 / 下载 / 安装 / API-Key / Terminal…）、
 npm 包装 `@fusedmodel/ncc-cli`、发布工作流与 `publishConfig`。
 
-[未发布]: https://github.com/fusedmodel/ncc/compare/v0.1.3...HEAD
+[未发布]: https://github.com/fusedmodel/ncc/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/fusedmodel/ncc/releases/tag/v0.3.0
 [0.1.3]: https://github.com/fusedmodel/ncc/releases/tag/v0.1.3
 [0.1.2]: https://github.com/fusedmodel/ncc/releases/tag/v0.1.2
 [0.1.1]: https://github.com/fusedmodel/ncc/releases/tag/v0.1.1
