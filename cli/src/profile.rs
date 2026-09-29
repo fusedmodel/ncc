@@ -123,7 +123,12 @@ fn short_link(cfg: &CliConfig, username: &str) -> String {
 /// 取 JSON 里的字符串数组；缺失返回空。
 fn arr(v: Option<&Value>) -> Vec<String> {
     v.and_then(|x| x.as_array())
-        .map(|a| a.iter().filter_map(|s| s.as_str()).map(String::from).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|s| s.as_str())
+                .map(String::from)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -131,7 +136,10 @@ fn role_label(catalog: &Value, id: &str) -> String {
     catalog
         .get("roles")
         .and_then(|r| r.as_array())
-        .and_then(|arr| arr.iter().find(|r| r.get("id").and_then(|v| v.as_str()) == Some(id)))
+        .and_then(|arr| {
+            arr.iter()
+                .find(|r| r.get("id").and_then(|v| v.as_str()) == Some(id))
+        })
         // 角色目录的中英标签都在服务端；CLI 输出统一用中文标签
         .and_then(|r| r.get("zh").and_then(|v| v.as_str()))
         .map(String::from)
@@ -179,7 +187,11 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
     let (p, works, items, shares, social) = match target {
         Some(name) => {
             let name = name.trim_start_matches('@');
-            let d = api::get(cfg, &format!("/api/profiles/{}", name), config::token_opt(cfg).as_deref())?;
+            let d = api::get(
+                cfg,
+                &format!("/api/profiles/{}", name),
+                config::token_opt(cfg).as_deref(),
+            )?;
             let p = d.get("profile").cloned().context("响应缺少 profile")?;
             (
                 p,
@@ -210,7 +222,11 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
     let s = |k: &str| p.get(k).and_then(|v| v.as_str()).unwrap_or("");
     let username = s("username");
     let handle = s("handle");
-    let vis = if s("visibility") == "unlisted" { "不列出" } else { "公开" };
+    let vis = if s("visibility") == "unlisted" {
+        "不列出"
+    } else {
+        "公开"
+    };
 
     println!("{}  {}", handle, s("displayName"));
     if !username.is_empty() {
@@ -252,10 +268,16 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
         if let Some(v) = so.get("viewer").and_then(|v| v.as_object()) {
             let viewer = |k: &str| v.get(k).and_then(|b| b.as_bool()).unwrap_or(false);
             if viewer("canFollow") {
-                println!("     关注 TA：ncc profile follow {}（单向，不放行任何数据）", norm_handle(handle));
+                println!(
+                    "     关注 TA：ncc profile follow {}（单向，不放行任何数据）",
+                    norm_handle(handle)
+                );
             }
             if viewer("canRate") {
-                println!("     给 TA 打分：ncc profile rate {} --score 1~5", norm_handle(handle));
+                println!(
+                    "     给 TA 打分：ncc profile rate {} --score 1~5",
+                    norm_handle(handle)
+                );
             }
         }
     }
@@ -271,7 +293,10 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
     }
     if let Some(links) = p.get("links").and_then(|v| v.as_object()) {
         if !links.is_empty() {
-            let l: Vec<String> = links.iter().map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or(""))).collect();
+            let l: Vec<String> = links
+                .iter()
+                .map(|(k, v)| format!("{k}={}", v.as_str().unwrap_or("")))
+                .collect();
             println!("外链 {}", l.join("  "));
         }
     }
@@ -287,9 +312,21 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
                 let year = w.get("year").and_then(|v| v.as_str()).unwrap_or("");
                 let href = w.get("href").and_then(|v| v.as_str()).unwrap_or("");
                 let kind = w.get("linkKind").and_then(|v| v.as_str()).unwrap_or("");
-                let prefix = if year.is_empty() { String::new() } else { format!("[{year}] ") };
-                let suffix = if href.is_empty() { String::new() } else { format!("  → {href}") };
-                let k = if kind == "link" { String::new() } else { format!(" ({kind})") };
+                let prefix = if year.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{year}] ")
+                };
+                let suffix = if href.is_empty() {
+                    String::new()
+                } else {
+                    format!("  → {href}")
+                };
+                let k = if kind == "link" {
+                    String::new()
+                } else {
+                    format!(" ({kind})")
+                };
                 println!("  - {prefix}{t}{k}{suffix}");
             }
         }
@@ -297,7 +334,10 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
     if let Some(is) = items.as_array() {
         for i in is {
             let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-            let ns = i.pointer("/namespace/slug").and_then(|v| v.as_str()).unwrap_or("");
+            let ns = i
+                .pointer("/namespace/slug")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let slug = i.get("slug").and_then(|v| v.as_str()).unwrap_or("");
             let ver = i.get("version").and_then(|v| v.as_str()).unwrap_or("");
             println!("能力 [{kind}] {ns}/{slug}@{ver}");
@@ -321,8 +361,16 @@ pub fn show(cfg: &CliConfig, target: Option<&str>) -> Result<()> {
 /// `ncc profile roles` —— 打印分组角色（--roles 的取值来源）。
 pub fn roles(cfg: &CliConfig, group: Option<&str>) -> Result<()> {
     let d = api::get(cfg, "/api/profile/roles", None)?;
-    let groups = d.get("groups").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let all = d.get("roles").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let groups = d
+        .get("groups")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let all = d
+        .get("roles")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     for g in &groups {
         let gid = g.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -331,8 +379,15 @@ pub fn roles(cfg: &CliConfig, group: Option<&str>) -> Result<()> {
                 continue;
             }
         }
-        println!("{} ({})", g.get("zh").and_then(|v| v.as_str()).unwrap_or(gid), gid);
-        for r in all.iter().filter(|r| r.get("group").and_then(|v| v.as_str()) == Some(gid)) {
+        println!(
+            "{} ({})",
+            g.get("zh").and_then(|v| v.as_str()).unwrap_or(gid),
+            gid
+        );
+        for r in all
+            .iter()
+            .filter(|r| r.get("group").and_then(|v| v.as_str()) == Some(gid))
+        {
             let id = r.get("id").and_then(|v| v.as_str()).unwrap_or("");
             let zh = r.get("zh").and_then(|v| v.as_str()).unwrap_or("");
             let desc = r.get("descZh").and_then(|v| v.as_str()).unwrap_or("");
@@ -352,7 +407,11 @@ pub fn set(cfg: &CliConfig, a: &SetArgs) -> Result<()> {
     let p = cur.get("profile").filter(|v| !v.is_null()).cloned();
 
     let cur_str = |k: &str| -> String {
-        p.as_ref().and_then(|p| p.get(k)).and_then(|v| v.as_str()).unwrap_or("").to_string()
+        p.as_ref()
+            .and_then(|p| p.get(k))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
     };
     let pick = |arg: &Option<String>, k: &str| -> Value {
         match arg {
@@ -362,10 +421,12 @@ pub fn set(cfg: &CliConfig, a: &SetArgs) -> Result<()> {
     };
 
     // 用户名：没给就沿用现状（未创建名片时用个人命名空间 slug）
-    let username = a
-        .username
-        .clone()
-        .unwrap_or_else(|| cur.get("username").and_then(|v| v.as_str()).unwrap_or("").to_string());
+    let username = a.username.clone().unwrap_or_else(|| {
+        cur.get("username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    });
 
     // 外链：在现有基础上覆盖 --link 指定的键
     let mut links: Map<String, Value> = p
@@ -392,11 +453,19 @@ pub fn set(cfg: &CliConfig, a: &SetArgs) -> Result<()> {
 
     let roles = match &a.roles {
         Some(s) => json!(csv(s)),
-        None => p.as_ref().and_then(|p| p.get("roles")).cloned().unwrap_or(json!([])),
+        None => p
+            .as_ref()
+            .and_then(|p| p.get("roles"))
+            .cloned()
+            .unwrap_or(json!([])),
     };
     let skills = match &a.skills {
         Some(s) => json!(csv(s)),
-        None => p.as_ref().and_then(|p| p.get("skills")).cloned().unwrap_or(json!([])),
+        None => p
+            .as_ref()
+            .and_then(|p| p.get("skills"))
+            .cloned()
+            .unwrap_or(json!([])),
     };
 
     let body = json!({
@@ -416,7 +485,10 @@ pub fn set(cfg: &CliConfig, a: &SetArgs) -> Result<()> {
     let d = api::put_json(cfg, "/api/profile/me", Some(&token), &body)?;
     let q = d.get("profile").cloned().unwrap_or(Value::Null);
     let u = q.get("username").and_then(|v| v.as_str()).unwrap_or("");
-    println!("✅ 名片已保存：{}", q.get("handle").and_then(|v| v.as_str()).unwrap_or(""));
+    println!(
+        "✅ 名片已保存：{}",
+        q.get("handle").and_then(|v| v.as_str()).unwrap_or("")
+    );
     if !u.is_empty() {
         println!("   短链 {}", short_link(cfg, u));
     }
@@ -460,7 +532,11 @@ pub fn work(cfg: &CliConfig, cmd: &WorkCmd) -> Result<()> {
     match cmd {
         WorkCmd::List => {
             let d = api::get(cfg, "/api/profile/me", Some(&token))?;
-            let ws = d.get("works").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let ws = d
+                .get("works")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             if ws.is_empty() {
                 println!("还没有作品。用 `ncc profile work add --title \"…\"` 添加。");
                 return Ok(());
@@ -472,8 +548,16 @@ pub fn work(cfg: &CliConfig, cmd: &WorkCmd) -> Result<()> {
                 let year = w.get("year").and_then(|v| v.as_str()).unwrap_or("");
                 let href = w.get("href").and_then(|v| v.as_str()).unwrap_or("");
                 let kind = w.get("linkKind").and_then(|v| v.as_str()).unwrap_or("");
-                let prefix = if year.is_empty() { String::new() } else { format!("[{year}] ") };
-                let arrow = if href.is_empty() { String::new() } else { format!("  → {href}") };
+                let prefix = if year.is_empty() {
+                    String::new()
+                } else {
+                    format!("[{year}] ")
+                };
+                let arrow = if href.is_empty() {
+                    String::new()
+                } else {
+                    format!("  → {href}")
+                };
                 println!("  {id}  {prefix}{t}  ({kind}){arrow}");
             }
             Ok(())
@@ -527,7 +611,11 @@ pub fn work(cfg: &CliConfig, cmd: &WorkCmd) -> Result<()> {
 /// 服务端对他人一律置空，所以这里不作承诺、有就显示。
 fn print_person(r: &Value) {
     let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
-    let name = if s("displayName").is_empty() { s("name") } else { s("displayName") };
+    let name = if s("displayName").is_empty() {
+        s("name")
+    } else {
+        s("displayName")
+    };
 
     let mut bits = vec![format!(
         "粉丝 {}",
@@ -559,7 +647,12 @@ pub fn follow(cfg: &CliConfig, a: &FollowArgs) -> Result<()> {
         Some(n) => json!({ "note": n }),
         None => json!({}),
     };
-    let d = api::post_json(cfg, &format!("/api/profiles/{h}/follow"), Some(&token), &body)?;
+    let d = api::post_json(
+        cfg,
+        &format!("/api/profiles/{h}/follow"),
+        Some(&token),
+        &body,
+    )?;
     // handle 由服务端规范化，用返回的，别自己拼
     let shown = d
         .get("handle")
@@ -568,7 +661,11 @@ pub fn follow(cfg: &CliConfig, a: &FollowArgs) -> Result<()> {
         .unwrap_or_else(|| format!("@{h}"));
     println!("✅ 已关注 {shown}");
     let n = |k: &str| d.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
-    println!("   TA 的粉丝 {} · 你的关注 {}", n("followers"), n("myFollowing"));
+    println!(
+        "   TA 的粉丝 {} · 你的关注 {}",
+        n("followers"),
+        n("myFollowing")
+    );
     if a.note.is_some() {
         println!("   备注只给你自己看：`ncc profile following` 能看到。");
     }
@@ -601,9 +698,20 @@ pub fn followers(cfg: &CliConfig, handle: Option<&str>) -> Result<()> {
             (self_handle(cfg, &t)?, Some(t))
         }
     };
-    let d = api::get(cfg, &format!("/api/profiles/{h}/followers"), token.as_deref())?;
-    let rows = d.get("followers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let total = d.get("total").and_then(|v| v.as_i64()).unwrap_or(rows.len() as i64);
+    let d = api::get(
+        cfg,
+        &format!("/api/profiles/{h}/followers"),
+        token.as_deref(),
+    )?;
+    let rows = d
+        .get("followers")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let total = d
+        .get("total")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(rows.len() as i64);
     if rows.is_empty() {
         println!("还没有人关注 @{h}。");
         return Ok(());
@@ -632,12 +740,23 @@ pub fn following(cfg: &CliConfig, handle: Option<&str>) -> Result<()> {
         }
         None => {
             let t = config::require_token(cfg)?;
-            ("/api/profile/me/following".to_string(), Some(t), "你".to_string())
+            (
+                "/api/profile/me/following".to_string(),
+                Some(t),
+                "你".to_string(),
+            )
         }
     };
     let d = api::get(cfg, &path, token.as_deref())?;
-    let rows = d.get("following").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let total = d.get("total").and_then(|v| v.as_i64()).unwrap_or(rows.len() as i64);
+    let rows = d
+        .get("following")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let total = d
+        .get("total")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(rows.len() as i64);
     if rows.is_empty() {
         println!("{who}还没有关注任何人。用 `ncc profile follow <用户名>` 关注一个。");
         return Ok(());
@@ -662,12 +781,16 @@ pub fn rate(cfg: &CliConfig, a: &RateArgs) -> Result<()> {
     // 与服务端的「整行覆盖」一致：不带 --note 就是**清空**已有评语
     // （与关注的备注相反：那边空串是不改动）
     let body = json!({ "score": a.score, "note": a.note.clone().unwrap_or_default() });
-    let d = api::put_json(cfg, &format!("/api/profiles/{h}/rating"), Some(&token), &body)?;
+    let d = api::put_json(
+        cfg,
+        &format!("/api/profiles/{h}/rating"),
+        Some(&token),
+        &body,
+    )?;
     let created = d.get("created").and_then(|v| v.as_bool()).unwrap_or(false);
-    let sum = d.get("summary");
-    let avg = sum.and_then(|v| v.get("avg")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let cnt = sum.and_then(|v| v.get("count")).and_then(|v| v.as_i64()).unwrap_or(0);
-    println!("✅ 已评价 @{h} {} {avg:.1} 分（{cnt} 人）", stars(a.score));
+    // ⚠️ 评分**不对外显示**：服务端不再回汇总（均分/人数），所以这里只能报
+    // 「我给了几星」—— 不是我们不想给，是这条数据现在只属于被打分的人。
+    println!("✅ 已评价 @{h} {}", stars(a.score));
     if created {
         println!("   首次评价。");
     } else {
@@ -676,6 +799,7 @@ pub fn rate(cfg: &CliConfig, a: &RateArgs) -> Result<()> {
             println!("   ⚠ 这次没带 --note，原有评语已被清空（评语是公开的）。");
         }
     }
+    println!("   评分不对外显示：它只作为匹配时的内部权重（样本 < 3 条不计）。");
     Ok(())
 }
 
@@ -701,28 +825,38 @@ pub fn ratings(cfg: &CliConfig, handle: Option<&str>) -> Result<()> {
         }
     };
     let d = api::get(cfg, &format!("/api/profiles/{h}/ratings"), token.as_deref())?;
-    let rows = d.get("ratings").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-    let sum = d.get("summary");
-    let avg = sum.and_then(|v| v.get("avg")).and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let cnt = sum.and_then(|v| v.get("count")).and_then(|v| v.as_i64()).unwrap_or(0);
-    if rows.is_empty() {
+    let rows = d
+        .get("ratings")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    // 汇总（均分 / 人数 / 分布）只有**被打分的人自己**看得到；别人只有评语。
+    // 这不是砍功能：评分不对外显示，它只做匹配的内部权重。
+    if rows.is_empty() && d.get("summary").is_none() {
         println!("@{h} 还没有收到评价。用 `ncc profile rate {h} --score 1~5` 给一个。");
         return Ok(());
     }
-    // 均分直接用服务端的（它已 round1），不要自己算 —— 「5.0 分」这个写法就是它
-    println!("@{h} 的评价：{avg:.1} 分（{cnt} 人）");
-    if let Some(dist) = sum.and_then(|v| v.get("dist")).and_then(|v| v.as_array()) {
-        let bars: Vec<String> = dist
-            .iter()
-            .enumerate()
-            .filter_map(|(i, v)| match v.as_i64().unwrap_or(0) {
-                0 => None,
-                n => Some(format!("{}星 {n}", i + 1)),
-            })
-            .collect();
-        if !bars.is_empty() {
-            println!("   分布 {}", bars.join(" · "));
+    let sum = d.get("summary");
+    match sum {
+        Some(s2) => {
+            let avg = s2.get("avg").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let cnt = s2.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+            println!("@{h} 的评价：{avg:.1} 分（{cnt} 人）");
+            if let Some(dist) = s2.get("dist").and_then(|v| v.as_array()) {
+                let bars: Vec<String> = dist
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, v)| match v.as_i64().unwrap_or(0) {
+                        0 => None,
+                        n => Some(format!("{}星 {n}", i + 1)),
+                    })
+                    .collect();
+                if !bars.is_empty() {
+                    println!("   分布 {}", bars.join(" · "));
+                }
+            }
         }
+        None => println!("@{h} 收到的评语（共 {} 条）：", rows.len()),
     }
     if let Some(mine) = d.get("mine").and_then(|v| v.as_i64()) {
         if mine > 0 {
@@ -731,9 +865,15 @@ pub fn ratings(cfg: &CliConfig, handle: Option<&str>) -> Result<()> {
     }
     for r in &rows {
         let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
-        let name = if s("displayName").is_empty() { s("name") } else { s("displayName") };
+        let name = if s("displayName").is_empty() {
+            s("name")
+        } else {
+            s("displayName")
+        };
         let score = r.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
-        println!("  {} {:<10} {}", stars(score), name, s("note"));
+        // score 缺席 = 公开视角（服务端只有本人/本人写的那条才回分数）
+        let mark = if score > 0 { format!("{} ", stars(score)) } else { String::new() };
+        println!("  {mark}{:<10} {}", name, s("note"));
     }
     Ok(())
 }

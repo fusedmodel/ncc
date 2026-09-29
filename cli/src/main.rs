@@ -1,10 +1,10 @@
 mod admin;
 mod api;
+mod app;
 mod capability;
 mod config;
 mod configs;
 mod gateway;
-mod app;
 mod gwreport;
 mod httpsrv;
 mod hur;
@@ -12,6 +12,7 @@ mod hur;
 // （默认开；`--no-default-features` 得到不含 wasmtime 的瘦身构建）。
 #[cfg(feature = "sandbox")]
 mod hurrun;
+mod index;
 mod mcp;
 mod nodes;
 mod p2p;
@@ -21,10 +22,10 @@ mod registryadd;
 mod registryp2p;
 mod services;
 mod signcmd;
-mod target;
-mod terminal;
 mod state;
 mod store;
+mod target;
+mod terminal;
 mod trace;
 mod tui;
 mod upgrade;
@@ -56,7 +57,11 @@ fn note(msg: &str) {
 }
 
 #[derive(Parser)]
-#[command(name = "ncc", version, about = "ncc.ai Registry 命令行客户端\n用法: ncc <command> [args...]\n目标：ncc target list（云端 ncc.ai / 内网 registry 节点各是一个目标）")]
+#[command(
+    name = "ncc",
+    version,
+    about = "ncc.ai Registry 命令行客户端\n用法: ncc <command> [args...]\n目标：ncc target list（云端 ncc.ai / 内网 registry 节点各是一个目标）"
+)]
 struct Cli {
     /// 服务地址（本次命令用这个地址；已存在同名目标则复用，否则新建一个目标）
     #[arg(long, global = true)]
@@ -73,18 +78,25 @@ struct Cli {
 enum Cmd {
     /// 注册新账户（自动创建个人命名空间）
     Register {
-        #[arg(long)] email: String,
-        #[arg(long)] password: String,
-        #[arg(long)] name: Option<String>,
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        password: String,
+        #[arg(long)]
+        name: Option<String>,
         /// 注册邀请码（服务端启用门禁时必需；也可用环境变量 NCC_INVITE_CODE）
-        #[arg(long)] invite: Option<String>,
+        #[arg(long)]
+        invite: Option<String>,
     },
     /// 登录
     Login {
-        #[arg(long, default_value = "")] email: String,
-        #[arg(long, default_value = "")] password: String,
+        #[arg(long, default_value = "")]
+        email: String,
+        #[arg(long, default_value = "")]
+        password: String,
         /// 直接拿一个 API-Key 当登录态（机器人 / 桌面端绑定用，不必知道密码）
-        #[arg(long, default_value = "")] api_key: String,
+        #[arg(long, default_value = "")]
+        api_key: String,
     },
     /// 登出
     Logout,
@@ -185,6 +197,17 @@ enum Cmd {
     /// 需要目标声明 `services` 能力（云端 ncc.ai 已声明；内网节点将来也可以声明，
     /// 那时同一个命令在那台节点上直接可用）。
     Services(ServicesArgs),
+    /// NCC Index：把「我有什么 / 我要什么」登记进一个**频道**，
+    /// 别人用一句需求就能检索到（`ncc match` / `ncc list`）
+    ///
+    /// 平台是权威、内网节点是副本：`publish` 先写平台再尽力推已接入的节点，
+    /// 节点推失败不回滚，但会逐台报出来。
+    Index(IndexArgs),
+    /// 已索引的人 / 需求 / 频道
+    List(ListArgs),
+    /// 我有需求 → 谁能在（或我在找活儿 → 谁要人）：
+    /// ncc match "帮我订杭州的酒店" --channel booking/hotel
+    Match(index::MatchArgs),
     /// NCC Trace：Agent / HUR 的运行轨迹（采集 → 本地暂存 → 上传 → 评测 / 训练数据集）
     ///
     /// 纯本地命令不少（add / ls / show / stats / export / label 都有本地形态），
@@ -427,7 +450,49 @@ enum GrantCmd {
     Rm { id: String },
 }
 
-/// `ncc services` 子命令。不带子命令 = 浏览公开服务目录。
+/// `ncc index` 子命令。不带子命令 = 列出我登记的索引。
+#[derive(clap::Args)]
+struct IndexArgs {
+    #[command(subcommand)]
+    action: Option<IndexCmd>,
+}
+
+#[derive(Subcommand)]
+enum IndexCmd {
+    /// 登记一条索引（先写平台，再推内网节点）
+    #[command(alias = "add")]
+    Publish(index::PublishArgs),
+    /// 列出索引（缺省列公开的；--mine 只看自己）
+    List(index::ListArgs),
+    /// 看一条索引：@我/slug 或 IX-…
+    Show {
+        reference: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// 撤回一条索引（原服务 / 制品不受影响）
+    Rm { reference: String },
+    /// 把已有索引再推一次到内网节点
+    Push(index::PushArgs),
+}
+
+/// `ncc list` 子命令：索引里有什么。
+#[derive(clap::Args)]
+struct ListArgs {
+    #[command(subcommand)]
+    action: Option<ListCmd>,
+}
+
+#[derive(Subcommand)]
+enum ListCmd {
+    /// 已索引的人（供给方 / 需求方都在索引里，用 --side 区分）
+    Users(index::UsersArgs),
+    /// 索引里的**需求**（找活儿：看别人要什么）
+    Needs(index::ListArgs),
+    /// 频道清单（有哪些检索空间、各有多少条）
+    Channels(index::ChannelsArgs),
+}
+
 #[derive(clap::Args)]
 struct ServicesArgs {
     #[command(subcommand)]
@@ -555,8 +620,10 @@ enum NsCmd {
     /// 列出组织计划目录（含尚未开放的档：看得见，选不了）
     Plans,
     Create {
-        #[arg(long)] slug: String,
-        #[arg(long)] name: Option<String>,
+        #[arg(long)]
+        slug: String,
+        #[arg(long)]
+        name: Option<String>,
         /// 组织计划 id（默认 free；服务端只认目录里的，且必须是已开放的档）
         #[arg(long, default_value = "free")]
         plan: String,
@@ -642,22 +709,30 @@ struct PublishArgs {
     /// 直链（BYO storage url）
     #[arg(long)]
     url: Option<String>,
-    #[arg(long)] kind: String,
-    #[arg(long)] name: String,
-    #[arg(long)] slug: Option<String>,
-    #[arg(long)] version: Option<String>,
-    #[arg(long)] summary: Option<String>,
-    #[arg(long)] tags: Option<String>,
+    #[arg(long)]
+    kind: String,
+    #[arg(long)]
+    name: String,
+    #[arg(long)]
+    slug: Option<String>,
+    #[arg(long)]
+    version: Option<String>,
+    #[arg(long)]
+    summary: Option<String>,
+    #[arg(long)]
+    tags: Option<String>,
     /// harness 封装契约 JSON（kind=harness，含 harness.loader/entry）
     #[arg(long)]
     manifest: Option<String>,
     /// 目标 namespace slug（默认个人命名空间）
-    #[arg(long)] namespace: Option<String>,
+    #[arg(long)]
+    namespace: Option<String>,
     /// 可见性 public/private（private 需 Pro 付费）
     #[arg(long, default_value = "public", value_parser = ["public", "private"])]
     visibility: String,
     /// 以 draft 状态创建（默认 published）
-    #[arg(long)] draft: bool,
+    #[arg(long)]
+    draft: bool,
     /// 发布后把副本分发到 worker：all 或名称/id（逗号分隔）；仅 ncc-registry 支持
     #[arg(long)]
     replicate: Option<String>,
@@ -667,10 +742,14 @@ struct PublishArgs {
 struct SearchArgs {
     /// 关键词
     query: Option<String>,
-    #[arg(long)] kind: Option<String>,
-    #[arg(long)] tag: Option<String>,
-    #[arg(long)] namespace: Option<String>,
-    #[arg(long)] mine: bool,
+    #[arg(long)]
+    kind: Option<String>,
+    #[arg(long)]
+    tag: Option<String>,
+    #[arg(long)]
+    namespace: Option<String>,
+    #[arg(long)]
+    mine: bool,
 }
 
 fn main() {
@@ -681,12 +760,23 @@ fn main() {
     // `ncc hub` 单独出现（没有子命令）= 看云端目标的状态
     if hub_prefix && args.len() <= 1 {
         let mut cfg = config::load();
-        if let Err(e) = resolve_target(&mut cfg, &Cli { base: None, target: None, cmd: Cmd::Target(target::TargetArgs { action: None }) }, hub_prefix) {
+        if let Err(e) = resolve_target(
+            &mut cfg,
+            &Cli {
+                base: None,
+                target: None,
+                cmd: Cmd::Target(target::TargetArgs { action: None }),
+            },
+            hub_prefix,
+        ) {
             eprintln!("✗ {:#}", e);
             std::process::exit(1);
         }
         let action = Cmd::Target(target::TargetArgs {
-            action: Some(target::TargetAction::Show { name: target::hub_target_name(&cfg), json: false }),
+            action: Some(target::TargetAction::Show {
+                name: target::hub_target_name(&cfg),
+                json: false,
+            }),
         });
         if let Err(e) = run(&mut cfg, &action) {
             eprintln!("✗ {:#}", e);
@@ -773,7 +863,10 @@ fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::R
                 let mut probe_cfg = cfg.clone();
                 probe_cfg.targets.insert(
                     "probe".into(),
-                    config::Target { base_url: base.clone(), ..config::Target::default() },
+                    config::Target {
+                        base_url: base.clone(),
+                        ..config::Target::default()
+                    },
                 );
                 probe_cfg.current = Some("probe".into());
                 let m = capability::probe(&probe_cfg);
@@ -785,7 +878,13 @@ fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::R
                         kind: match m.kind.as_str() {
                             "node" => "registry".to_string(),
                             "hub" => "cloud".to_string(),
-                            _ => if base.contains("ncc.ai") { "cloud".into() } else { "registry".into() },
+                            _ => {
+                                if base.contains("ncc.ai") {
+                                    "cloud".into()
+                                } else {
+                                    "registry".into()
+                                }
+                            }
                         },
                         base_url: base.clone(),
                         ..config::Target::default()
@@ -836,6 +935,7 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Profile(_) => Some("profile"),
         Cmd::Nodes(_) => Some("nodes"),
         Cmd::Services(_) => Some("services"),
+        Cmd::Index(_) | Cmd::List(_) | Cmd::Match(_) => Some("index"),
         Cmd::Grant(_) => Some("grants"),
         Cmd::P2p(p) => match p {
             // 预检纯本地（要 STUN，但不要 NCC 服务端）：老服务端/离线环境也应当能用。
@@ -848,10 +948,13 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
             RegistryCmd::Share(_) => Some("share"),
             RegistryCmd::Ticket(_) | RegistryCmd::Add(_) => Some("access"),
             RegistryCmd::Catalog(_) | RegistryCmd::Route { .. } => Some("cluster"),
-            RegistryCmd::Join(_) | RegistryCmd::Status(_) | RegistryCmd::Nodes(_) | RegistryCmd::Leave(_) => {
-                Some("nodes")
+            RegistryCmd::Join(_)
+            | RegistryCmd::Status(_)
+            | RegistryCmd::Nodes(_)
+            | RegistryCmd::Leave(_) => Some("nodes"),
+            RegistryCmd::Login(_) | RegistryCmd::Replicate(_) | RegistryCmd::Rm(_) => {
+                Some("registry")
             }
-            RegistryCmd::Login(_) | RegistryCmd::Replicate(_) | RegistryCmd::Rm(_) => Some("registry"),
             RegistryCmd::P2p(_) => Some("p2p"),
         },
         _ => None,
@@ -880,8 +983,17 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         );
     }
     match cmd {
-        Cmd::Register { email, password, name, invite } => cmd_register(cfg, email, password, name.as_deref(), invite.as_deref()),
-        Cmd::Login { email, password, api_key } => cmd_login(cfg, email, password, api_key),
+        Cmd::Register {
+            email,
+            password,
+            name,
+            invite,
+        } => cmd_register(cfg, email, password, name.as_deref(), invite.as_deref()),
+        Cmd::Login {
+            email,
+            password,
+            api_key,
+        } => cmd_login(cfg, email, password, api_key),
         Cmd::Logout => {
             let name = cfg.current_name();
             config::clear_session(cfg)?;
@@ -900,7 +1012,11 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Download { reference, out } => cmd_download(cfg, reference, out.as_deref()),
-        Cmd::Install { reference, dir, force } => cmd_install(cfg, reference, dir.as_deref(), *force),
+        Cmd::Install {
+            reference,
+            dir,
+            force,
+        } => cmd_install(cfg, reference, dir.as_deref(), *force),
         Cmd::Terminal { action } => match action {
             Some(TermAction::Status) => {
                 println!("{}", terminal::status(cfg));
@@ -929,24 +1045,54 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         Cmd::Store(s) => store::run(cfg, s),
         // Gateway 是纯本地命令（不需要服务器）：不查能力面，也不读写 NCC 配置。
         Cmd::App(a) => match a {
-            AppCmd::Init { dir, name, namespace, share_target, port, force, json } => app::init(
+            AppCmd::Init {
+                dir,
+                name,
+                namespace,
+                share_target,
+                port,
+                force,
+                json,
+            } => app::init(
                 cfg,
                 &app::InitArgs {
-                    dir: dir.clone(), name: name.clone(), namespace: namespace.clone(),
+                    dir: dir.clone(),
+                    name: name.clone(),
+                    namespace: namespace.clone(),
                     share_target: share_target.clone(),
-                    port: *port, force: *force, json: *json,
+                    port: *port,
+                    force: *force,
+                    json: *json,
                 },
             ),
-            AppCmd::Doctor { dir, json } => {
-                app::doctor(cfg, &app::DoctorArgs { dir: dir.clone(), json: *json })
-            }
-            AppCmd::Up { dir, port } => app::up(cfg, &app::UpArgs { dir: dir.clone(), port: *port }),
-            AppCmd::Status { dir, json } => {
-                app::status(cfg, &app::StatusArgs { dir: dir.clone(), json: *json })
-            }
+            AppCmd::Doctor { dir, json } => app::doctor(
+                cfg,
+                &app::DoctorArgs {
+                    dir: dir.clone(),
+                    json: *json,
+                },
+            ),
+            AppCmd::Up { dir, port } => app::up(
+                cfg,
+                &app::UpArgs {
+                    dir: dir.clone(),
+                    port: *port,
+                },
+            ),
+            AppCmd::Status { dir, json } => app::status(
+                cfg,
+                &app::StatusArgs {
+                    dir: dir.clone(),
+                    json: *json,
+                },
+            ),
             AppCmd::Export { dir, out, json } => app::export(
                 cfg,
-                &app::ExportArgs { dir: dir.clone(), out: out.clone(), json: *json },
+                &app::ExportArgs {
+                    dir: dir.clone(),
+                    out: out.clone(),
+                    json: *json,
+                },
             ),
         },
         Cmd::Gateway(g) => match g {
@@ -954,7 +1100,14 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             GatewayCmd::Check => gateway::check(),
             GatewayCmd::Run => gateway::run(),
             GatewayCmd::Status => gateway::status(),
-            GatewayCmd::Audit { tail, json, remote, since, limit, csv } => {
+            GatewayCmd::Audit {
+                tail,
+                json,
+                remote,
+                since,
+                limit,
+                csv,
+            } => {
                 if *remote {
                     gwreport::audit_remote(
                         cfg,
@@ -969,7 +1122,12 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
                     gateway::audit_cmd(*tail, *json)
                 }
             }
-            GatewayCmd::Bind { namespace, name, version, json } => gwreport::bind(
+            GatewayCmd::Bind {
+                namespace,
+                name,
+                version,
+                json,
+            } => gwreport::bind(
                 cfg,
                 &gwreport::BindArgs {
                     namespace: namespace.clone(),
@@ -980,24 +1138,29 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             ),
             GatewayCmd::Heartbeat { status, json } => gwreport::heartbeat(
                 cfg,
-                &gwreport::HeartbeatArgs { status: status.clone(), json: *json },
+                &gwreport::HeartbeatArgs {
+                    status: status.clone(),
+                    json: *json,
+                },
             ),
-            GatewayCmd::Report { since, window_minutes, dry_run, drop_rejected, json } => {
-                gwreport::report(
-                    cfg,
-                    &gwreport::ReportArgs {
-                        since: since.clone(),
-                        window_minutes: *window_minutes,
-                        dry_run: *dry_run,
-                        drop_rejected: *drop_rejected,
-                        json: *json,
-                    },
-                )
-            }
+            GatewayCmd::Report {
+                since,
+                window_minutes,
+                dry_run,
+                drop_rejected,
+                json,
+            } => gwreport::report(
+                cfg,
+                &gwreport::ReportArgs {
+                    since: since.clone(),
+                    window_minutes: *window_minutes,
+                    dry_run: *dry_run,
+                    drop_rejected: *drop_rejected,
+                    json: *json,
+                },
+            ),
             GatewayCmd::Usage { json } => gwreport::usage(cfg, *json),
-            GatewayCmd::Unbind { purge_state, json } => {
-                gwreport::unbind(cfg, *purge_state, *json)
-            }
+            GatewayCmd::Unbind { purge_state, json } => gwreport::unbind(cfg, *purge_state, *json),
         },
         Cmd::Profile(p) => match &p.action {
             None | Some(ProfileCmd::Show { username: None }) => profile::show(cfg, None),
@@ -1015,7 +1178,14 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Some(ProfileCmd::Ratings { handle }) => profile::ratings(cfg, handle.as_deref()),
         },
         Cmd::Nodes(n) => match &n.action {
-            None => nodes::list(cfg, &nodes::ListArgs { kind: None, q: None, can: Vec::new() }),
+            None => nodes::list(
+                cfg,
+                &nodes::ListArgs {
+                    kind: None,
+                    q: None,
+                    can: Vec::new(),
+                },
+            ),
             Some(NodesCmd::List(a)) => nodes::list(cfg, a),
             Some(NodesCmd::Kinds) => nodes::kinds(cfg),
             Some(NodesCmd::Offers) => nodes::offers(cfg),
@@ -1038,11 +1208,59 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             p2p::P2pCmd::Signal(s) => p2p::signal(cfg, &s),
             p2p::P2pCmd::Ticket(t) => p2p::ticket(cfg, &t),
         },
+        Cmd::Index(v) => match &v.action {
+            // 不带子命令：先看自己的 —— 这是「我刚登记了什么」的常见问题
+            None => index::list(
+                cfg,
+                &index::ListArgs {
+                    mine: true,
+                    ..Default::default()
+                },
+            ),
+            Some(IndexCmd::Publish(a)) => index::publish(cfg, a),
+            Some(IndexCmd::List(a)) => index::list(cfg, a),
+            Some(IndexCmd::Show { reference, json }) => index::show(cfg, reference, *json),
+            Some(IndexCmd::Rm { reference }) => index::rm(cfg, reference),
+            Some(IndexCmd::Push(a)) => index::push(cfg, a),
+        },
+        Cmd::List(v) => match &v.action {
+            // 不带子命令：看索引里的人（大多数人想问的就是这个）
+            None => index::users(
+                cfg,
+                &index::UsersArgs {
+                    channel: None,
+                    kind: None,
+                    side: None,
+                    q: None,
+                    limit: 30,
+                    json: false,
+                },
+            ),
+            Some(ListCmd::Users(a)) => index::users(cfg, a),
+            Some(ListCmd::Needs(a)) => index::list(
+                cfg,
+                &index::ListArgs {
+                    side: Some("need".into()),
+                    ..a.clone()
+                },
+            ),
+            Some(ListCmd::Channels(a)) => index::channels(cfg, a),
+        },
+        Cmd::Match(a) => index::match_intent(cfg, a),
         Cmd::Services(v) => match &v.action {
-            None => services::list(cfg, &services::ListArgs {
-                category: None, tag: None, region: None, protocol: None, q: None,
-                mine: false, limit: 20, json: false,
-            }),
+            None => services::list(
+                cfg,
+                &services::ListArgs {
+                    category: None,
+                    tag: None,
+                    region: None,
+                    protocol: None,
+                    q: None,
+                    mine: false,
+                    limit: 20,
+                    json: false,
+                },
+            ),
             Some(ServicesCmd::List(a)) => services::list(cfg, a),
             Some(ServicesCmd::Match(a)) => services::match_intent(cfg, a),
             Some(ServicesCmd::Show(a)) => services::show(cfg, a),
@@ -1063,7 +1281,9 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
                 configs::ConfigAction::List(a) => configs::list(cfg, a),
                 configs::ConfigAction::Get(a) => configs::get(cfg, a),
                 configs::ConfigAction::Set(a) => configs::set(cfg, a),
-                configs::ConfigAction::History { target, json } => configs::history(cfg, target, *json),
+                configs::ConfigAction::History { target, json } => {
+                    configs::history(cfg, target, *json)
+                }
                 configs::ConfigAction::Rollback(a) => configs::rollback(cfg, a),
                 configs::ConfigAction::Bundle(a) => configs::bundle(cfg, a),
                 configs::ConfigAction::Kinds { json } => configs::kinds(cfg, *json),
@@ -1077,7 +1297,12 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             RegistryCmd::Leave(a) => registry::leave(cfg, a),
         },
         Cmd::Target(t) => target::run(cfg, t),
-        Cmd::Mcp(a) => mcp::serve(cfg, &mcp::McpOptions { package: a.package.clone() }),
+        Cmd::Mcp(a) => mcp::serve(
+            cfg,
+            &mcp::McpOptions {
+                package: a.package.clone(),
+            },
+        ),
     }
 }
 
@@ -1087,22 +1312,42 @@ fn save_session(cfg: &mut CliConfig, token: &str, email: &str, name: &str) -> an
     config::save_session(cfg, token, email, name)
 }
 
-fn cmd_register(cfg: &mut CliConfig, email: &str, password: &str, name: Option<&str>, invite: Option<&str>) -> anyhow::Result<()> {
+fn cmd_register(
+    cfg: &mut CliConfig,
+    email: &str,
+    password: &str,
+    name: Option<&str>,
+    invite: Option<&str>,
+) -> anyhow::Result<()> {
     // 邀请码：--invite 优先，其次环境变量 NCC_INVITE_CODE（服务端未启用门禁时可留空）
-    let invite = invite.map(|s| s.to_string()).or_else(|| std::env::var("NCC_INVITE_CODE").ok());
+    let invite = invite
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("NCC_INVITE_CODE").ok());
     let body = json!({ "email": email, "password": password, "name": name, "inviteCode": invite });
     let data = api::post_json(cfg, "/api/auth/register", None, &body)?;
     let token = data["token"].as_str().context("响应缺少 token")?;
     let u = &data["user"];
-    save_session(cfg, token, u["email"].as_str().unwrap_or(email), u["name"].as_str().unwrap_or(name.unwrap_or("")))?;
-    println!("✅ 注册成功：{}（token 已保存到 {}）", u["email"].as_str().unwrap_or(email), config::config_path().display());
+    save_session(
+        cfg,
+        token,
+        u["email"].as_str().unwrap_or(email),
+        u["name"].as_str().unwrap_or(name.unwrap_or("")),
+    )?;
+    println!(
+        "✅ 注册成功：{}（token 已保存到 {}）",
+        u["email"].as_str().unwrap_or(email),
+        config::config_path().display()
+    );
     // 内网 registry 的第一个账号自动成为节点管理员，并在这里拿到机器用 admin key/secret。
     // secret 只在注册响应里出现一次 —— 不打印就等于让用户永久失去它。
     if let Some(admin) = data.get("admin") {
         if let Some(key) = admin["key"].as_str() {
             println!("\n👑 你是本节点的第一个账号 → 自动成为管理员");
             println!("   admin key      {key}");
-            println!("   admin secret   {}", admin["secret"].as_str().unwrap_or(""));
+            println!(
+                "   admin secret   {}",
+                admin["secret"].as_str().unwrap_or("")
+            );
             println!("   （secret 只显示这一次，请立刻保存；写进本机配置：）");
             println!("   ncc registry admin login --key {key} --secret <上面的 secret>");
         }
@@ -1110,7 +1355,12 @@ fn cmd_register(cfg: &mut CliConfig, email: &str, password: &str, name: Option<&
     Ok(())
 }
 
-fn cmd_login(cfg: &mut CliConfig, email: &str, password: &str, api_key: &str) -> anyhow::Result<()> {
+fn cmd_login(
+    cfg: &mut CliConfig,
+    email: &str,
+    password: &str,
+    api_key: &str,
+) -> anyhow::Result<()> {
     // API-Key 直接当 token 存进当前目标的登录态：机器人 / 桌面端绑定用，不必知道密码。
     // 身份（email/name）尽力用 /api/auth/me 补全，取不到也不影响用。
     if !api_key.trim().is_empty() {
@@ -1125,7 +1375,11 @@ fn cmd_login(cfg: &mut CliConfig, email: &str, password: &str, api_key: &str) ->
         save_session(cfg, &token, &mail, &name)?;
         println!(
             "✅ 已用 API-Key 登录{}（token 已保存到 {}）",
-            if mail.is_empty() { "（身份未取到）".to_string() } else { format!("：{mail}") },
+            if mail.is_empty() {
+                "（身份未取到）".to_string()
+            } else {
+                format!("：{mail}")
+            },
             config::config_path().display()
         );
         return Ok(());
@@ -1137,7 +1391,12 @@ fn cmd_login(cfg: &mut CliConfig, email: &str, password: &str, api_key: &str) ->
     let data = api::post_json(cfg, "/api/auth/login", None, &body)?;
     let token = data["token"].as_str().context("响应缺少 token")?;
     let u = &data["user"];
-    save_session(cfg, token, u["email"].as_str().unwrap_or(email), u["name"].as_str().unwrap_or(""))?;
+    save_session(
+        cfg,
+        token,
+        u["email"].as_str().unwrap_or(email),
+        u["name"].as_str().unwrap_or(""),
+    )?;
     println!("✅ 登录成功：{}", u["email"].as_str().unwrap_or(email));
     Ok(())
 }
@@ -1146,14 +1405,29 @@ fn cmd_me(cfg: &CliConfig) -> anyhow::Result<()> {
     let token = config::require_token(cfg)?;
     let data = api::get(cfg, "/api/auth/me", Some(&token))?;
     let u = &data["user"];
-    println!("用户: {} <{}>  ({})", u["name"].as_str().unwrap_or(""), u["email"].as_str().unwrap_or(""), u["id"].as_str().unwrap_or(""));
+    println!(
+        "用户: {} <{}>  ({})",
+        u["name"].as_str().unwrap_or(""),
+        u["email"].as_str().unwrap_or(""),
+        u["id"].as_str().unwrap_or("")
+    );
     println!("计划: {}", u["plan"].as_str().unwrap_or("free"));
     println!("Namespaces:");
     if let Some(ns) = data["namespaces"].as_array() {
         for n in ns {
             let ty = if n["type"] == "org" { "🏢" } else { "👤" };
-            let owner = if n["owner"].as_bool().unwrap_or(false) { "owner" } else { "member" };
-            println!("  {} {}  {}  {}", ty, n["slug"].as_str().unwrap_or(""), owner, n["visibility"].as_str().unwrap_or(""));
+            let owner = if n["owner"].as_bool().unwrap_or(false) {
+                "owner"
+            } else {
+                "member"
+            };
+            println!(
+                "  {} {}  {}  {}",
+                ty,
+                n["slug"].as_str().unwrap_or(""),
+                owner,
+                n["visibility"].as_str().unwrap_or("")
+            );
         }
     }
     Ok(())
@@ -1174,12 +1448,19 @@ fn cmd_ns(cfg: &CliConfig, n: &NsCmd) -> anyhow::Result<()> {
                     } else {
                         "-".to_string()
                     };
-                    println!("{} {}\t{}\t{}\t{}\t{}",
-                        ty, x["slug"].as_str().unwrap_or(""),
+                    println!(
+                        "{} {}\t{}\t{}\t{}\t{}",
+                        ty,
+                        x["slug"].as_str().unwrap_or(""),
                         x["name"].as_str().unwrap_or(""),
-                        if x["owner"].as_bool().unwrap_or(false) { "owner" } else { "member" },
+                        if x["owner"].as_bool().unwrap_or(false) {
+                            "owner"
+                        } else {
+                            "member"
+                        },
                         x["visibility"].as_str().unwrap_or(""),
-                        plan);
+                        plan
+                    );
                 }
             }
             Ok(())
@@ -1194,13 +1475,15 @@ fn cmd_ns(cfg: &CliConfig, n: &NsCmd) -> anyhow::Result<()> {
                 for p in plans {
                     let avail = p["available"].as_bool().unwrap_or(false);
                     let mark = if avail { "✓" } else { "·" };
-                    println!("{} {:<6} {:<10} {} 个组织 / 每组织 {} 人  {}",
+                    println!(
+                        "{} {:<6} {:<10} {} 个组织 / 每组织 {} 人  {}",
                         mark,
                         p["id"].as_str().unwrap_or(""),
                         p["nameZh"].as_str().unwrap_or(""),
                         p["maxOrgs"].as_i64().unwrap_or(0),
                         p["maxMembers"].as_i64().unwrap_or(0),
-                        p["priceZh"].as_str().unwrap_or(""));
+                        p["priceZh"].as_str().unwrap_or("")
+                    );
                     if !avail {
                         if let Some(note) = p["noteZh"].as_str() {
                             if !note.is_empty() {
@@ -1211,8 +1494,11 @@ fn cmd_ns(cfg: &CliConfig, n: &NsCmd) -> anyhow::Result<()> {
                 }
             }
             if let Some(used) = data["used"].as_i64() {
-                println!("已拥有 {} / {} 个组织（额度按所有者算）",
-                    used, data["quota"].as_i64().unwrap_or(0));
+                println!(
+                    "已拥有 {} / {} 个组织（额度按所有者算）",
+                    used,
+                    data["quota"].as_i64().unwrap_or(0)
+                );
             }
             println!("计划里写着但选不了的档 = 还没开放；开放在服务端目录里改。");
             Ok(())
@@ -1220,10 +1506,12 @@ fn cmd_ns(cfg: &CliConfig, n: &NsCmd) -> anyhow::Result<()> {
         NsCmd::Create { slug, name, plan } => {
             let body = json!({ "slug": slug, "name": name, "plan": plan });
             let data = api::post_json(cfg, "/api/namespaces", Some(&token), &body)?;
-            println!("✅ namespace 创建：{} ({})　计划 {}",
+            println!(
+                "✅ namespace 创建：{} ({})　计划 {}",
                 data["slug"].as_str().unwrap_or(&slug),
                 data["id"].as_str().unwrap_or(""),
-                data["plan"].as_str().unwrap_or(&plan));
+                data["plan"].as_str().unwrap_or(&plan)
+            );
             Ok(())
         }
     }
@@ -1245,8 +1533,20 @@ fn cmd_publish(cfg: &CliConfig, a: &PublishArgs) -> anyhow::Result<()> {
 
     if let Some(f) = &a.file {
         let bytes = std::fs::read(f).with_context(|| format!("读取文件失败: {f}"))?;
-        let fname = Path::new(f).file_name().and_then(|s| s.to_str()).unwrap_or("upload.bin").to_string();
-        let up = api::request(cfg, "POST", "/api/registry/uploads", Some(&token), None, Some(&bytes), &[("X-Filename", &fname)])?;
+        let fname = Path::new(f)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("upload.bin")
+            .to_string();
+        let up = api::request(
+            cfg,
+            "POST",
+            "/api/registry/uploads",
+            Some(&token),
+            None,
+            Some(&bytes),
+            &[("X-Filename", &fname)],
+        )?;
         storage_url = up["storageUrl"].as_str().unwrap_or("").to_string();
         sha = up["sha256"].as_str().unwrap_or("").to_string();
         size = up["size"].as_i64().unwrap_or(0);
@@ -1255,16 +1555,25 @@ fn cmd_publish(cfg: &CliConfig, a: &PublishArgs) -> anyhow::Result<()> {
     let mut ns_id: Option<String> = None;
     if let Some(slug) = &a.namespace {
         let mine = api::get(cfg, "/api/namespaces/mine", Some(&token))?;
-        let hit = mine["namespaces"].as_array()
-            .and_then(|arr| arr.iter().find(|x| x["slug"].as_str() == Some(slug.as_str())));
+        let hit = mine["namespaces"].as_array().and_then(|arr| {
+            arr.iter()
+                .find(|x| x["slug"].as_str() == Some(slug.as_str()))
+        });
         match hit {
             Some(n) => ns_id = n["id"].as_str().map(|s| s.to_string()),
             None => bail!("你无权使用 namespace {}", slug),
         }
     }
 
-    let tags: Vec<String> = a.tags.as_deref()
-        .map(|t| t.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+    let tags: Vec<String> = a
+        .tags
+        .as_deref()
+        .map(|t| {
+            t.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     let status = if a.draft { "draft" } else { "published" };
 
@@ -1291,28 +1600,42 @@ fn cmd_publish(cfg: &CliConfig, a: &PublishArgs) -> anyhow::Result<()> {
         body["replicate"] = if r.eq_ignore_ascii_case("all") {
             json!("all")
         } else {
-            json!(r.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>())
+            json!(r
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>())
         };
     }
 
     let data = api::post_json(cfg, "/api/registry", Some(&token), &body)?;
     let it = &data["item"];
-    println!("✅ 已发布 [{}] {}/{}@{}  status={}  ({})",
+    println!(
+        "✅ 已发布 [{}] {}/{}@{}  status={}  ({})",
         it["kind"].as_str().unwrap_or(""),
         it["namespace"]["slug"].as_str().unwrap_or(""),
         it["slug"].as_str().unwrap_or(""),
         it["version"].as_str().unwrap_or(""),
         it["status"].as_str().unwrap_or(""),
-        it["id"].as_str().unwrap_or(""));
+        it["id"].as_str().unwrap_or("")
+    );
     println!("   存储: {}", it["storage"]["url"].as_str().unwrap_or(""));
     if let Some(reps) = data["replicated"].as_array() {
         if !reps.is_empty() {
             println!("   已分发到 {} 个节点：", reps.len());
             for r in reps {
                 if r["ok"].as_bool().unwrap_or(false) {
-                    println!("     ✓ {}  {} 字节", r["nodeName"].as_str().unwrap_or(""), r["size"].as_i64().unwrap_or(0));
+                    println!(
+                        "     ✓ {}  {} 字节",
+                        r["nodeName"].as_str().unwrap_or(""),
+                        r["size"].as_i64().unwrap_or(0)
+                    );
                 } else {
-                    println!("     ✗ {}  {}", r["nodeName"].as_str().unwrap_or(""), r["error"].as_str().unwrap_or("失败"));
+                    println!(
+                        "     ✗ {}  {}",
+                        r["nodeName"].as_str().unwrap_or(""),
+                        r["error"].as_str().unwrap_or("失败")
+                    );
                 }
             }
         }
@@ -1324,30 +1647,56 @@ fn cmd_publish(cfg: &CliConfig, a: &PublishArgs) -> anyhow::Result<()> {
 }
 
 fn cmd_search(cfg: &CliConfig, a: &SearchArgs) -> anyhow::Result<()> {
-    let token = if a.mine { Some(config::require_token(cfg)?) } else { None };
+    let token = if a.mine {
+        Some(config::require_token(cfg)?)
+    } else {
+        None
+    };
     let mut qs: Vec<(String, String)> = Vec::new();
-    if let Some(q) = &a.query { qs.push(("q".into(), q.clone())); }
-    if let Some(k) = &a.kind { qs.push(("kind".into(), k.clone())); }
-    if let Some(t) = &a.tag { qs.push(("tag".into(), t.clone())); }
-    if let Some(n) = &a.namespace { qs.push(("namespace".into(), n.clone())); }
-    if a.mine { qs.push(("mine".into(), "1".into())); }
-    let q = if qs.is_empty() { String::new() } else {
-        format!("?{}", qs.iter().map(|(k, v)| format!("{k}={}", urlenc(v))).collect::<Vec<_>>().join("&"))
+    if let Some(q) = &a.query {
+        qs.push(("q".into(), q.clone()));
+    }
+    if let Some(k) = &a.kind {
+        qs.push(("kind".into(), k.clone()));
+    }
+    if let Some(t) = &a.tag {
+        qs.push(("tag".into(), t.clone()));
+    }
+    if let Some(n) = &a.namespace {
+        qs.push(("namespace".into(), n.clone()));
+    }
+    if a.mine {
+        qs.push(("mine".into(), "1".into()));
+    }
+    let q = if qs.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "?{}",
+            qs.iter()
+                .map(|(k, v)| format!("{k}={}", urlenc(v)))
+                .collect::<Vec<_>>()
+                .join("&")
+        )
     };
     let data = api::get(cfg, &format!("/api/registry{q}"), token.as_deref())?;
     println!("共 {} 条:", data["total"].as_i64().unwrap_or(0));
     if let Some(items) = data["items"].as_array() {
         for it in items {
-            println!("  [{}] {}/{}@{}  {}  {}  {}⬇",
+            println!(
+                "  [{}] {}/{}@{}  {}  {}  {}⬇",
                 it["kind"].as_str().unwrap_or(""),
                 it["namespace"]["slug"].as_str().unwrap_or(""),
                 it["slug"].as_str().unwrap_or(""),
                 it["version"].as_str().unwrap_or(""),
                 it["status"].as_str().unwrap_or(""),
                 it["visibility"].as_str().unwrap_or(""),
-                it["downloads"].as_i64().unwrap_or(0));
+                it["downloads"].as_i64().unwrap_or(0)
+            );
             if let Some(s) = it["summary"].as_str() {
-                if !s.is_empty() { println!("      {s}"); }
+                if !s.is_empty() {
+                    println!("      {s}");
+                }
             }
         }
     }
@@ -1358,7 +1707,9 @@ fn urlenc(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'@' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'@' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{:02X}", b)),
         }
     }
@@ -1371,21 +1722,28 @@ fn cmd_download(cfg: &CliConfig, target: &str, out: Option<&str>) -> anyhow::Res
     let dl = api::get(cfg, &path, token.as_deref())?;
     let url = dl["url"].as_str().context("响应缺少 url")?;
     println!("⬇ {url}");
-    let default_name = format!("{}-{}@{}",
+    let default_name = format!(
+        "{}-{}@{}",
         dl["namespaceSlug"].as_str().unwrap_or("x"),
         dl["slug"].as_str().unwrap_or("x"),
-        dl["version"].as_str().unwrap_or(""));
+        dl["version"].as_str().unwrap_or("")
+    );
     let dest = out.unwrap_or(&default_name).to_string();
 
     // 用同一 agent 拉取制品字节
-    let resp = ureq_agent().get(url).call().map_err(|e| anyhow!("下载失败: {e}"))?;
+    let resp = ureq_agent()
+        .get(url)
+        .call()
+        .map_err(|e| anyhow!("下载失败: {e}"))?;
     let mut buf: Vec<u8> = Vec::new();
     let mut reader = resp.into_reader();
     std::io::copy(&mut reader, &mut buf)?;
     std::fs::write(&dest, &buf)?;
     println!("✅ 已保存 {} ({} bytes)", dest, buf.len());
     if let Some(s) = dl["sha256"].as_str() {
-        if !s.is_empty() { println!("   sha256: {s}"); }
+        if !s.is_empty() {
+            println!("   sha256: {s}");
+        }
     }
     Ok(())
 }
@@ -1409,10 +1767,19 @@ fn ext_of_url(url: &str) -> String {
     String::new()
 }
 
-fn cmd_install(cfg: &CliConfig, target: &str, dir: Option<&str>, force: bool) -> anyhow::Result<()> {
+fn cmd_install(
+    cfg: &CliConfig,
+    target: &str,
+    dir: Option<&str>,
+    force: bool,
+) -> anyhow::Result<()> {
     // 私有条目可用登录 token 拉取；公开条目匿名即可
     let token = config::require_token(cfg).ok();
-    let dl = api::get(cfg, &format!("/api/registry/{target}/download"), token.as_deref())?;
+    let dl = api::get(
+        cfg,
+        &format!("/api/registry/{target}/download"),
+        token.as_deref(),
+    )?;
     let id = dl["id"].as_str().unwrap_or("").to_string();
     let ns = dl["namespaceSlug"].as_str().unwrap_or("x").to_string();
     let slug = dl["slug"].as_str().unwrap_or("x").to_string();
@@ -1427,8 +1794,16 @@ fn cmd_install(cfg: &CliConfig, target: &str, dir: Option<&str>, force: bool) ->
     let mut manifest: Option<Value> = None;
     if !id.is_empty() {
         if let Ok(info) = api::get(cfg, &format!("/api/registry/{id}"), token.as_deref()) {
-            kind = info.pointer("/item/kind").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            summary = info.pointer("/item/summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            kind = info
+                .pointer("/item/kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            summary = info
+                .pointer("/item/summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             manifest = info
                 .pointer("/item/manifest")
                 .and_then(|v| v.as_object())
@@ -1439,7 +1814,11 @@ fn cmd_install(cfg: &CliConfig, target: &str, dir: Option<&str>, force: bool) ->
     let root = dir.map(PathBuf::from).unwrap_or_else(packages_dir);
     let pkg_dir = root.join(&ns).join(&slug);
     let ext = ext_of_url(&url);
-    let file_name = if ext.is_empty() { slug.clone() } else { format!("{slug}{ext}") };
+    let file_name = if ext.is_empty() {
+        slug.clone()
+    } else {
+        format!("{slug}{ext}")
+    };
     let dest = pkg_dir.join(&file_name);
     let manifest_path = pkg_dir.join("package.json");
 
@@ -1448,14 +1827,20 @@ fn cmd_install(cfg: &CliConfig, target: &str, dir: Option<&str>, force: bool) ->
     }
 
     // 拉取制品字节
-    let resp = ureq_agent().get(&url).call().map_err(|e| anyhow!("下载失败: {e}"))?;
+    let resp = ureq_agent()
+        .get(&url)
+        .call()
+        .map_err(|e| anyhow!("下载失败: {e}"))?;
     let mut buf: Vec<u8> = Vec::new();
     let mut reader = resp.into_reader();
     std::io::copy(&mut reader, &mut buf)?;
 
     fs::create_dir_all(&pkg_dir)?;
     fs::write(&dest, &buf)?;
-    let installed_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let installed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let mut meta = json!({
         "source": target, "id": id, "name": dl_name, "kind": kind,
         "namespace": ns, "slug": slug, "version": version, "summary": summary,
@@ -1473,7 +1858,11 @@ fn cmd_install(cfg: &CliConfig, target: &str, dir: Option<&str>, force: bool) ->
     }
     fs::write(&manifest_path, serde_json::to_string_pretty(&meta)?)?;
 
-    let head = if kind.is_empty() { String::new() } else { format!("[{}] ", kind) };
+    let head = if kind.is_empty() {
+        String::new()
+    } else {
+        format!("[{}] ", kind)
+    };
     println!("⬇ {head}{ns}/{slug}@{version}");
     println!("✅ 已安装 → {}", dest.display());
     if !summary.is_empty() {
@@ -1486,7 +1875,9 @@ fn cmd_install(cfg: &CliConfig, target: &str, dir: Option<&str>, force: bool) ->
 }
 
 fn ureq_agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(60)).build()
+    ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
 }
 
 /* ---------------- API-Key ---------------- */
@@ -1500,23 +1891,48 @@ fn cmd_key(cfg: &CliConfig, k: &KeyCmd) -> anyhow::Result<()> {
                 println!("还没有 API-Key。用 `ncc key create --label ci` 创建。");
                 return Ok(());
             }
-            println!("{:<26} {:<16} {:<12} {:<10} {}", "ID", "备注", "类型", "命名空间", "过期");
+            println!(
+                "{:<26} {:<16} {:<12} {:<10} {}",
+                "ID", "备注", "类型", "命名空间", "过期"
+            );
             for x in &keys {
-                let ns = x["namespaces"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
+                let ns = x["namespaces"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
                     .unwrap_or_default();
                 let exp = match x["expiresAt"].as_str() {
                     Some(e) => nodes::human_time(e),
                     None => "长期".to_string(),
                 };
-                println!("{:<26} {:<16} {:<12} {:<10} {}",
+                println!(
+                    "{:<26} {:<16} {:<12} {:<10} {}",
                     x["id"].as_str().unwrap_or(""),
                     x["label"].as_str().unwrap_or("-"),
-                    if x["kind"].as_str().unwrap_or("user") == "distribution" { "分发" } else { "通用" },
-                    if ns.is_empty() { "不限".to_string() } else { ns },
-                    exp);
-                let scopes = x["scopes"].as_array()
-                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" "))
+                    if x["kind"].as_str().unwrap_or("user") == "distribution" {
+                        "分发"
+                    } else {
+                        "通用"
+                    },
+                    if ns.is_empty() {
+                        "不限".to_string()
+                    } else {
+                        ns
+                    },
+                    exp
+                );
+                let scopes = x["scopes"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
                     .unwrap_or_default();
                 println!("    scopes: {}", scopes);
                 if let Some(note) = x["note"].as_str().filter(|s| !s.is_empty()) {
@@ -1533,30 +1949,48 @@ fn cmd_key(cfg: &CliConfig, k: &KeyCmd) -> anyhow::Result<()> {
                 ("registry:publish", "发布/修改/删除条目（含上传字节）"),
                 ("profile:read", "读名片"),
                 ("profile:write", "改自己的名片"),
-                ("social:write", "关注 / 取关他人、给名片打分（不放行任何数据）"),
+                (
+                    "social:write",
+                    "关注 / 取关他人、给名片打分（不放行任何数据）",
+                ),
                 ("nodes:read", "读我的节点与可连接节点（含区域聚合与推荐）"),
                 ("nodes:write", "连 / 断节点、改 Name 标签、上报节点心跳"),
                 ("grants:read", "查看授权关系"),
                 ("grants:write", "授予 / 撤销授权"),
                 ("living:write", "上报设备心跳（Living）"),
-                ("social:write", "关注 / 取关他人、给名片打分（不放行任何数据）"),
+                (
+                    "social:write",
+                    "关注 / 取关他人、给名片打分（不放行任何数据）",
+                ),
                 ("keys:write", "签发 / 吊销 API-Key（默认不发给 key）"),
             ] {
                 println!("  {s:<22} {d}");
             }
             println!("\n蕴含关系：publish ⇒ download ⇒ read；nodes:write ⇒ nodes:read；");
-            println!("          grants:write ⇒ grants:read；profile:write ⇒ profile:read；* = 全部。");
+            println!(
+                "          grants:write ⇒ grants:read；profile:write ⇒ profile:read；* = 全部。"
+            );
             println!("          social:write 不被任何作用域蕴含（要关注 / 打分就得显式给）。");
             println!("\n提示：给 Agent/CI 的 key 一般只需 registry:read,registry:download；");
-            println!("      要让它发布制品再加 registry:publish；要让它读节点与连接再加 nodes:read。");
+            println!(
+                "      要让它发布制品再加 registry:publish；要让它读节点与连接再加 nodes:read。"
+            );
             Ok(())
         }
         KeyCmd::Create(a) => {
             let kind = a.kind.as_str();
             let scopes: Option<Vec<String>> = a.scopes.as_deref().map(|s| {
-                s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+                s.split(',')
+                    .map(|x| x.trim().to_string())
+                    .filter(|x| !x.is_empty())
+                    .collect()
             });
-            if kind == "distribution" && scopes.as_ref().is_some_and(|s| s.iter().any(|x| x.ends_with(":publish") || x.ends_with(":write") || x == "*")) {
+            if kind == "distribution"
+                && scopes.as_ref().is_some_and(|s| {
+                    s.iter()
+                        .any(|x| x.ends_with(":publish") || x.ends_with(":write") || x == "*")
+                })
+            {
                 println!("⚠️  分发 key 建议只给只读作用域（registry:read,registry:download）。");
             }
             let body = json!({
@@ -1570,24 +2004,57 @@ fn cmd_key(cfg: &CliConfig, k: &KeyCmd) -> anyhow::Result<()> {
             let data = api::post_json(cfg, "/api/auth/keys", Some(&token), &body)?;
             // 响应是扁平的：{id,label,kind,scopes,namespaces,note,expiresAt,secret}
             // （宁可兼容一下嵌套写法，也不要因为它改坏输出）
-            let key = if data.get("key").is_some_and(|v| v.is_object()) { data["key"].clone() } else { data.clone() };
+            let key = if data.get("key").is_some_and(|v| v.is_object()) {
+                data["key"].clone()
+            } else {
+                data.clone()
+            };
             println!("✅ API-Key 已创建");
             println!("   secret  {}", data["secret"].as_str().unwrap_or(""));
             println!("   id      {}", key["id"].as_str().unwrap_or(""));
             println!("   kind    {}", key["kind"].as_str().unwrap_or(kind));
-            let scopes_got = key["scopes"].as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
+            let scopes_got = key["scopes"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
                 .unwrap_or_default();
-            println!("   scopes  {}", if scopes_got.is_empty() { key["scopes"].as_str().unwrap_or("-").to_string() } else { scopes_got });
-            let ns = key["namespaces"].as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(","))
+            println!(
+                "   scopes  {}",
+                if scopes_got.is_empty() {
+                    key["scopes"].as_str().unwrap_or("-").to_string()
+                } else {
+                    scopes_got
+                }
+            );
+            let ns = key["namespaces"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
                 .unwrap_or_default();
-            println!("   范围    {}", if ns.is_empty() { "不限命名空间".to_string() } else { ns });
+            println!(
+                "   范围    {}",
+                if ns.is_empty() {
+                    "不限命名空间".to_string()
+                } else {
+                    ns
+                }
+            );
             if let Some(exp) = key["expiresAt"].as_str() {
                 println!("   过期    {}", nodes::human_time(exp));
             }
             println!("\n   ⚠️  secret 仅显示这一次，请立即保存到密钥管理里。");
-            println!("   给 Agent 用：export NCC_TOKEN={}", data["secret"].as_str().unwrap_or("<secret>"));
+            println!(
+                "   给 Agent 用：export NCC_TOKEN={}",
+                data["secret"].as_str().unwrap_or("<secret>")
+            );
             Ok(())
         }
         KeyCmd::Revoke { id } => {
@@ -1627,9 +2094,15 @@ fn verified_offers() -> Vec<String> {
 fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
     let token = config::require_token(cfg)?;
     let name = a.name.clone().unwrap_or_else(default_device_name);
-    let caps: Vec<String> = a.capabilities
+    let caps: Vec<String> = a
+        .capabilities
         .as_deref()
-        .map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect())
+        .map(|s| {
+            s.split(',')
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
     let verified = verified_offers();
     // 声明了 run:wasm 但二进制里没编进沙箱：不报错，但要说清楚它不会被算作自证。
@@ -1654,8 +2127,14 @@ fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
     let report = || -> anyhow::Result<()> {
         let data = api::post_json(cfg, "/api/namespaces/living", Some(&token), &body)?;
         let node = &data["node"];
-        let declared = node["capabilities"].as_array().map(|a| a.len()).unwrap_or(0);
-        let proved = node["capabilitiesVerified"].as_array().map(|a| a.len()).unwrap_or(0);
+        let declared = node["capabilities"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
+        let proved = node["capabilitiesVerified"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
         println!(
             "⬆ [{}/{}] {} · {}/{} · 声明 {} · 自证 {} · lastSeen {}",
             node["slug"].as_str().unwrap_or("?"),
@@ -1670,7 +2149,11 @@ fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
         Ok(())
     };
     if a.daemon {
-        println!("守护心跳：每 {}s 上报到 {}（Ctrl+C 停止）", a.interval.max(1), cfg.base_url());
+        println!(
+            "守护心跳：每 {}s 上报到 {}（Ctrl+C 停止）",
+            a.interval.max(1),
+            cfg.base_url()
+        );
         loop {
             report()?;
             std::thread::sleep(Duration::from_secs(a.interval.max(1)));

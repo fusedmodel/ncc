@@ -209,6 +209,10 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc ns create --slug <标识> --name <名称> [--plan free]` | 创建组织命名空间（计划缺省 `free`）|
 | `ncc publish` | 通过上传文件或 BYO URL 发布制品 |
 | `ncc search [query]` | 目录检索 |
+| `ncc index publish <频道>` | 把一条服务 / 制品 / 需求登记进索引（先写平台，再推内网节点；节点失败会逐台报出来）|
+| `ncc index list` / `show` / `rm` / `push` | 看我登记了什么 / 细节与已推节点 / 撤回（不动原件）/ 再推一次 |
+| `ncc list users` / `needs` / `channels` | 索引里有哪些人 / 别人在找什么 / 有哪些检索空间 |
+| `ncc match "…"` | 我有需求 → 谁能在（`--want need` 反过来找活儿；`--from <目标>` 用内网节点的索引）|
 | `ncc info <target>` | 以 JSON 打印制品完整记录 |
 | `ncc download <target>` | 下载制品字节 |
 | `ncc install <target>` | 安装到本地包目录 |
@@ -512,6 +516,45 @@ ncc services rm SV-xxxx
 - **非公开服务只露摘要**：未获授权时匹配结果只有名称、分类、区域与匹配策略，
   端点 / 执行节点 / 能力包与调用步骤要拿到 `--kind service` 授权才展开。
 - **区域不限**写 `全国` 或留空：它会在任何区域查询里都被算作覆盖。
+
+### `ncc index` / `ncc list` / `ncc match`
+
+服务声明回答「我能提供什么」；**索引**回答「别人怎么搜到我」——把一份东西登记进一个**频道**
+（自由名，如 `booking/hotel`），别人用一句需求就能检索到。同一条服务可以登记到不同频道、
+换不同话术。
+
+```bash
+# 登记：先写平台（权威），再尽力推已接入的内网节点
+ncc index publish booking/hotel --service @aya/hotel-booking
+ncc index publish pptx/deck --item @aya/html-deck-to-pptx --intent 把 HTML 变 PPTX
+ncc index publish booking/hotel --need "国庆要两间杭州的大床房"   # 需求也进索引
+
+ncc index list --mine              # 我登记了什么
+ncc index list --channel booking   # 这个频道里有什么（前缀匹配：booking → booking/hotel）
+ncc index show @aya/aya-hotel      # 细节：怎么接过去 + 已推节点
+ncc index push @aya/aya-hotel      # 再推一次到内网节点
+ncc index rm @aya/aya-hotel        # 撤回索引（**不动原件**）
+
+ncc list users                     # 索引里有哪些人（供给 / 需求 / 频道）
+ncc list needs                     # 别人在找什么（找活儿用）
+ncc list channels                  # 有哪些检索空间、各多少条
+
+ncc match "帮我订杭州的酒店" --channel booking   # 我有需求 → 谁能在
+ncc match "杭州酒店" --want need                 # 我在找活儿 → 谁要人
+ncc match "…" --from office                      # 用内网节点上的索引匹配（默认当前目标）
+```
+
+要点：
+
+- **三类 kind**：`--service`（索引我的一条对外服务，分类/关键词/摘要从它继承）、
+  `--item`（索引一个制品）、`--need`（登记需求）。
+- **频道是自由名但不是无规则**：`Booking/Hotel` = `booking/hotel`；`Food____RES` → `food-res`。
+- **索引 ≠ 授权**：登记只代表检索得到 —— 私有制品要 `ncc grant`，非公开服务要 `service` 授权。
+  引用非 `open` 服务时索引里**不带端点**（入口指向 `ncc services show`）。
+- **平台权威、节点副本**：`publish` 先写平台，再推已接入的内网节点；
+  **节点推失败不回滚平台，但会逐台报出来**（`✓/✗`），推成功的节点在 `index show` 里看得到。
+- **评分不对外显示**：匹配排序含内部信誉权重，但接口与 CLI 都不会给出分数 ——
+  接入照旧要授权。
 
 ### `ncc registry`
 
@@ -994,7 +1037,7 @@ scripts/             build-release.sh（交叉编译 + 校验和）
 
 `ncc mcp` 以 **MCP server** 方式（stdio）跑起 NCC，任何支持 MCP 的 Agent 都能检索目录、取回制品、
 发布成果、查找同行，读它自己的知识库/记忆/检查点与运行轨迹，查组织网关的在线状态与合规审计摘要 ——
-不需要额外服务（33 个工具，按**目标声明的能力**放行）：
+不需要额外服务（38 个工具，按**目标声明的能力**放行）：
 
 ```jsonc
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp"] } } }
@@ -1015,6 +1058,8 @@ scripts/             build-release.sh（交叉编译 + 校验和）
 | `ncc_list_services` | 浏览服务目录（分类 / 标签 / 区域） |
 | `ncc_get_service` | 单条服务的完整接入信息 |
 | `ncc_service_categories` | 业务分类目录（`category` 取值） |
+| `ncc_match_index` | 按一句需求在**索引**里找人（`want=need` 则是找需求）；排序含内部信誉权重，**不给分数** |
+| `ncc_list_index_channels` | 索引里的频道列表（各多少条、供给 / 需求分布） |
 | `ncc_list_configs` | 托管配置目录（公开配置无需凭据；`mine` 看自己的） |
 | `ncc_get_config` | 取一份配置（**默认打码**，`reveal` 才回明文） |
 | `ncc_list_nodes` | 我的节点连接表（`mine` / `links`） |

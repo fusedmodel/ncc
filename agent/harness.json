@@ -13,7 +13,7 @@
     "protocols": [
       "mcp"
     ],
-    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、读团队托管配置、按角色找人、判断跨局域网直连（P2P）条件，读 Agent 的知识库/记忆/检查点与运行轨迹，以及查自己组织的 NCC Gateway 在线状态与**只含摘要**的合规审计。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化；写动作（发布以外的改动、状态写入、网关注册/吊销）一律留在 CLI，由持凭据的人执行。",
+    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、在索引（频道）里按一句需求找人 / 找需求、读团队托管配置、按角色找人、判断跨局域网直连（P2P）条件，读 Agent 的知识库/记忆/检查点与运行轨迹，以及查自己组织的 NCC Gateway 在线状态与**只含摘要**的合规审计。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化；写动作（发布以外的改动、状态写入、网关注册/吊销）一律留在 CLI，由持凭据的人执行。",
     "tools": [
       "ncc_list_kinds",
       "ncc_search_catalog",
@@ -25,6 +25,8 @@
       "ncc_find_people",
       "ncc_get_profile",
       "ncc_match_services",
+      "ncc_match_index",
+      "ncc_list_index_channels",
       "ncc_list_services",
       "ncc_get_service",
       "ncc_service_categories",

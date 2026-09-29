@@ -59,7 +59,7 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp", "--base", "http://localhost:8282"] } } }
 ```
 
-提供的工具（33 个，按能力分组；不在当前目标能力清单里的会明确报错）：
+提供的工具（38 个，按能力分组；不在当前目标能力清单里的会明确报错）：
 
 | 能力 | 工具 | 用途 |
 |---|---|---|
@@ -71,6 +71,8 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 | 账号 | `ncc_whoami` | 当前账号与可用命名空间 |
 | 服务（云端） | `ncc_match_services` | **按意图匹配对外服务**，返回打分理由与接入步骤 |
 | | `ncc_list_services` / `ncc_get_service` / `ncc_service_categories` | 浏览 / 看细节 / 取分类目录 |
+| 索引与匹配 | `ncc_match_index` | **按一句需求在索引里找人 / 找需求**（`want=need` 反过来）；排序含内部信誉权重，**不给分数** |
+| | `ncc_list_index_channels` | 索引里的频道（检索空间）列表与各多少条 |
 | 名片与人 | `ncc_list_roles` | 工作角色目录（6 组 20 个） |
 | | `ncc_find_people` / `ncc_get_profile` | 按角色 / 技能找人；看某人名片与作品集 |
 | 节点与授权 | `ncc_list_nodes` / `ncc_discover_nodes` | 我的节点与连接表 / 发现可连接的节点 |
@@ -234,6 +236,23 @@ ncc gateway audit --remote --csv        # 看/导出控制面留存的摘要
    `reasons`（为什么召回）与 `howToUse.steps`（怎么接过去）；
 3. 需要授权时它会告诉你 `requiresGrant` 与申请办法 —— **不要自己去要授权**，让用户处理；
 4. 拿到端点/规范后按步骤调用（`ncc_get_service` 看完整条款与 SLA）。
+
+### D2. 「谁在提供这个 / 谁有这个需求」——索引匹配
+
+服务目录是**声明**（提供什么、怎么接）；**索引**是**登记**（谁能被搜到）。两者互补：
+服务解决「怎么接过去」，索引解决「一句话能不能搜到人」。
+
+1. 用户说一句需求（「国庆要两间杭州的大床房」）→ `ncc_match_index` 传 `intent`，
+   可加 `channel`（检索空间，如 `booking`）与 `region`；结果是**人 + 他登记的那个东西**
+   （`owner` / `title` / `channel` / `howToUse`）；
+2. 用户是**供给方**、想找活儿 → `want: "need"`，看谁在提需求；
+3. `ncc_list_index_channels` 先看有哪些检索空间 —— **不知道频道名时先用它**；
+4. **登记（写操作）不在 MCP 工具里**：让用户跑 `ncc index publish <频道> …`
+   （要写明频道与来源，属于对外动作，由用户自己拍）；
+5. **不要向用户报分数**：结果里没有 score，只有一个**面向需求的可读理由**；
+   `reasons` 里也不会出现信誉权重。
+6. **索引 ≠ 授权**：能搜到只代表找得到。私有制品要 `grant`、非公开服务要 `service` 授权 ——
+   拿不到细节时把 `requiresGrant` 如实告诉用户，**不要自己去要授权**。
 
 ### E. 团队配置：先看有什么，再取该取的那份
 

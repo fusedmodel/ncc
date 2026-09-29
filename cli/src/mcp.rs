@@ -54,10 +54,17 @@ NCC Registry 是中立、跨协议的能力制品目录（api / skill / mcp / ha
    回答「谁调了哪个 URL」；③ 用量是**网关自报的计数**，签名只证明「是持有令牌的那台进程报的、
    没被改过」，**不证明内容为真**。注册 / 吊销 / 让网关开始上报都是用户自己的动作，不在工具里。
 
+11. 索引与匹配（`ncc index` 的读面）：别人把「我能办什么 / 我要什么」**登记进一个频道**
+   （自由频道名，如 booking/hotel）。要办事时用 ncc_match_index 传一句需求，它会按相关度
+   排序并解释命中理由；ncc_list_index_channels 先看有哪些频道。
+   两条边界：① **登记 / 撤回不在工具里**（那是改「别人能搜到我什么」，用户自己跑 `ncc index`）；
+   ② 排序含**内部信誉权重**，但**评分不对外显示** —— 工具不会给出任何分数，别去猜，
+   也别把「分高」当成承诺：接入仍然照旧要授权（制品要 grant、非公开服务要 service 授权）。
+
 边界：节点（ncc_list_nodes / ncc_discover_nodes）、授权（ncc_list_grants）与你自己声明的服务属于用户的私人数据，
 只在用户问起时用，不要转发给第三方。
 声明服务、连接节点、授权这类会改变「别人能拿到什么」的动作只有读工具 —— 需要变更时，
-让用户自己跑 CLI（ncc services add / ncc nodes link / ncc grant set），并先征得同意。
+让用户自己跑 CLI（ncc services add / ncc nodes link / ncc grant set / ncc index publish），并先征得同意。
 
 制品引用统一写成 `@命名空间/slug`，也可用 `R-…` 形式的 id。
 检索与取回是公开只读的，无需登录；节点类工具需要凭据（API-Key 需 nodes:read / grants:read）。";
@@ -68,9 +75,12 @@ NCC Registry 是中立、跨协议的能力制品目录（api / skill / mcp / ha
 /// 不在表里的工具（目录检索/取回/我是谁）属于基础能力，两边都声明，不做门禁。
 fn tool_capability(tool: &str) -> Option<&'static str> {
     match tool {
-        "ncc_match_services" | "ncc_list_services" | "ncc_get_service" | "ncc_service_categories" => {
-            Some("services")
-        }
+        "ncc_match_services"
+        | "ncc_list_services"
+        | "ncc_get_service"
+        | "ncc_service_categories" => Some("services"),
+        // 索引与匹配：**只给读**（登记 / 撤回是改「别人能搜到我什么」，留在 CLI）
+        "ncc_match_index" | "ncc_list_index_channels" => Some("index"),
         "ncc_list_configs" | "ncc_get_config" => Some("config"),
         "ncc_list_nodes" | "ncc_discover_nodes" | "ncc_region_profile" | "ncc_recommend_nodes" => {
             Some("nodes")
@@ -154,7 +164,11 @@ pub fn serve(cfg: &CliConfig, opts: &McpOptions) -> Result<()> {
     let target_line = format!(
         "【当前目标】{} · {} · {} · 能力：{}",
         cfg.current_name(),
-        if meta.product.is_empty() { "未知服务端" } else { &meta.product },
+        if meta.product.is_empty() {
+            "未知服务端"
+        } else {
+            &meta.product
+        },
         cfg.base_url(),
         meta.capability_line()
     );
@@ -167,7 +181,11 @@ pub fn serve(cfg: &CliConfig, opts: &McpOptions) -> Result<()> {
         face_tools.len()
     );
     serve_face(
-        Face { name: "ncc-registry", instructions: format!("{header}{INSTRUCTIONS}"), tools: face_tools },
+        Face {
+            name: "ncc-registry",
+            instructions: format!("{header}{INSTRUCTIONS}"),
+            tools: face_tools,
+        },
         move |params| call_tool_scoped(cfg, scope.as_ref(), params),
     )
 }
@@ -194,7 +212,11 @@ pub fn serve_face(face: Face, mut call: impl FnMut(Option<&Value>) -> Result<Val
                 continue;
             }
         };
-        let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("").to_string();
+        let method = req
+            .get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("")
+            .to_string();
         // 通知（无 id）不需要响应；notifications/* 一律忽略
         let Some(id) = req.get("id").cloned() else {
             continue;
@@ -205,7 +227,10 @@ pub fn serve_face(face: Face, mut call: impl FnMut(Option<&Value>) -> Result<Val
 
         let params = req.get("params");
         // 未知方法按 JSON-RPC 规范回 -32601，而不是 -32603（内部错误）
-        if !matches!(method.as_str(), "initialize" | "ping" | "tools/list" | "tools/call") {
+        if !matches!(
+            method.as_str(),
+            "initialize" | "ping" | "tools/list" | "tools/call"
+        ) {
             let resp = json!({
                 "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32601, "message": format!("未知方法: {method}") }
@@ -363,6 +388,33 @@ fn tools() -> Vec<Value> {
                     "limit": { "type": "integer", "description": "返回条数，默认 5，最大 20" }
                 },
                 "required": ["intent"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_match_index",
+            "description": "按**一句需求**在索引里找人：别人（或别人的 Agent）把「我能办什么 / 我要什么」登记进一个频道，这里传自然语言意图（如「帮我订杭州的酒店」），服务端按相关度打分并解释命中理由，同时给出怎么接过去。默认找**能办这件事的人**；want=need 则是找需求（给服务方找活）。排序含内部信誉权重，**评分不对外显示**，工具也不会给出分数。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "intent": { "type": "string", "description": "自然语言需求，如：帮我订杭州的酒店" },
+                    "channel": { "type": "string", "description": "频道（可用前缀，如 booking 命中 booking/hotel）；不确定就不传" },
+                    "region": { "type": "string", "description": "区域，如 杭州" },
+                    "want": { "type": "string", "enum": ["supply", "need"], "description": "supply（默认）= 找能办事的人；need = 找需求" },
+                    "limit": { "type": "integer", "description": "返回条数，默认 5，最大 20" }
+                },
+                "required": ["intent"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_list_index_channels",
+            "description": "列出索引里的**频道**（检索空间）与各频道的条数 / 供给与需求分布 / 关联的业务分类。当你不确定该往哪个频道找时先看它。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "prefix": { "type": "string", "description": "只看某个频道前缀，如 booking" }
+                },
                 "additionalProperties": false
             }
         }),
@@ -700,7 +752,11 @@ fn load_store_scope(cfg: &CliConfig, path: &str) -> Result<Option<StoreScope>> {
     }
     let root = hur_core::pack::find_root(std::path::Path::new(p))?;
     let pkg = hur_core::spec::read_pkg(&root)?;
-    let declared = pkg.state.as_ref().map(|s| s.stores.clone()).unwrap_or_default();
+    let declared = pkg
+        .state
+        .as_ref()
+        .map(|s| s.stores.clone())
+        .unwrap_or_default();
     let cols = node_collections(cfg);
     let mut items = Vec::new();
     let mut missing = Vec::new();
@@ -717,7 +773,11 @@ fn load_store_scope(cfg: &CliConfig, path: &str) -> Result<Option<StoreScope>> {
             }
         }
     }
-    Ok(Some(StoreScope { pkg: format!("{}@{}", pkg.id, pkg.version), items, missing }))
+    Ok(Some(StoreScope {
+        pkg: format!("{}@{}", pkg.id, pkg.version),
+        items,
+        missing,
+    }))
 }
 
 /// 从节点取回集合声明（拿不到就当没有 —— **不猜**）。
@@ -734,7 +794,9 @@ fn field_schema(f: &Value) -> Value {
     match f["type"].as_str().unwrap_or("string") {
         "int" => json!({ "type": "integer" }),
         "bool" => json!({ "type": "boolean" }),
-        "string[]" => json!({ "type": "array", "items": { "type": "string" }, "description": "多个值用逗号分隔" }),
+        "string[]" => {
+            json!({ "type": "array", "items": { "type": "string" }, "description": "多个值用逗号分隔" })
+        }
         // 词表直接从声明来：模型**看得见**合法取值，就不会去试错
         "enum" => json!({ "type": "string", "enum": f["enum"] }),
         "text" => json!({ "type": "string", "description": "长文本正文" }),
@@ -758,7 +820,10 @@ fn fields_object(col: &Value) -> (serde_json::Map<String, Value>, Vec<String>) {
         }
         if f["search"].as_bool().unwrap_or(false) {
             if let Some(o) = sch.as_object_mut() {
-                o.insert("description".into(), json!("这份内容进搜索文本（--q 能搜到）"));
+                o.insert(
+                    "description".into(),
+                    json!("这份内容进搜索文本（--q 能搜到）"),
+                );
             }
         }
         props.insert(name.to_string(), sch);
@@ -782,12 +847,18 @@ fn filters_object(col: &Value) -> serde_json::Map<String, Value> {
             .map(|d| match d["enum"].as_array() {
                 Some(v) if !v.is_empty() => format!(
                     "按 {name} 过滤（取值：{}）",
-                    v.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(" / ")
+                    v.iter()
+                        .filter_map(|x| x.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" / ")
                 ),
                 _ => format!("按 {name} 过滤"),
             })
             .unwrap_or_else(|| format!("按 {name} 过滤"));
-        props.insert(name.to_string(), json!({ "type": "string", "description": desc }));
+        props.insert(
+            name.to_string(),
+            json!({ "type": "string", "description": desc }),
+        );
     }
     props
 }
@@ -804,7 +875,10 @@ fn fields_brief(col: &Value) -> String {
             s = format!(
                 "{}:{}",
                 n,
-                v.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join("/")
+                v.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join("/")
             );
         } else if t == "enum" {
             s = format!("{n}:enum");
@@ -814,7 +888,11 @@ fn fields_brief(col: &Value) -> String {
         }
         parts.push(s);
     }
-    if parts.is_empty() { "（没声明字段）".to_string() } else { parts.join(" · ") }
+    if parts.is_empty() {
+        "（没声明字段）".to_string()
+    } else {
+        parts.join(" · ")
+    }
 }
 
 /// 建模型面工具表。
@@ -875,7 +953,11 @@ fn store_tools(cfg: &CliConfig, scope: Option<&StoreScope>) -> Vec<Value> {
         let col = col.clone();
         let mode = req.mode_norm();
         let vis = col["visibility"].as_str().unwrap_or("private");
-        let shape = if col["mutable"].as_bool().unwrap_or(false) { "可改" } else { "不可变" };
+        let shape = if col["mutable"].as_bool().unwrap_or(false) {
+            "可改"
+        } else {
+            "不可变"
+        };
         let brief = fields_brief(&col);
         let (props, required) = fields_object(&col);
         let reads = matches!(mode, "read" | "readwrite");
@@ -895,8 +977,14 @@ fn store_tools(cfg: &CliConfig, scope: Option<&StoreScope>) -> Vec<Value> {
                 }),
             );
             list_props.insert("q".into(), json!({ "type": "string", "description": "子串搜索（key / 标签 / ?search 字段 / 正文）" }));
-            list_props.insert("archived".into(), json!({ "type": "boolean", "description": "连归档的一起列" }));
-            list_props.insert("limit".into(), json!({ "type": "integer", "description": "最多几条（默认 20）" }));
+            list_props.insert(
+                "archived".into(),
+                json!({ "type": "boolean", "description": "连归档的一起列" }),
+            );
+            list_props.insert(
+                "limit".into(),
+                json!({ "type": "integer", "description": "最多几条（默认 20）" }),
+            );
             out.push(json!({
                 "name": format!("ncc_store_list_{kind}"),
                 "description": format!(
@@ -918,7 +1006,10 @@ fn store_tools(cfg: &CliConfig, scope: Option<&StoreScope>) -> Vec<Value> {
         if writes {
             let mut put_props = serde_json::Map::new();
             put_props.insert("key".into(), json!({ "type": "string", "description": "记录的 key（小写字母数字与 -_.，字母开头）" }));
-            put_props.insert("body".into(), json!({ "type": "string", "description": "这份内容的正文" }));
+            put_props.insert(
+                "body".into(),
+                json!({ "type": "string", "description": "这份内容的正文" }),
+            );
             // 声明字段放在 `fields` 里（不是平铺）：字段类型与词表都从声明来，
             // 而且集合完全可以声明一个叫 `body` 的字段 —— 平铺就分不清是哪个了。
             put_props.insert(
@@ -931,7 +1022,10 @@ fn store_tools(cfg: &CliConfig, scope: Option<&StoreScope>) -> Vec<Value> {
                     "additionalProperties": false
                 }),
             );
-            put_props.insert("tags".into(), json!({ "type": "array", "items": { "type": "string" } }));
+            put_props.insert(
+                "tags".into(),
+                json!({ "type": "array", "items": { "type": "string" } }),
+            );
             put_props.insert("note".into(), json!({ "type": "string", "description": "为什么要写这一次 —— 会进历史，两个月后有人会看" }));
             out.push(json!({
                 "name": format!("ncc_store_put_{kind}"),
@@ -966,9 +1060,17 @@ fn tool_err(s: impl Into<String>) -> Value {
 /// 为什么门禁要真的拦而不只是不广告：`tools/list` 看不到 ≠ 调不动 ——
 /// 一个跑偏的客户端（或被人手工构造的请求）照样能发 `tools/call`。
 /// 声明面是给模型划的边界，所以边界得在**执行处**判。
-fn call_tool_scoped(cfg: &CliConfig, scope: Option<&StoreScope>, params: Option<&Value>) -> Result<Value> {
+fn call_tool_scoped(
+    cfg: &CliConfig,
+    scope: Option<&StoreScope>,
+    params: Option<&Value>,
+) -> Result<Value> {
     let p = params.cloned().unwrap_or(json!({}));
-    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let name = p
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let args = p.get("arguments").cloned().unwrap_or(json!({}));
     if is_store_tool(&name) {
         // 能力门禁（节点没有 store 能力时明确报错，而不是丢 404 给 Agent）
@@ -992,7 +1094,12 @@ fn is_store_tool(name: &str) -> bool {
 }
 
 /// 记录仓工具的实现（**范围门禁在这里**）。
-fn store_call(cfg: &CliConfig, scope: Option<&StoreScope>, name: &str, args: &Value) -> Result<Value> {
+fn store_call(
+    cfg: &CliConfig,
+    scope: Option<&StoreScope>,
+    name: &str,
+    args: &Value,
+) -> Result<Value> {
     let sarg = |k: &str| -> Option<String> {
         args.get(k)
             .and_then(|v| v.as_str())
@@ -1002,7 +1109,9 @@ fn store_call(cfg: &CliConfig, scope: Option<&StoreScope>, name: &str, args: &Va
     let token = config::token_opt(cfg);
     let ns_qs = |ns: Option<String>| -> String {
         match ns {
-            Some(n) if !n.is_empty() => format!("?namespace={}", api::urlenc(n.trim_start_matches('@'))),
+            Some(n) if !n.is_empty() => {
+                format!("?namespace={}", api::urlenc(n.trim_start_matches('@')))
+            }
             _ => String::new(),
         }
     };
@@ -1015,7 +1124,11 @@ fn store_call(cfg: &CliConfig, scope: Option<&StoreScope>, name: &str, args: &Va
                 .iter()
                 .map(|(r, _)| format!("{}（{}）", r.collection.trim(), r.mode_norm()))
                 .collect();
-            if items.is_empty() { "（空）".to_string() } else { items.join(" · ") }
+            if items.is_empty() {
+                "（空）".to_string()
+            } else {
+                items.join(" · ")
+            }
         };
         let rest = name.strip_prefix("ncc_store_").ok_or_else(|| {
             anyhow::anyhow!(
@@ -1027,7 +1140,12 @@ fn store_call(cfg: &CliConfig, scope: Option<&StoreScope>, name: &str, args: &Va
         let (op, col) = rest.split_once('_').ok_or_else(|| {
             anyhow::anyhow!("工具名「{name}」不合法（应为 ncc_store_<list|get|put>_<集合>）")
         })?;
-        let Some(req) = sc.items.iter().find(|(r, _)| r.collection.trim() == col).map(|(r, _)| r) else {
+        let Some(req) = sc
+            .items
+            .iter()
+            .find(|(r, _)| r.collection.trim() == col)
+            .map(|(r, _)| r)
+        else {
             // 分开说："没声明"与"声明了但节点上没有"是两个不同的问题。
             if sc.missing.iter().any(|m| m == col) {
                 return Err(anyhow::anyhow!(
@@ -1074,7 +1192,11 @@ fn store_call(cfg: &CliConfig, scope: Option<&StoreScope>, name: &str, args: &Va
     // 没给包：只读浏览。
     match name {
         "ncc_list_store_collections" => {
-            let d = api::get(cfg, &format!("/api/store{}", ns_qs(sarg("namespace"))), token.as_deref())?;
+            let d = api::get(
+                cfg,
+                &format!("/api/store{}", ns_qs(sarg("namespace"))),
+                token.as_deref(),
+            )?;
             Ok(text(clip(&render_collections(&d))))
         }
         "ncc_list_store_records" => {
@@ -1102,7 +1224,11 @@ fn render_collections(d: &Value) -> String {
             "- {}（{} 条 · {} · {}）：{}\n",
             c["kind"].as_str().unwrap_or(""),
             c["records"].as_i64().unwrap_or(0),
-            if c["mutable"].as_bool().unwrap_or(false) { "可改" } else { "不可变" },
+            if c["mutable"].as_bool().unwrap_or(false) {
+                "可改"
+            } else {
+                "不可变"
+            },
             c["visibility"].as_str().unwrap_or("private"),
             c["summary"].as_str().unwrap_or("")
         ));
@@ -1115,27 +1241,53 @@ fn render_collections(d: &Value) -> String {
 fn store_list(cfg: &CliConfig, token: Option<&str>, col: &str, args: &Value) -> Result<Value> {
     let mut qs: Vec<String> = Vec::new();
     if let Some(ns) = args.get("namespace").and_then(|v| v.as_str()) {
-        qs.push(format!("namespace={}", api::urlenc(ns.trim_start_matches('@'))));
+        qs.push(format!(
+            "namespace={}",
+            api::urlenc(ns.trim_start_matches('@'))
+        ));
     }
-    if let Some(q) = args.get("q").and_then(|v| v.as_str()).filter(|q| !q.trim().is_empty()) {
+    if let Some(q) = args
+        .get("q")
+        .and_then(|v| v.as_str())
+        .filter(|q| !q.trim().is_empty())
+    {
         qs.push(format!("q={}", api::urlenc(q.trim())));
     }
     if let Some(f) = args.get("filter").and_then(|v| v.as_object()) {
         for (k, v) in f {
-            let val = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+            let val = v
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(|| v.to_string());
             if k.trim().is_empty() || val.trim().is_empty() {
                 continue;
             }
             // 线上是 `f.<字段>=值`：加前缀才不会跟保留参数撞车（状态用 ?state=）。
-            qs.push(format!("f.{}={}", api::urlenc(k.trim()), api::urlenc(val.trim())));
+            qs.push(format!(
+                "f.{}={}",
+                api::urlenc(k.trim()),
+                api::urlenc(val.trim())
+            ));
         }
     }
-    if args.get("archived").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if args
+        .get("archived")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         qs.push("archived=1".into());
     }
-    let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(20).clamp(1, 200);
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(20)
+        .clamp(1, 200);
     qs.push(format!("size={limit}"));
-    let d = api::get(cfg, &format!("/api/store/{}?{}", api::urlenc(col), qs.join("&")), token)?;
+    let d = api::get(
+        cfg,
+        &format!("/api/store/{}?{}", api::urlenc(col), qs.join("&")),
+        token,
+    )?;
     let rows = d["records"].as_array().cloned().unwrap_or_default();
     let mut out = format!(
         "{} 共 {} 条（列出 {} 条）：\n",
@@ -1154,7 +1306,14 @@ fn store_list(cfg: &CliConfig, token: Option<&str>, col: &str, args: &Value) -> 
         if let Some(f) = r["fields"].as_object().filter(|m| !m.is_empty()) {
             let pairs: Vec<String> = f
                 .iter()
-                .map(|(k, v)| format!("{k}={}", v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+                .map(|(k, v)| {
+                    format!(
+                        "{k}={}",
+                        v.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| v.to_string())
+                    )
+                })
                 .collect();
             out.push_str(&format!("    {}\n", pairs.join(" · ")));
         }
@@ -1170,7 +1329,11 @@ fn store_list(cfg: &CliConfig, token: Option<&str>, col: &str, args: &Value) -> 
 
 /// 读一条（连正文）。
 fn store_get(cfg: &CliConfig, token: Option<&str>, col: &str, key: &str) -> Result<Value> {
-    let d = api::get(cfg, &format!("/api/store/{}/{}", api::urlenc(col), api::urlenc(key)), token)?;
+    let d = api::get(
+        cfg,
+        &format!("/api/store/{}/{}", api::urlenc(col), api::urlenc(key)),
+        token,
+    )?;
     let r = &d["record"];
     let mut out = format!(
         "{}/{}  rev {} · {} 字节 · checksum {}\n",
@@ -1184,7 +1347,9 @@ fn store_get(cfg: &CliConfig, token: Option<&str>, col: &str, key: &str) -> Resu
         for (k, v) in f {
             out.push_str(&format!(
                 "  {k} = {}\n",
-                v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())
+                v.as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string())
             ));
         }
     }
@@ -1212,23 +1377,42 @@ fn store_put(cfg: &CliConfig, token: Option<&str>, col: &str, args: &Value) -> R
     if let Some(t) = args.get("tags").filter(|t| !t.is_null()) {
         req["tags"] = t.clone();
     }
-    if let Some(n) = args.get("note").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()) {
+    if let Some(n) = args
+        .get("note")
+        .and_then(|v| v.as_str())
+        .filter(|n| !n.trim().is_empty())
+    {
         req["note"] = json!(n.trim());
     }
     let mut path = format!("/api/store/{}", api::urlenc(col));
-    if let Some(ns) = args.get("namespace").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty()) {
-        path.push_str(&format!("?namespace={}", api::urlenc(ns.trim_start_matches('@'))));
+    if let Some(ns) = args
+        .get("namespace")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        path.push_str(&format!(
+            "?namespace={}",
+            api::urlenc(ns.trim_start_matches('@'))
+        ));
     }
     let token = token.ok_or_else(|| anyhow::anyhow!("写记录需要凭据（先 ncc login）"))?;
     let d = api::post_json(cfg, &path, Some(token), &req)?;
     let r = &d["record"];
     Ok(text(format!(
         "{} {}/{} · rev {}{}",
-        if d["created"].as_bool().unwrap_or(false) { "✅ 已建" } else { "✅ 已更新" },
+        if d["created"].as_bool().unwrap_or(false) {
+            "✅ 已建"
+        } else {
+            "✅ 已更新"
+        },
         d["collection"].as_str().unwrap_or(col),
         r["key"].as_str().unwrap_or(&key),
         r["revision"].as_i64().unwrap_or(0),
-        if d["duplicate"].as_bool().unwrap_or(false) { "（内容没变，没刷版本）" } else { "" }
+        if d["duplicate"].as_bool().unwrap_or(false) {
+            "（内容没变，没刷版本）"
+        } else {
+            ""
+        }
     )))
 }
 
@@ -1254,12 +1438,13 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
     // `target` 保留为兼容名（老 prompt / 老配置里写的还能用）。
     let rarg = |k: &str| -> Option<String> { sarg(k).or_else(|| sarg("target")) };
     let narg = |k: &str, d: i64, max: i64| -> i64 {
-        args.get(k).and_then(|v| v.as_i64()).unwrap_or(d).clamp(1, max)
+        args.get(k)
+            .and_then(|v| v.as_i64())
+            .unwrap_or(d)
+            .clamp(1, max)
     };
     // 布尔参数（缺省 false）。服务端的 `?following=1` 只认字面 "1"，由调用处拼。
-    let barg = |k: &str| -> bool {
-        args.get(k).and_then(|v| v.as_bool()).unwrap_or(false)
-    };
+    let barg = |k: &str| -> bool { args.get(k).and_then(|v| v.as_bool()).unwrap_or(false) };
     let token = config::token_opt(cfg);
 
     // 工具级失败按 MCP 约定回 isError=true，而不是 JSON-RPC error
@@ -1301,20 +1486,36 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                 qs.push(format!("namespace={}", urlenc(&n)));
             }
             qs.push(format!("size={}", narg("limit", 20, 50)));
-            let d = api::get(cfg, &format!("/api/registry?{}", qs.join("&")), token.as_deref())?;
+            let d = api::get(
+                cfg,
+                &format!("/api/registry?{}", qs.join("&")),
+                token.as_deref(),
+            )?;
             let total = d.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
-            let items = d.get("items").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let items = d
+                .get("items")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             if items.is_empty() {
                 return Ok(text(format!("没有匹配的条目（共 {total} 条）。换个关键词，或先用 ncc_list_kinds 看看目录构成。")));
             }
             let mut out = format!("共 {total} 条，返回 {} 条：\n", items.len());
             for it in &items {
-                let ns = it.pointer("/namespace/slug").and_then(|v| v.as_str()).unwrap_or("");
+                let ns = it
+                    .pointer("/namespace/slug")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let slug = it.get("slug").and_then(|v| v.as_str()).unwrap_or("");
                 let tags = it
                     .get("tags")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>().join(","))
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|t| t.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
                     .unwrap_or_default();
                 out.push_str(&format!(
                     "- [{}] {}/{slug}@{} — {}{}{}\n",
@@ -1322,8 +1523,15 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     ns,
                     it.get("version").and_then(|v| v.as_str()).unwrap_or(""),
                     it.get("summary").and_then(|v| v.as_str()).unwrap_or(""),
-                    if tags.is_empty() { String::new() } else { format!("  #{tags}") },
-                    format!("  (⬇{})", it.get("downloads").and_then(|v| v.as_i64()).unwrap_or(0)),
+                    if tags.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  #{tags}")
+                    },
+                    format!(
+                        "  (⬇{})",
+                        it.get("downloads").and_then(|v| v.as_i64()).unwrap_or(0)
+                    ),
                 ));
             }
             Ok(text(out))
@@ -1331,16 +1539,30 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
 
         "ncc_get_artifact" => ok_or_text((|| {
             let target = rarg("ref").context("缺少 ref")?;
-            let d = api::get(cfg, &format!("/api/registry/{}", urlenc(&target)), token.as_deref())?;
+            let d = api::get(
+                cfg,
+                &format!("/api/registry/{}", urlenc(&target)),
+                token.as_deref(),
+            )?;
             let it = d.get("item").cloned().unwrap_or(d);
             Ok(text(clip(&serde_json::to_string_pretty(&it)?)))
         })()),
 
         "ncc_fetch_artifact" => ok_or_text((|| {
             let target = rarg("ref").context("缺少 ref")?;
-            let dl = api::get(cfg, &format!("/api/registry/{}/download", urlenc(&target)), token.as_deref())?;
-            let url = dl.get("url").and_then(|v| v.as_str()).context("下载响应缺少 url")?;
-            let ns = dl.get("namespaceSlug").and_then(|v| v.as_str()).unwrap_or("");
+            let dl = api::get(
+                cfg,
+                &format!("/api/registry/{}/download", urlenc(&target)),
+                token.as_deref(),
+            )?;
+            let url = dl
+                .get("url")
+                .and_then(|v| v.as_str())
+                .context("下载响应缺少 url")?;
+            let ns = dl
+                .get("namespaceSlug")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let slug = dl.get("slug").and_then(|v| v.as_str()).unwrap_or("");
             let ver = dl.get("version").and_then(|v| v.as_str()).unwrap_or("");
             let sha = dl.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
@@ -1349,22 +1571,32 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             let agent = ureq::AgentBuilder::new()
                 .timeout(std::time::Duration::from_secs(60))
                 .build();
-            let resp = agent.get(url).call().map_err(|e| anyhow::anyhow!("拉取正文失败: {e}"))?;
+            let resp = agent
+                .get(url)
+                .call()
+                .map_err(|e| anyhow::anyhow!("拉取正文失败: {e}"))?;
             let mut buf: Vec<u8> = Vec::new();
             std::io::copy(&mut resp.into_reader(), &mut buf)?;
 
             match String::from_utf8(buf) {
                 Ok(s) if is_texty(url) => Ok(text(format!("{head}{}", clip(&s)))),
-                Ok(s) => Ok(text(format!("{head}（非文本类制品，正文 {} 字节，已省略）", s.len()))),
+                Ok(s) => Ok(text(format!(
+                    "{head}（非文本类制品，正文 {} 字节，已省略）",
+                    s.len()
+                ))),
                 Err(e) => {
                     let n = e.as_bytes().len();
-                    Ok(text(format!("{head}（二进制制品，{n} 字节；请用上面的 url 直接下载）")))
+                    Ok(text(format!(
+                        "{head}（二进制制品，{n} 字节；请用上面的 url 直接下载）"
+                    )))
                 }
             }
         })()),
 
         "ncc_publish_artifact" => ok_or_text((|| {
-            let token = token.clone().context("发布需要登录：先运行 `ncc login`，或配置 API-Key")?;
+            let token = token
+                .clone()
+                .context("发布需要登录：先运行 `ncc login`，或配置 API-Key")?;
             let kind = sarg("kind").context("缺少 kind")?;
             let name = sarg("name").context("缺少 name")?;
 
@@ -1375,25 +1607,52 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             if let Some(content) = args.get("content").and_then(|v| v.as_str()) {
                 let fname = sarg("filename").unwrap_or_else(|| format!("{}.txt", kind));
                 let up = api::request(
-                    cfg, "POST", "/api/registry/uploads", Some(&token), None,
-                    Some(content.as_bytes()), &[("X-Filename", fname.as_str())],
+                    cfg,
+                    "POST",
+                    "/api/registry/uploads",
+                    Some(&token),
+                    None,
+                    Some(content.as_bytes()),
+                    &[("X-Filename", fname.as_str())],
                 )?;
-                storage_url = up.get("storageUrl").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                sha = up.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                storage_url = up
+                    .get("storageUrl")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                sha = up
+                    .get("sha256")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 size = up.get("size").and_then(|v| v.as_i64()).unwrap_or(0);
             } else if let Some(path) = sarg("contentFile") {
-                let bytes = std::fs::read(&path).with_context(|| format!("读取文件失败: {path}"))?;
+                let bytes =
+                    std::fs::read(&path).with_context(|| format!("读取文件失败: {path}"))?;
                 let fname = std::path::Path::new(&path)
                     .file_name()
                     .and_then(|s| s.to_str())
                     .unwrap_or("upload.bin")
                     .to_string();
                 let up = api::request(
-                    cfg, "POST", "/api/registry/uploads", Some(&token), None,
-                    Some(&bytes), &[("X-Filename", fname.as_str())],
+                    cfg,
+                    "POST",
+                    "/api/registry/uploads",
+                    Some(&token),
+                    None,
+                    Some(&bytes),
+                    &[("X-Filename", fname.as_str())],
                 )?;
-                storage_url = up.get("storageUrl").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                sha = up.get("sha256").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                storage_url = up
+                    .get("storageUrl")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                sha = up
+                    .get("sha256")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 size = up.get("size").and_then(|v| v.as_i64()).unwrap_or(0);
             }
 
@@ -1404,7 +1663,12 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             let tags: Vec<String> = args
                 .get("tags")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|t| t.as_str()).map(String::from).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t.as_str())
+                        .map(String::from)
+                        .collect()
+                })
                 .unwrap_or_default();
             let mut body = json!({
                 "kind": kind, "name": name,
@@ -1431,12 +1695,16 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             Ok(text(format!(
                 "✅ 已发布 [{}] {}/{}@{}  status={}\nid: {}\n存储: {}",
                 it.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
-                it.pointer("/namespace/slug").and_then(|v| v.as_str()).unwrap_or(""),
+                it.pointer("/namespace/slug")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
                 it.get("slug").and_then(|v| v.as_str()).unwrap_or(""),
                 it.get("version").and_then(|v| v.as_str()).unwrap_or(""),
                 it.get("status").and_then(|v| v.as_str()).unwrap_or(""),
                 it.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                it.pointer("/storage/url").and_then(|v| v.as_str()).unwrap_or(""),
+                it.pointer("/storage/url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(""),
             )))
         })()),
 
@@ -1457,7 +1725,11 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                         "- {} （{}，{}）\n",
                         n.get("slug").and_then(|v| v.as_str()).unwrap_or(""),
                         n.get("type").and_then(|v| v.as_str()).unwrap_or(""),
-                        if n.get("owner").and_then(|v| v.as_bool()).unwrap_or(false) { "owner" } else { "member" },
+                        if n.get("owner").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            "owner"
+                        } else {
+                            "member"
+                        },
                     ));
                 }
             }
@@ -1466,8 +1738,16 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
 
         "ncc_list_roles" => ok_or_text((|| {
             let d = api::get(cfg, "/api/profile/roles", None)?;
-            let groups = d.get("groups").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            let all = d.get("roles").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let groups = d
+                .get("groups")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let all = d
+                .get("roles")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             let mut out = String::from("NCC Profile 工作角色（id — 名称 — 说明）：\n");
             for g in &groups {
                 let gid = g.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -1476,7 +1756,10 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     g.get("zh").and_then(|v| v.as_str()).unwrap_or(gid),
                     gid
                 ));
-                for r in all.iter().filter(|r| r.get("group").and_then(|v| v.as_str()) == Some(gid)) {
+                for r in all
+                    .iter()
+                    .filter(|r| r.get("group").and_then(|v| v.as_str()) == Some(gid))
+                {
                     out.push_str(&format!(
                         "- {} — {}：{}\n",
                         r.get("id").and_then(|v| v.as_str()).unwrap_or(""),
@@ -1507,9 +1790,17 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                 qs.push("following=1".to_string());
             }
             qs.push(format!("size={}", narg("limit", 20, 50)));
-            let d = api::get(cfg, &format!("/api/profiles?{}", qs.join("&")), token.as_deref())?;
+            let d = api::get(
+                cfg,
+                &format!("/api/profiles?{}", qs.join("&")),
+                token.as_deref(),
+            )?;
             let total = d.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
-            let ps = d.get("profiles").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let ps = d
+                .get("profiles")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
             if ps.is_empty() {
                 // following 的空结果多半不是「没人」，而是「你没关注 / 对方没进目录」——
                 // 这两种情况给同一句「没有匹配」会让人白找一轮角色 id
@@ -1524,12 +1815,22 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                 let roles = p
                     .get("roles")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|r| r.as_str()).collect::<Vec<_>>().join(","))
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|r| r.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
                     .unwrap_or_default();
                 let skills = p
                     .get("skills")
                     .and_then(|v| v.as_array())
-                    .map(|a| a.iter().filter_map(|r| r.as_str()).collect::<Vec<_>>().join(","))
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|r| r.as_str())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    })
                     .unwrap_or_default();
                 out.push_str(&format!(
                     "- {}（{}）{} — 角色 {}｜技能 {}｜作品 {}｜{}\n",
@@ -1553,7 +1854,10 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             let d = api::get(cfg, &path, token.as_deref())?;
             let p = d.get("profile").cloned().unwrap_or(Value::Null);
             if p.is_null() {
-                return Ok(text("还没有名片。可在 ncc.ai 上创建，或用 `ncc profile set` 命令行创建。".to_string()));
+                return Ok(text(
+                    "还没有名片。可在 ncc.ai 上创建，或用 `ncc profile set` 命令行创建。"
+                        .to_string(),
+                ));
             }
             let mut out = format!(
                 "{}（{}）\n{}\n",
@@ -1563,7 +1867,12 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             );
             let list = |v: Option<&Value>| {
                 v.and_then(|x| x.as_array())
-                    .map(|a| a.iter().filter_map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    })
                     .unwrap_or_default()
             };
             let roles = list(p.get("roles"));
@@ -1585,7 +1894,10 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     for w in ws {
                         out.push_str(&format!(
                             "- {}{} → {}\n",
-                            w.get("year").and_then(|v| v.as_str()).map(|y| format!("[{y}] ")).unwrap_or_default(),
+                            w.get("year")
+                                .and_then(|v| v.as_str())
+                                .map(|y| format!("[{y}] "))
+                                .unwrap_or_default(),
                             w.get("title").and_then(|v| v.as_str()).unwrap_or(""),
                             w.get("href").and_then(|v| v.as_str()).unwrap_or(""),
                         ));
@@ -1599,7 +1911,9 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                         out.push_str(&format!(
                             "- [{}] {}/{}@{}\n",
                             i.get("kind").and_then(|v| v.as_str()).unwrap_or(""),
-                            i.pointer("/namespace/slug").and_then(|v| v.as_str()).unwrap_or(""),
+                            i.pointer("/namespace/slug")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or(""),
                             i.get("slug").and_then(|v| v.as_str()).unwrap_or(""),
                             i.get("version").and_then(|v| v.as_str()).unwrap_or(""),
                         ));
@@ -1660,7 +1974,9 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         })()),
 
         "ncc_region_profile" => ok_or_text((|| {
-            Ok(text(clip(&crate::nodes::render_region_profile(&crate::nodes::fetch_region_profile(cfg)?))))
+            Ok(text(clip(&crate::nodes::render_region_profile(
+                &crate::nodes::fetch_region_profile(cfg)?,
+            ))))
         })()),
 
         "ncc_recommend_nodes" => ok_or_text((|| {
@@ -1694,7 +2010,11 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             .filter_map(|(k, v)| v.as_ref().map(|x| format!("{k}={}", api::urlenc(x))))
             .collect::<Vec<_>>()
             .join("&");
-            let path = if q.is_empty() { "/api/traces".to_string() } else { format!("/api/traces?{q}") };
+            let path = if q.is_empty() {
+                "/api/traces".to_string()
+            } else {
+                format!("/api/traces?{q}")
+            };
             let d = api::get(cfg, &path, token.as_deref())?;
             let rows = d["traces"].as_array().cloned().unwrap_or_default();
             let mut out = format!(
@@ -1708,9 +2028,15 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             for r in rows {
                 let ev = r.get("evaluation").cloned().unwrap_or(json!({}));
                 let marks = [
-                    ev.get("grade").and_then(|v| v.as_str()).map(|g| format!("结论 {g}")),
-                    ev.get("scoreMilli").and_then(|v| v.as_i64()).map(|s| format!("得分 {:.3}", s as f64 / 1000.0)),
-                    ev.get("split").and_then(|v| v.as_str()).map(|s| format!("切分 {s}")),
+                    ev.get("grade")
+                        .and_then(|v| v.as_str())
+                        .map(|g| format!("结论 {g}")),
+                    ev.get("scoreMilli")
+                        .and_then(|v| v.as_i64())
+                        .map(|s| format!("得分 {:.3}", s as f64 / 1000.0)),
+                    ev.get("split")
+                        .and_then(|v| v.as_str())
+                        .map(|s| format!("切分 {s}")),
                 ]
                 .into_iter()
                 .flatten()
@@ -1721,12 +2047,18 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     r["id"].as_str().unwrap_or("-"),
                     r["kind"].as_str().unwrap_or("-"),
                     r["status"].as_str().unwrap_or("-"),
-                    r.pointer("/subject/ref").and_then(|v| v.as_str()).unwrap_or("-"),
+                    r.pointer("/subject/ref")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("-"),
                     r["durationMs"].as_i64().unwrap_or(0),
                     r["steps"].as_i64().unwrap_or(0),
                     r["payload"].as_str().unwrap_or("-"),
                     r["at"].as_str().unwrap_or(""),
-                    if marks.is_empty() { String::new() } else { format!("  [{marks}]") },
+                    if marks.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{marks}]")
+                    },
                 ));
             }
             Ok(text(clip(&out)))
@@ -1742,12 +2074,20 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             .filter_map(|(k, v)| v.as_ref().map(|x| format!("{k}={}", api::urlenc(x))))
             .collect::<Vec<_>>()
             .join("&");
-            let path = if q.is_empty() { "/api/traces/stats".to_string() } else { format!("/api/traces/stats?{q}") };
+            let path = if q.is_empty() {
+                "/api/traces/stats".to_string()
+            } else {
+                format!("/api/traces/stats?{q}")
+            };
             let d = api::get(cfg, &path, token.as_deref())?;
             Ok(text(clip(&format!(
                 "运行轨迹聚合（取样 {} 条{}）：\n{}",
                 d["sampled"].as_i64().unwrap_or(0),
-                if d["truncated"].as_bool().unwrap_or(false) { "，被截断" } else { "" },
+                if d["truncated"].as_bool().unwrap_or(false) {
+                    "，被截断"
+                } else {
+                    ""
+                },
                 serde_json::to_string_pretty(&d["stats"]).unwrap_or_default()
             ))))
         })()),
@@ -1833,7 +2173,11 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     m["subject"].as_str().unwrap_or("-"),
                     m["key"].as_str().unwrap_or("-"),
                     m["value"].as_str().unwrap_or(""),
-                    if m["pinned"].as_bool().unwrap_or(false) { "  📌" } else { "" },
+                    if m["pinned"].as_bool().unwrap_or(false) {
+                        "  📌"
+                    } else {
+                        ""
+                    },
                     match m["expiresAt"].as_str() {
                         Some(t) => format!("  （{t} 过期）"),
                         None => String::new(),
@@ -1879,10 +2223,7 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                 m["kind"].as_str().unwrap_or("-"),
                 m["revision"].as_i64().unwrap_or(0),
                 m["value"].as_str().unwrap_or(""),
-                match (
-                    m["source"].as_str(),
-                    m["expiresAt"].as_str()
-                ) {
+                match (m["source"].as_str(), m["expiresAt"].as_str()) {
                     (Some(src), Some(exp)) => format!("\n（来源 {src} · {exp} 过期）"),
                     (Some(src), None) => format!("\n（来源 {src}）"),
                     (None, Some(exp)) => format!("\n（{exp} 过期）"),
@@ -1901,7 +2242,11 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             .filter_map(|(k, v)| v.as_ref().map(|x| format!("{k}={}", api::urlenc(x))))
             .collect::<Vec<_>>();
             qs.push(format!("limit={}", narg("limit", 20, 200)));
-            let d = api::get(cfg, &format!("/api/ckpt?{}", qs.join("&")), token.as_deref())?;
+            let d = api::get(
+                cfg,
+                &format!("/api/ckpt?{}", qs.join("&")),
+                token.as_deref(),
+            )?;
             let mut out = String::new();
             for c in d["checkpoints"].as_array().cloned().unwrap_or_default() {
                 out.push_str(&format!(
@@ -1950,7 +2295,9 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     g["id"].as_str().unwrap_or("-"),
                     g["namespace"].as_str().unwrap_or("-"),
                     g["status"].as_str().unwrap_or("-"),
-                    if g["status"].as_str().unwrap_or("") == g["statusReported"].as_str().unwrap_or("") {
+                    if g["status"].as_str().unwrap_or("")
+                        == g["statusReported"].as_str().unwrap_or("")
+                    {
                         String::new()
                     } else {
                         format!("（自报 {}）", g["statusReported"].as_str().unwrap_or("-"))
@@ -1987,7 +2334,8 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         })()),
 
         "ncc_gateway_audit" => ok_or_text((|| {
-            let want = sarg("gateway").ok_or_else(|| anyhow::anyhow!("需要 gateway（GW-… 或名字）"))?;
+            let want =
+                sarg("gateway").ok_or_else(|| anyhow::anyhow!("需要 gateway（GW-… 或名字）"))?;
             let (id, name) = gw_resolve(cfg, token.as_deref(), &want)?;
             let q = [
                 ("since", sarg("since")),
@@ -1997,11 +2345,17 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             .filter_map(|(k, v)| v.as_ref().map(|x| format!("{k}={}", api::urlenc(x))))
             .collect::<Vec<_>>()
             .join("&");
-            let d = api::get(cfg, &format!("/api/gateways/{id}/audit?{q}"), token.as_deref())?;
+            let d = api::get(
+                cfg,
+                &format!("/api/gateways/{id}/audit?{q}"),
+                token.as_deref(),
+            )?;
             let rows = d["summaries"].as_array().cloned().unwrap_or_default();
             let mut out = format!("{}（{id}）留存摘要 {} 条\n", name, rows.len());
             if rows.is_empty() {
-                out.push_str("（还没有摘要。可能：网关刚接上、这段时间没有流量、或已过留存期。）\n");
+                out.push_str(
+                    "（还没有摘要。可能：网关刚接上、这段时间没有流量、或已过留存期。）\n",
+                );
             }
             for r in &rows {
                 out.push_str(&format!(
@@ -2058,13 +2412,18 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         })()),
 
         "ncc_gateway_usage" => ok_or_text((|| {
-            let want = sarg("gateway").ok_or_else(|| anyhow::anyhow!("需要 gateway（GW-… 或名字）"))?;
+            let want =
+                sarg("gateway").ok_or_else(|| anyhow::anyhow!("需要 gateway（GW-… 或名字）"))?;
             let (id, name) = gw_resolve(cfg, token.as_deref(), &want)?;
             let q = match sarg("since") {
                 Some(v) => format!("?since={}", api::urlenc(&v)),
                 None => String::new(),
             };
-            let d = api::get(cfg, &format!("/api/gateways/{id}/usage{q}"), token.as_deref())?;
+            let d = api::get(
+                cfg,
+                &format!("/api/gateways/{id}/usage{q}"),
+                token.as_deref(),
+            )?;
             Ok(text(clip(&format!(
                 "{}（{id}）\n窗口 {} 个 · 活跃 {} 天 · 请求 {}（放行 {} / 拒绝 {}）· 出站 {}\n\
                  区间 {} → {}（统计起点 {} · 最近心跳 {}）\n⚠ {}",
@@ -2087,7 +2446,10 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         // 红线：发现 ≠ 授权 ≠ 字节通道；STUN 可由 NCC 托管，**TURN 必须客户自托管**；
         // 打洞失败就明确报错，不降级为中心中转。所以这里只做「判断」，不接字节。
         "ncc_p2p_probe" => ok_or_text((|| {
-            let offline = args.get("offline").and_then(|v| v.as_bool()).unwrap_or(false);
+            let offline = args
+                .get("offline")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let (_, txt) = crate::p2p::probe_run(cfg, sarg("stun").as_deref(), offline);
             Ok(text(clip(&format!(
                 "（注：这算的是**跑 MCP 的这台机器**，不是目标节点）\n{}",
@@ -2099,9 +2461,13 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             let addr = sarg("addr");
             let peer = sarg("peer");
             match (&addr, &peer) {
-                (None, None) => anyhow::bail!("需要 addr（对端映射 ip:port）或 peer（对端节点引用）之一"),
+                (None, None) => {
+                    anyhow::bail!("需要 addr（对端映射 ip:port）或 peer（对端节点引用）之一")
+                }
                 (Some(_), Some(_)) => {
-                    anyhow::bail!("addr 与 peer 只能给一个：addr 直接对打（不走信令），peer 走控制面信令")
+                    anyhow::bail!(
+                        "addr 与 peer 只能给一个：addr 直接对打（不走信令），peer 走控制面信令"
+                    )
                 }
                 _ => {}
             }
@@ -2132,9 +2498,9 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     cfg.base_url()
                 );
             }
-            let tok = token
-                .clone()
-                .context("看节点画像需要登录：先运行 `ncc login`（或 `ncc registry login`），或配置 API-Key")?;
+            let tok = token.clone().context(
+                "看节点画像需要登录：先运行 `ncc login`（或 `ncc registry login`），或配置 API-Key",
+            )?;
             let v = crate::registryp2p::self_json(cfg, &tok)?;
             Ok(text(clip(&render_p2p_node(&v))))
         })()),
@@ -2149,11 +2515,59 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             let tags: Vec<String> = args
                 .get("tags")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str()).map(String::from).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(String::from)
+                        .collect()
+                })
                 .unwrap_or_default();
             let limit = narg("limit", 5, 20) as u32;
             let v = crate::services::fetch_match(cfg, &intent, &category, &tags, &region, limit)?;
             Ok(text(clip(&crate::services::render_match(&v))))
+        })()),
+
+        "ncc_match_index" => ok_or_text((|| {
+            let intent = sarg("intent")
+                .or_else(|| sarg("query"))
+                .ok_or_else(|| anyhow::anyhow!("需要 intent（你要办什么事）"))?;
+            let channel = sarg("channel").unwrap_or_default();
+            let region = sarg("region").unwrap_or_default();
+            let want = sarg("want").unwrap_or_else(|| "supply".to_string());
+            let limit = narg("limit", 5, 20) as i64;
+            let v = crate::index::fetch_match(cfg, &intent, &channel, &region, &want, limit)?;
+            Ok(text(&crate::index::render_match_text(&v)))
+        })()),
+
+        "ncc_list_index_channels" => ok_or_text((|| {
+            let prefix = sarg("prefix").unwrap_or_default();
+            let path = if prefix.trim().is_empty() {
+                "/api/index/channels".to_string()
+            } else {
+                format!("/api/index/channels?prefix={prefix}")
+            };
+            let v = crate::api::get(cfg, &path, crate::config::token_opt(cfg).as_deref())?;
+            let rows = v
+                .get("channels")
+                .and_then(|x| x.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if rows.is_empty() {
+                return Ok(text("还没有频道（没人登记过索引）。"));
+            }
+            let mut out = String::new();
+            for r in &rows {
+                let s = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
+                out.push_str(&format!(
+                    "{}：{} 条（供给 {} / 需求 {}）· {} 人登记\n",
+                    s("channel"),
+                    r.get("entries").and_then(|v| v.as_i64()).unwrap_or(0),
+                    r.get("supply").and_then(|v| v.as_i64()).unwrap_or(0),
+                    r.get("needs").and_then(|v| v.as_i64()).unwrap_or(0),
+                    r.get("providers").and_then(|v| v.as_i64()).unwrap_or(0),
+                ));
+            }
+            Ok(text(&out))
         })()),
 
         "ncc_list_services" => ok_or_text((|| {
@@ -2166,7 +2580,8 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         })()),
 
         "ncc_get_service" => ok_or_text((|| {
-            let target = rarg("ref").ok_or_else(|| anyhow::anyhow!("需要 ref（@提供方/标识 或 SV-…）"))?;
+            let target =
+                rarg("ref").ok_or_else(|| anyhow::anyhow!("需要 ref（@提供方/标识 或 SV-…）"))?;
             let v = crate::services::fetch_show(cfg, &target)?;
             Ok(text(clip(&crate::services::render_show(&v))))
         })()),
@@ -2180,17 +2595,29 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
                     "  {:<12} {:<14}（{}）  {}\n",
                     c["id"].as_str().unwrap_or(""),
                     c["zh"].as_str().unwrap_or(""),
-                    if n > 0 { format!("{n} 条服务") } else { "暂无".to_string() },
+                    if n > 0 {
+                        format!("{n} 条服务")
+                    } else {
+                        "暂无".to_string()
+                    },
                     c["descZh"].as_str().unwrap_or("")
                 ));
             }
             out.push_str("\n接入方式：");
             for p in v["protocols"].as_array().cloned().unwrap_or_default() {
-                out.push_str(&format!(" {}（{}）", p["id"].as_str().unwrap_or(""), p["zh"].as_str().unwrap_or("")));
+                out.push_str(&format!(
+                    " {}（{}）",
+                    p["id"].as_str().unwrap_or(""),
+                    p["zh"].as_str().unwrap_or("")
+                ));
             }
             out.push_str("\n授权方式：");
             for a in v["accessModes"].as_array().cloned().unwrap_or_default() {
-                out.push_str(&format!(" {}（{}）", a["id"].as_str().unwrap_or(""), a["zh"].as_str().unwrap_or("")));
+                out.push_str(&format!(
+                    " {}（{}）",
+                    a["id"].as_str().unwrap_or(""),
+                    a["zh"].as_str().unwrap_or("")
+                ));
             }
             out.push_str(&format!(
                 "\n\n目录里已有 {} 条公开服务，来自 {} 个提供方。",
@@ -2210,8 +2637,12 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
         })()),
 
         "ncc_get_config" => ok_or_text((|| {
-            let target = rarg("ref").ok_or_else(|| anyhow::anyhow!("需要 ref（@命名空间/slug）"))?;
-            let reveal = args.get("reveal").and_then(|v| v.as_bool()).unwrap_or(false);
+            let target =
+                rarg("ref").ok_or_else(|| anyhow::anyhow!("需要 ref（@命名空间/slug）"))?;
+            let reveal = args
+                .get("reveal")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let revision = args.get("revision").and_then(|v| v.as_i64());
             let v = crate::configs::fetch_config(cfg, &target, reveal, revision)?;
             Ok(text(clip(&crate::configs::render_config(&v))))
@@ -2255,7 +2686,9 @@ fn gw_resolve(cfg: &CliConfig, token: Option<&str>, want: &str) -> Result<(Strin
     let exact: Vec<_> = rows
         .iter()
         .map(|r| &r["gateway"])
-        .filter(|g| g["name"].as_str().unwrap_or("") == want || g["id"].as_str().unwrap_or("") == want)
+        .filter(|g| {
+            g["name"].as_str().unwrap_or("") == want || g["id"].as_str().unwrap_or("") == want
+        })
         .map(hit)
         .collect();
     if exact.len() == 1 {
@@ -2305,7 +2738,11 @@ fn render_p2p_node(v: &Value) -> String {
         s("/profile/localIpv4"),
         s("/profile/localAddrKind"),
         n("/profile/localPort"),
-        if s("/profile/mapped").is_empty() { "（没探到）" } else { s("/profile/mapped") },
+        if s("/profile/mapped").is_empty() {
+            "（没探到）"
+        } else {
+            s("/profile/mapped")
+        },
     ));
     out.push_str(&format!(
         "  STUN 可达 {}/{} · 映射 {}（{}）· 过滤 {}（{}）\n  结论 {}\n  建议：{}\n",
@@ -2330,23 +2767,40 @@ fn render_p2p_node(v: &Value) -> String {
         .unwrap_or_default();
     out.push_str(&format!(
         "  STUN 列表：{}\n",
-        if servers.is_empty() { "（未配置，用内置默认）" } else { &servers }
+        if servers.is_empty() {
+            "（未配置，用内置默认）"
+        } else {
+            &servers
+        }
     ));
     if serve.get("on").and_then(|x| x.as_bool()) == Some(true) {
         let peers = serve
             .get("peers")
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>().join(", "))
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default();
         out.push_str(&format!(
             "  可被打洞入口：已开 —— 对端应发往 {} · 已应答 {} 次 · 收到对端回包 {} 次\n",
-            if s("/serve/mapped").is_empty() { "-" } else { s("/serve/mapped") },
+            if s("/serve/mapped").is_empty() {
+                "-"
+            } else {
+                s("/serve/mapped")
+            },
             n("/serve/requestsTaken"),
             n("/serve/responsesSeen"),
         ));
         out.push_str(&format!(
             "    反向打洞对端：{}\n",
-            if peers.is_empty() { "无（对方可能打不进：地址/端口相关过滤的 NAT 必须双方同时发）" } else { &peers }
+            if peers.is_empty() {
+                "无（对方可能打不进：地址/端口相关过滤的 NAT 必须双方同时发）"
+            } else {
+                &peers
+            }
         ));
         if !s("/serve/note").is_empty() {
             out.push_str(&format!("    提示：{}\n", s("/serve/note")));
@@ -2361,8 +2815,20 @@ fn render_p2p_node(v: &Value) -> String {
 fn is_texty(url: &str) -> bool {
     let path = url.split(['?', '#']).next().unwrap_or(url).to_lowercase();
     const EXTS: [&str; 14] = [
-        ".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".toml", ".sh", ".bash",
-        ".py", ".js", ".ts", ".rs", ".go",
+        ".md",
+        ".markdown",
+        ".txt",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".sh",
+        ".bash",
+        ".py",
+        ".js",
+        ".ts",
+        ".rs",
+        ".go",
     ];
     EXTS.iter().any(|e| path.ends_with(e))
 }
@@ -2391,7 +2857,8 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../agent/harness.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("读不了 {}：{e}", path.display()));
-        let manifest: Value = serde_json::from_str(&text).expect("agent/harness.json 不是合法 JSON");
+        let manifest: Value =
+            serde_json::from_str(&text).expect("agent/harness.json 不是合法 JSON");
         let listed: Vec<String> = manifest["harness"]["tools"]
             .as_array()
             .expect("harness.tools 必须是数组")
@@ -2428,8 +2895,11 @@ mod tests {
             let name = t["name"].as_str().unwrap_or_default();
             if let Some(cap) = tool_capability(name) {
                 assert!(
-                    ["services", "config", "nodes", "grants", "trace", "kb", "mem", "ckpt", "p2p", "profile", "gateway"]
-                        .contains(&cap),
+                    [
+                        "services", "config", "nodes", "grants", "trace", "kb", "mem", "ckpt",
+                        "p2p", "profile", "gateway", "index"
+                    ]
+                    .contains(&cap),
                     "{name} 的能力名 `{cap}` 不在共享词表里"
                 );
             }

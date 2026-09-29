@@ -14,6 +14,35 @@
 
 ## [未发布]
 
+### 新增 · 索引与匹配：`ncc index` / `ncc list` / `ncc match`
+
+把「我有什么 / 我要什么」登记进一个**自由频道**，别人用一句需求就能检索到（服务端那侧是
+`ncc-platform` 的 `IndexEntry`，见那边的 CHANGELOG 与 `prd/ncc-index-match.md`）。
+
+- **`ncc index publish <频道> [--service @我/slug | --item @我/slug | --need "一句话"]`**：
+  先写平台（权威、跨网可查），再**尽力推已接入的内网节点**（`--node` 指定、`--no-push` 跳过），
+  并逐个报告结果：`✓ 节点 local 已接收` / `✗ 节点 local：<原因>`。
+  **节点推失败不回滚平台，但绝不假装成功**；成功的节点回报平台，`ncc index show` 里看得到「已推节点」。
+- **`ncc index list [--mine|--channel|--side|--kind|--q]` · `show <引用>` · `rm <引用>` · `push <引用>`**：
+  `show` 会打印「怎么接过去」（端点或引用原件）、已推节点；`rm` 只撤回索引，**不动原件**。
+- **`ncc list users` · `ncc list needs` · `ncc list channels`**：索引里有什么 ——
+  按人聚合的「已索引的人」、别人放出来的需求、以及有哪些检索空间。
+- **`ncc match "…" [--channel|--region|--kind|--want supply|need|--limit|--from <目标>]`**：
+  匹配源默认是当前目标，也可以用 `--from <目标名>` 指向内网节点（或由环境变量
+  `NCC_INDEX_SOURCE` 指定 —— 这就是「系统设置」那一档）。`--want need` 是**找活儿**。
+  输出带命中理由与下一步；**排序含内部信誉权重，但评分不对外显示**，CLI 也不会打印任何分数。
+- **MCP 只读两件**：`ncc_match_index`（一句需求找人）与 `ncc_list_index_channels`。
+  登记 / 撤回是改「别人能搜到我什么」，仍然只在 CLI。
+- 验收：`ncc-platform/scripts/index-match-smoke.sh` **81/81**（含第 9 节 15 条 CLI 断言）。
+
+### 变更 · 评分不再对外显示：`ncc profile rate/ratings` 不再打印别人的均分
+
+服务端改了口径：**星级只作为匹配的内部权重**，不进任何公开响应（见 `ncc-platform` 的 CHANGELOG）。
+
+- `ncc profile rate` 只回显「我给了几星」，不再打印对方的均分/人数（服务端已经不返回）。
+- `ncc profile ratings <别人>` 只列**评语**；只有看自己收到的评价时才打印均分与分布。
+  打分的人仍能看到自己打的那一分（要能改它）。
+
 ### 新增 · 组织计划：`ncc ns plans` / `ncc ns create --plan`
 
 组织在服务端改成**免费也能建（1 个 / 5 名成员）**、创建时**选一档计划**（`ncc-platform`

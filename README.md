@@ -207,6 +207,10 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc ns create --slug <slug> --name <name> [--plan free]` | Create an org namespace (`plan` defaults to `free`) |
 | `ncc publish` | Publish an artifact from a file upload or a BYO URL |
 | `ncc search [query]` | Search the catalog |
+| `ncc index publish <channel>` | Index an offering / artifact / need (platform first, then intranet nodes; failed nodes are reported one by one) |
+| `ncc index list` / `show` / `rm` / `push` | What I registered / details + pushed nodes / withdraw (original untouched) / push again |
+| `ncc list users` / `needs` / `channels` | Who is in the index / what people need / which search spaces exist |
+| `ncc match "…"` | My need → who can do it (`--want need` finds demand; `--from <target>` matches against an intranet node) |
 | `ncc info <target>` | Print an artifact's full record as JSON |
 | `ncc download <target>` | Download the artifact bytes |
 | `ncc install <target>` | Install into the local package directory |
@@ -523,6 +527,47 @@ Worth knowing:
 - **Non-public services expose a summary only**: without a grant, results carry name, category,
   region and policy — endpoint, node, package and steps stay hidden.
 - **Any region** means `countrywide` or empty: it counts as covering every region query.
+
+### `ncc index` / `ncc list` / `ncc match`
+
+A service declaration answers "what can I do"; the **index** answers "how do people find me" —
+register something into a **channel** (a free name like `booking/hotel`) so one sentence of need
+can retrieve it. The same service can be indexed into different channels with different wording.
+
+```bash
+# Publish: platform first (authoritative), then best-effort push to joined intranet nodes
+ncc index publish booking/hotel --service @aya/hotel-booking
+ncc index publish pptx/deck --item @aya/html-deck-to-pptx --intent "HTML to PPTX"
+ncc index publish booking/hotel --need "two king rooms in Hangzhou for Oct 1"   # needs are indexed too
+
+ncc index list --mine              # what I registered
+ncc index list --channel booking   # what is in this channel (prefix: booking → booking/hotel)
+ncc index show @aya/aya-hotel      # details: how to connect + which nodes were pushed
+ncc index push @aya/aya-hotel      # push to intranet nodes again
+ncc index rm @aya/aya-hotel        # withdraw the index (**the original is untouched**)
+
+ncc list users                     # who is in the index (supply / needs / channels)
+ncc list needs                     # who is looking for help (for suppliers)
+ncc list channels                  # which search spaces exist, and how big
+
+ncc match "help me book a hotel in Hangzhou" --channel booking   # my need → who can do it
+ncc match "杭州酒店" --want need                                 # I want work → who needs it
+ncc match "…" --from office                                      # match against an intranet node
+```
+
+Essentials:
+
+- **Three kinds**: `--service` (index one of my offerings; category / keywords / summary are inherited),
+  `--item` (index an artifact), `--need` (register a need).
+- **Channels are free-form but not unruled**: `Booking/Hotel` == `booking/hotel`; `Food____RES` → `food-res`.
+- **An index is not a grant**: being indexed only means findable — private artifacts still need
+  `ncc grant`, non-public services still need a `service` grant. Indexing a non-`open` service
+  **carries no endpoint** (the entry points at `ncc services show`).
+- **Platform authoritative, nodes are copies**: `publish` writes the platform first and then pushes to
+  joined intranet nodes; **a failed node push never rolls back the platform, but is reported per node**
+  (`✓/✗`), and successfully pushed nodes show up in `index show`.
+- **Ratings are never shown publicly**: ranking includes an internal reputation weight, but neither the
+  API nor the CLI ever prints a score — access still requires a grant.
 
 ### `ncc registry config` (config hosting)
 
@@ -996,7 +1041,7 @@ scripts/             build-release.sh (cross-compile + checksums)
 `ncc mcp` runs NCC as an **MCP server** over stdio, so any MCP-capable agent can search the catalog,
 fetch artifacts, publish results and look up people, read its own knowledge base / memory / checkpoints
 and run traces, and check an organisation's gateways plus their compliance audit summaries — no extra
-service to run (33 tools, gated by what the connected target declares):
+service to run (38 tools, gated by what the connected target declares):
 
 ```jsonc
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp"] } } }
@@ -1015,6 +1060,8 @@ service to run (33 tools, gated by what the connected target declares):
 | `ncc_get_profile` | Someone's card: roles + portfolio + published capabilities |
 | `ncc_match_services` | Match services by intent: scores, reasons, connection steps |
 | `ncc_list_services` | Browse the service catalog (category / tag / region) |
+| `ncc_match_index` | Find people from the **index** by one sentence of need (`want=need` finds demand); ranking has an internal weight and **never a score** |
+| `ncc_list_index_channels` | Channels in the index (sizes, supply / need split) |
 | `ncc_get_service` | Full connection details for one service |
 | `ncc_service_categories` | Business category catalog for the `category` argument |
 | `ncc_list_configs` | Hosted team configuration (public ones need no credential; `mine` for your own) |
