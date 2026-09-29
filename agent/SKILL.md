@@ -221,7 +221,8 @@ ncc gateway audit --remote --csv        # 看/导出控制面留存的摘要
 ### C. 找人 / 找定位
 
 1. `ncc_list_roles` 拿角色 id；
-2. `ncc_find_people` 按 `role` / `skill` / `query` 检索；
+2. `ncc_find_people` 按 `role` / `skill` / `query` 检索；加 `following: true` 则**只看我关注的人**
+   （需要已登录 —— 它问的是「我」关注了谁；结果里也只有公开名片）；
 3. `ncc_get_profile` 看某人的作品集与他已发布的能力 —— 这比简历更能反映实际产出。
 
 ### D. 「这件事该找谁办」——服务匹配（云端）

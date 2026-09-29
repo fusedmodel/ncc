@@ -335,6 +335,7 @@ fn tools() -> Vec<Value> {
                     "skill": { "type": "string", "description": "技能标签，如 RAG" },
                     "query": { "type": "string", "description": "关键词（匹配名字/头衔/技能）" },
                     "availability": { "type": "string", "description": "接洽状态：open|collab|hiring|busy" },
+                    "following": { "type": "boolean", "description": "只看我关注的人（需要已登录；未登录会报 401 而不是返回空）" },
                     "limit": { "type": "integer", "description": "返回条数，默认 20，最大 50" }
                 },
                 "additionalProperties": false
@@ -1255,6 +1256,10 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
     let narg = |k: &str, d: i64, max: i64| -> i64 {
         args.get(k).and_then(|v| v.as_i64()).unwrap_or(d).clamp(1, max)
     };
+    // 布尔参数（缺省 false）。服务端的 `?following=1` 只认字面 "1"，由调用处拼。
+    let barg = |k: &str| -> bool {
+        args.get(k).and_then(|v| v.as_bool()).unwrap_or(false)
+    };
     let token = config::token_opt(cfg);
 
     // 工具级失败按 MCP 约定回 isError=true，而不是 JSON-RPC error
@@ -1497,12 +1502,22 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             if let Some(a) = sarg("availability") {
                 qs.push(format!("availability={}", urlenc(&a)));
             }
+            // 服务端只认字面 "1"（不是 true/yes），且未登录直接 401
+            if barg("following") {
+                qs.push("following=1".to_string());
+            }
             qs.push(format!("size={}", narg("limit", 20, 50)));
             let d = api::get(cfg, &format!("/api/profiles?{}", qs.join("&")), token.as_deref())?;
             let total = d.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
             let ps = d.get("profiles").and_then(|v| v.as_array()).cloned().unwrap_or_default();
             if ps.is_empty() {
-                return Ok(text(format!("没有匹配的名片（共 {total} 位）。可用 ncc_list_roles 确认角色 id。")));
+                // following 的空结果多半不是「没人」，而是「你没关注 / 对方没进目录」——
+                // 这两种情况给同一句「没有匹配」会让人白找一轮角色 id
+                return Ok(text(if barg("following") {
+                    format!("没有匹配的名片（共 {total} 位）。following 只看你关注的人，且对方得是公开名片 —— 用 `ncc profile following` 确认关注列表。")
+                } else {
+                    format!("没有匹配的名片（共 {total} 位）。可用 ncc_list_roles 确认角色 id。")
+                }));
             }
             let mut out = format!("共 {total} 位，返回 {} 位：\n", ps.len());
             for p in &ps {
