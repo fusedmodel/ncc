@@ -547,9 +547,14 @@ enum RegistryCmd {
 #[derive(Subcommand)]
 enum NsCmd {
     List,
+    /// 列出组织计划目录（含尚未开放的档：看得见，选不了）
+    Plans,
     Create {
         #[arg(long)] slug: String,
         #[arg(long)] name: Option<String>,
+        /// 组织计划 id（默认 free；服务端只认目录里的，且必须是已开放的档）
+        #[arg(long, default_value = "free")]
+        plan: String,
     },
 }
 
@@ -1158,19 +1163,62 @@ fn cmd_ns(cfg: &CliConfig, n: &NsCmd) -> anyhow::Result<()> {
             if let Some(ns) = data["namespaces"].as_array() {
                 for x in ns {
                     let ty = if x["type"] == "org" { "🏢" } else { "👤" };
-                    println!("{} {}\t{}\t{}\t{}",
+                    // 组织才打计划：个人空间固定 free，打出来只是噪声
+                    let plan = if x["type"] == "org" {
+                        format!("{}", x["plan"].as_str().unwrap_or("free"))
+                    } else {
+                        "-".to_string()
+                    };
+                    println!("{} {}\t{}\t{}\t{}\t{}",
                         ty, x["slug"].as_str().unwrap_or(""),
                         x["name"].as_str().unwrap_or(""),
                         if x["owner"].as_bool().unwrap_or(false) { "owner" } else { "member" },
-                        x["visibility"].as_str().unwrap_or(""));
+                        x["visibility"].as_str().unwrap_or(""),
+                        plan);
                 }
             }
             Ok(())
         }
-        NsCmd::Create { slug, name } => {
-            let body = json!({ "slug": slug, "name": name });
+        NsCmd::Plans => {
+            // 目录来自服务端（单一真源）：CLI 不另抄一份计划表。
+            // 登录时顺手把 token 带上 —— 目录本身公开，但带上才看得到
+            // 「我已用几个 / 还能建几个」那两行。
+            let tk = cfg.target().token.clone().filter(|t| !t.is_empty());
+            let data = api::get(cfg, "/api/namespaces/plans", tk.as_deref())?;
+            if let Some(plans) = data["plans"].as_array() {
+                for p in plans {
+                    let avail = p["available"].as_bool().unwrap_or(false);
+                    let mark = if avail { "✓" } else { "·" };
+                    println!("{} {:<6} {:<10} {} 个组织 / 每组织 {} 人  {}",
+                        mark,
+                        p["id"].as_str().unwrap_or(""),
+                        p["nameZh"].as_str().unwrap_or(""),
+                        p["maxOrgs"].as_i64().unwrap_or(0),
+                        p["maxMembers"].as_i64().unwrap_or(0),
+                        p["priceZh"].as_str().unwrap_or(""));
+                    if !avail {
+                        if let Some(note) = p["noteZh"].as_str() {
+                            if !note.is_empty() {
+                                println!("    └ 未开放：{note}");
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some(used) = data["used"].as_i64() {
+                println!("已拥有 {} / {} 个组织（额度按所有者算）",
+                    used, data["quota"].as_i64().unwrap_or(0));
+            }
+            println!("计划里写着但选不了的档 = 还没开放；开放在服务端目录里改。");
+            Ok(())
+        }
+        NsCmd::Create { slug, name, plan } => {
+            let body = json!({ "slug": slug, "name": name, "plan": plan });
             let data = api::post_json(cfg, "/api/namespaces", Some(&token), &body)?;
-            println!("✅ namespace 创建：{} ({})", data["slug"].as_str().unwrap_or(slug), data["id"].as_str().unwrap_or(""));
+            println!("✅ namespace 创建：{} ({})　计划 {}",
+                data["slug"].as_str().unwrap_or(&slug),
+                data["id"].as_str().unwrap_or(""),
+                data["plan"].as_str().unwrap_or(&plan));
             Ok(())
         }
     }
