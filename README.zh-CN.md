@@ -130,6 +130,8 @@ ncc profile set --headline "把模糊需求落成能上线的 AI 系统" \
 ncc profile                            # 查看名片与短链
 ncc living --name my-agent --kind agent --capabilities mcp,api   # 注册一个节点
 ncc nodes                              # 我的节点 + 连接的节点
+ncc agent share ./my-agent             # 把我设计好的 Agent 分享给指定的人（点到点链接）
+ncc agent add 'https://ncc.ai/a/AC-…'  # 收下别人给的 Agent：装包 + 连接节点
 ncc services match "帮我订杭州的酒店"    # 按意图找服务（服务提供方打包的业务）
 ncc terminal
 ```

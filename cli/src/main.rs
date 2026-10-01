@@ -1,4 +1,5 @@
 mod admin;
+mod agent;
 mod api;
 mod app;
 mod auth;
@@ -184,6 +185,12 @@ enum Cmd {
     Key(KeyCmd),
     /// 设备接入（Living）：上报本设备心跳到你的命名空间（--daemon 周期守护）
     Living(LivingArgs),
+    /// Agent 分享（点到点）：把我的 Agent 交给指定的人
+    ///
+    /// `share` 造一张名片（包 + 可选节点）→ 给对方一条 `https://ncc.ai/a/AC-…` 链接；
+    /// `add` 收下别人的名片 → **装包** + **连接节点**（可 --no-install / --no-link 只做一半）。
+    /// 平台**不展示、不检索**任何人的名片；撤销即删（连字节）。
+    Agent(agent::AgentCmd),
     /// NCC Profile：查看 / 设置名片（定位角色 + 作品集 + 已发布能力）
     Profile(ProfileArgs),
     /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
@@ -939,6 +946,8 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         | Cmd::Download { .. }
         | Cmd::Install { .. } => Some("registry"),
         Cmd::Living(_) => Some("living"),
+        // Agent 名片是 Share 面的一条能力（平台/节点都靠 share 声明这一族接口）。
+        Cmd::Agent(_) => Some("share"),
         // 纯本地：打洞预检一样不依赖 NCC 服务端。
         Cmd::Gateway(_) => None,
         // 舱的命令自己报告能力（doctor 的职责就是回答「这个目标有没有这些能力」），不在这里门禁
@@ -1060,6 +1069,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         Cmd::Verify(v) => signcmd::verify(cfg, v),
         Cmd::Key(k) => cmd_key(cfg, k),
         Cmd::Living(a) => cmd_living(cfg, a),
+        Cmd::Agent(a) => agent::run(cfg, a),
         Cmd::Trace(t) => trace::run(cfg, t),
         Cmd::Kb(k) => state::run_kb(cfg, k),
         Cmd::Mem(m) => state::run_mem(cfg, m),

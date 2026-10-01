@@ -142,6 +142,8 @@ ncc living --name my-agent --kind agent --capabilities mcp,api   # register a no
 ncc p2p probe                                                   # local hole-punch preflight (no server)
 ncc p2p check @you/mac                                          # real connectivity check (run on both sides)
 ncc nodes                              # my nodes + linked nodes
+ncc agent share ./my-agent             # hand my agent to a specific person (point-to-point link)
+ncc agent add 'https://ncc.ai/a/AC-…'  # accept someone's agent: install the package + link the node
 ncc terminal
 ```
 
