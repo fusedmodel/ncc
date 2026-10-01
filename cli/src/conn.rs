@@ -47,7 +47,8 @@ pub struct ConnCmd {
 
 #[derive(Subcommand)]
 pub enum ConnAction {
-    /// 建一条通道（到某个云电脑/内网节点），或执行任务不建（不推荐：每次都重新握手）
+    /// 建一条通道：`--ssh <[user@]host[:port]>` 走 SSH（对方只要有 sshd，零服务端改动）；
+    /// `--on <已登记的云电脑>` / `--url … --key …` 走 HTTP（对方跑着 ncc-registry）
     Open(OpenArgs),
     /// 我开着的通道
     Ls {
@@ -424,6 +425,10 @@ fn open_ssh(a: &OpenArgs, target: &str) -> Result<()> {
 }
 
 fn open_http(a: &OpenArgs) -> Result<()> {
+    // 三个 SSH 专用开关在 HTTP 通道上会被静默忽略 —— 与其让人以为生效了，不如点一句。
+    if a.dir.is_some() || a.identity.is_some() || a.batch {
+        eprintln!("  ! --dir / --identity / --batch 只对 `--ssh` 通道有意义，这条是 HTTP 通道，已忽略");
+    }
     let (url, key, label) = if let Some(n) = a.on.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let e = env_of(n)?;
         (e.url.clone(), e.auth.token.clone(), e.id.clone())
