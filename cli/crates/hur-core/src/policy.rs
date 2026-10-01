@@ -466,6 +466,40 @@ pub struct Environment {
     pub registered_at_unix: u64,
     #[serde(default)]
     pub note: String,
+    /// 访问凭据（`ncc sandbox init` 写进来的）。老登记没有这段 → 默认 none，向后兼容。
+    #[serde(default)]
+    pub auth: Auth,
+}
+
+/// 访问一个远程沙箱环境要带什么凭据。
+///
+/// ⚠️ `token` 是**明文**，只写在本机 `~/.harnessuse/environments.json`（写盘 0600）；
+/// `ncc hur env ls` / `ncc sandbox ls` 只显示「有没有」，**不回显** token。
+/// 为什么不加密：钥匙要能自动用（无人值守跑任务），加密就得再造一个钥匙管理，
+/// 而**这台机器本身就是信任边界** —— 这里有 token，也就意味着这里有别的本地秘密。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Auth {
+    /// none | bearer（ncc_… API-Key 或 JWT）
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub token: String,
+    /// 身份提示（API-Key 的 label / 用户名），只用于展示
+    #[serde(default)]
+    pub subject: String,
+}
+
+impl Auth {
+    pub fn none() -> Self {
+        Self::default()
+    }
+    pub fn bearer(token: &str) -> Self {
+        Self { mode: "bearer".into(), token: token.trim().to_string(), subject: String::new() }
+    }
+    /// 有没有凭据（展示用；不回显内容）。
+    pub fn present(&self) -> bool {
+        !self.token.trim().is_empty()
+    }
 }
 
 fn kind_proxy() -> String {
@@ -521,7 +555,14 @@ pub fn load_envs() -> EnvRegistry {
 pub fn save_envs(r: &EnvRegistry) -> Result<()> {
     crate::cfg::ensure_home()?;
     let text = format!("{}\n", serde_json::to_string_pretty(&EnvRegistry { spec: env_spec(), ..r.clone() })?);
-    std::fs::write(env_path(), text).with_context(|| format!("写 {} 失败", env_path().display()))
+    std::fs::write(env_path(), text).with_context(|| format!("写 {} 失败", env_path().display()))?;
+    // 这个文件里有访问凭据（沙箱的 key）→ 只给本用户读。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(env_path(), std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 /// 环境登记前的纯校验（不落盘，便于单测）
@@ -539,6 +580,12 @@ pub fn validate_env(env: &Environment) -> Result<()> {
         "proxy" if env.url.trim().is_empty() => bail!("proxy 环境必须给 --url（远程 sandbox 地址）"),
         "proxy" | "local" => {}
         other => bail!("环境 kind 只能是 proxy | local，当前「{other}」"),
+    }
+    match env.auth.mode.as_str() {
+        "" | "none" => {}
+        "bearer" if env.auth.token.trim().is_empty() => bail!("auth.mode=bearer 但没给 token"),
+        "bearer" => {}
+        other => bail!("auth.mode 只能是 none | bearer，当前「{other}」"),
     }
     Ok(())
 }

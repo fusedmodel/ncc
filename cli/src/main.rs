@@ -22,6 +22,7 @@ mod profile;
 mod registry;
 mod registryadd;
 mod registryp2p;
+mod sandbox;
 mod services;
 mod signcmd;
 mod state;
@@ -191,6 +192,14 @@ enum Cmd {
     /// `add` 收下别人的名片 → **装包** + **连接节点**（可 --no-install / --no-link 只做一半）。
     /// 平台**不展示、不检索**任何人的名片；撤销即删（连字节）。
     Agent(agent::AgentCmd),
+    /// 云电脑（Remote Cloud Computer）：把任务丢到一台远程沙箱机器上跑
+    ///
+    /// `init --host … --port … --key …` 用 ip/port/key 登记一台能接活的 ncc 节点
+    /// （登记进既有的沙箱环境表，`ncc hur env` 与策略对云电脑自动生效）；
+    /// `run` 把任务送过去：`--package` 走 wasm 沙箱，`--cmd` 走 process/container
+    /// （OS 敏感任务，例如 `docker build && docker push`，需要对方运维显式放行）。
+    /// 退出码跟随远端，可直接用在 CI 里。
+    Sandbox(sandbox::SandboxCmd),
     /// NCC Profile：查看 / 设置名片（定位角色 + 作品集 + 已发布能力）
     Profile(ProfileArgs),
     /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
@@ -948,6 +957,8 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Living(_) => Some("living"),
         // Agent 名片是 Share 面的一条能力（平台/节点都靠 share 声明这一族接口）。
         Cmd::Agent(_) => Some("share"),
+        // 云电脑：不门禁（见 run() 里的说明）。
+        Cmd::Sandbox(_) => None,
         // 纯本地：打洞预检一样不依赖 NCC 服务端。
         Cmd::Gateway(_) => None,
         // 舱的命令自己报告能力（doctor 的职责就是回答「这个目标有没有这些能力」），不在这里门禁
@@ -1070,6 +1081,9 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         Cmd::Key(k) => cmd_key(cfg, k),
         Cmd::Living(a) => cmd_living(cfg, a),
         Cmd::Agent(a) => agent::run(cfg, a),
+        // 云电脑的地址来自本机环境表（不是当前目标）——连通性由 init/status 自己报，
+        // 所以这里不做能力门禁（否则当前目标正好是个没声明 exec 的节点就全哑了）。
+        Cmd::Sandbox(s) => sandbox::cmd(&s.action),
         Cmd::Trace(t) => trace::run(cfg, t),
         Cmd::Kb(k) => state::run_kb(cfg, k),
         Cmd::Mem(m) => state::run_mem(cfg, m),

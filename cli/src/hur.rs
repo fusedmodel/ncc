@@ -1375,6 +1375,9 @@ fn env(a: HurEnvArgs) -> Result<()> {
                 allow_data_leaving: x.allow_data_leaving,
                 registered_at_unix: 0,
                 note: x.note.clone(),
+                // `ncc hur env add` 只做登记，不收集凭据 —— 带 key 的云电脑用
+                // `ncc sandbox init`（它会把凭据一起写进同一张表）。
+                auth: policy::Auth::none(),
             };
             policy::validate_env(&env).map_err(|e| anyhow!("{e:#}"))?;
             let saved = policy::add_env(env, x.default)?;

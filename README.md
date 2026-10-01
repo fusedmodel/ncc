@@ -144,6 +144,8 @@ ncc p2p check @you/mac                                          # real connectiv
 ncc nodes                              # my nodes + linked nodes
 ncc agent share ./my-agent             # hand my agent to a specific person (point-to-point link)
 ncc agent add 'https://ncc.ai/a/AC-…'  # accept someone's agent: install the package + link the node
+ncc sandbox init --host 10.0.0.5 --port 8282 --key <key>   # cloud computer: register a machine that runs work
+ncc sandbox run --on office --cmd "docker build -t me/app . && docker push me/app" --reason "release"
 ncc terminal
 ```
 
