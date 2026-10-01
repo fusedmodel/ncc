@@ -546,8 +546,17 @@ pub fn read_lock(dir: &Path) -> Option<HurLock> {
 }
 
 /// 合法 kind
+/// `hur.json` 的 `kind` 是不是已知值。
+///
+/// 2026-10-02：从「三件套」放宽到 **profile 同名的那几个**（skill / mcp / plugin /
+/// app / scaffold）。理由不是想说好听，而是这两件事已经成立很久了：
+/// ① 目录（registry）的 kind 词表里早就有 skill / mcp / plugin / scaffold；
+/// ② 开发者想的是「我要做一个 skill」，而 `kind=harness` 会把这个包带进 R3（端点
+///    schema）这类只对能力包成立的规矩里。
+/// **三件套仍是合法值**（老包一个也不会红）；而“这份包是什么”的权威始终是 `profile`
+/// —— 新规矩请按 profile 判，别再往 kind 上堆语义。
 pub fn valid_kind(k: &str) -> bool {
-    matches!(k, "agent" | "harness" | "repo")
+    crate::profile::is_authorable_kind(k) || matches!(k, "agent" | "harness" | "repo")
 }
 
 pub fn kind_prefix(k: &str) -> &'static str {
@@ -996,11 +1005,14 @@ pub fn validate_state(pkg: &HurPackage) -> Vec<Issue> {
         return out;
     }
 
-    // 只在 kind=agent 上生效（与 R8 的 security{} 同规矩）。
-    if pkg.kind != "agent" {
+    // 只在会读它的 profile 上生效：agent 与 app（舱）。
+    // 这里原来是 `kind != "agent"` —— 但 app 的 state{} 就是它的主要声明之一，
+    // 而 app 包的 kind 从来不是 agent（那时只能写 harness，于是自己的声明被自己警告）。
+    let prof = pkg.profile_name();
+    if !matches!(prof, "agent" | "app") {
         out.push(Issue::warn(
             "R11",
-            format!("只有 kind=agent 才会读 state{{}}（当前 kind={}，这份声明会被忽略）", pkg.kind),
+            format!("只有 profile=agent / app 才会读 state{{}}（当前 profile={prof}，这份声明会被忽略）"),
         ));
     }
 
@@ -1147,7 +1159,13 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
         out.push(Issue::err("R1", format!("spec 必须是 {PKG_SPEC}，当前是「{}」", pkg.spec)));
     }
     if !valid_kind(&pkg.kind) {
-        out.push(Issue::err("R1", format!("kind 必须是 agent|harness|repo，当前是「{}」", pkg.kind)));
+        out.push(Issue::err(
+            "R1",
+            format!(
+                "kind 必须是 agent|harness|repo|skill|mcp|plugin|app|scaffold，当前是「{}」",
+                pkg.kind
+            ),
+        ));
     }
     if pkg.name.trim().is_empty() {
         out.push(Issue::err("R1", "name 不能为空"));
@@ -1190,13 +1208,13 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
         }
     }
     // 数据快照包不发代码，别拿"端点 schema"的要求去烦它（R12 已经管它该有什么）
-    if pkg.kind == "harness" && !pkg.is_data() {
+    if prof == "harness" && !pkg.is_data() {
         let has_schema = dir.join("src").exists()
             && content_files(dir)
                 .iter()
                 .any(|f| matches!(f.extension().and_then(|e| e.to_str()), Some("json")));
         if !has_schema {
-            out.push(Issue::warn("R3", "kind=harness 建议在 src/ 下带 schema JSON（端点定义）"));
+            out.push(Issue::warn("R3", "profile=harness 建议在 src/ 下带 schema JSON（端点定义）"));
         }
     }
 
@@ -1257,8 +1275,11 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
         }
     }
 
-    // R7 Agent 声明（kind=agent）：声明必须能静态落地（PRD §9.2/§9.5）
-    if pkg.kind == "agent" {
+    // R7 Agent 声明（profile=agent）：声明必须能静态落地（PRD §9.2/§9.5）
+    //
+    // ⚠️ 按 **profile** 判，不按 kind：`kind=skill / mcp / plugin / app / scaffold`
+    // 现在都是合法值，而决定"这份声明会不会被读"的一直是 profile。
+    if prof == "agent" {
         match pkg.agent.as_ref() {
             None => out.push(Issue::warn(
                 "R7",
@@ -1305,8 +1326,37 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
                 }
             }
         }
-    } else if pkg.agent.as_ref().map(|a| !a.is_empty()).unwrap_or(false) {
-        out.push(Issue::warn("R7", "只有 kind=agent 才会读取 agent{} 声明（当前 kind 会忽略它）"));
+    } else if let Some(a) = pkg.agent.as_ref().filter(|a| !a.is_empty()) {
+        // `adapters` 是**通用**的：plugin / mcp 也靠它声明“接进哪些宿主”（R12 对
+        // plugin 是硬要求），所以先拼写体检；其余字段才只在 profile=agent 时被读。
+        for ad in &a.adapters {
+            let v = ad.trim();
+            if v.is_empty() {
+                out.push(Issue::err("R7", "agent.adapters 里有空项"));
+            } else if !crate::interop::valid_target(v) {
+                out.push(Issue::warn(
+                    "R7",
+                    format!(
+                        "agent.adapters 里的「{v}」不是已知宿主（可选：{}）",
+                        crate::interop::TARGETS.join(" / ")
+                    ),
+                ));
+            }
+        }
+        let beyond = !a.system_prompt.trim().is_empty()
+            || !a.persona.trim().is_empty()
+            || !a.tools.is_empty()
+            || !a.skills.is_empty()
+            || a.pipeline.is_some()
+            || a.guard.is_some();
+        if beyond {
+            out.push(Issue::warn(
+                "R7",
+                format!(
+                    "profile={prof} 只读 agent{{}} 的 adapters，提示词 / 工具面 / 技能不会被读 —— 这部分会白写"
+                ),
+            ));
+        }
     }
 
     // R8 安全策略声明（`security{}`）：引擎名、执行入口、network 档位、远程+签名搭配
@@ -2416,14 +2466,29 @@ mod tests {
     }
 
     #[test]
-    fn r7_agent_block_ignored_on_non_agent_kind() {
+    fn r7_agent_block_ignored_on_non_agent_profile() {
         let dir = temp_pkg("r7-kind");
         let mut pkg = base("harness", "H-hotel-demo-abc123");
         with_agent(&mut pkg, AgentSpec { system_prompt: "不该在这".into(), ..Default::default() });
         let issues = validate(&pkg, &dir, None, false);
         assert!(
-            issues.iter().any(|i| i.rule == "R7" && i.level == Level::Warn && i.msg.contains("kind=agent")),
+            issues.iter().any(|i| i.rule == "R7" && i.level == Level::Warn && i.msg.contains("只读 agent{}")),
             "{issues:?}"
+        );
+
+        // plugin / mcp 的 agent{} 里放的是 adapters（接进哪些宿主）—— 那是**会被读**的，
+        // 不能再说“整块会被忽略”；只有 adapters 时也不该冒“白写”那一条。
+        let mut plugin = base("plugin", "my-plugin");
+        plugin.profile = Some("plugin".into());
+        plugin.agent = Some(AgentSpec { adapters: vec!["claude".into(), "cursor".into()], ..Default::default() });
+        let issues = validate(&plugin, &dir, None, false);
+        assert!(
+            issues.iter().all(|i| !i.msg.contains("不会被读")),
+            "adapters 是被读的，不该报“白写”：{issues:?}"
+        );
+        assert!(
+            issues.iter().all(|i| !(i.rule == "R7" && i.level == Level::Error)),
+            "合法宿主名不该报错：{issues:?}"
         );
     }
 
@@ -2572,12 +2637,21 @@ mod tests {
     }
 
     #[test]
-    fn r11_notes_that_only_agents_read_state() {
+    fn r11_notes_that_only_agents_and_apps_read_state() {
         let dir = temp_pkg("r11-kind");
         let mut p = state_pkg();
         p.kind = "harness".into();
         let out = r11(&p, &dir);
-        assert!(out.iter().any(|i| i.msg.contains("kind=agent")), "{out:?}");
+        assert!(out.iter().any(|i| i.msg.contains("profile=agent / app")), "{out:?}");
+        // app（哨）自己的 state{} 不该被自己的规矩警告 —— 它就是靠这份声明说话的
+        let mut a = state_pkg();
+        a.kind = "app".into();
+        a.profile = Some("app".into());
+        let out = r11(&a, &dir);
+        assert!(
+            out.iter().all(|i| !i.msg.contains("只有 profile=agent / app")),
+            "app 自己的 state{{}} 不该被警告：{out:?}"
+        );
     }
 
     #[test]

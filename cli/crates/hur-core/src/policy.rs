@@ -1138,8 +1138,14 @@ pub fn validate_security(pkg: &HurPackage, dir: &Path, known_policy: Option<bool
     let Some(sec) = pkg.security.as_ref() else {
         return out;
     };
-    if pkg.kind != "agent" {
-        out.push(crate::spec::Issue::warn("R8", "只有 kind=agent 才会读取 security{} 声明（当前 kind 会忽略它）"));
+    if !crate::profile::is_executable(pkg.profile_name()) {
+        out.push(crate::spec::Issue::warn(
+            "R8",
+            format!(
+                "只有可执行的 profile 才会读 security{{}} 声明（当前 profile={}，它会忽略这份声明）",
+                pkg.profile_name()
+            ),
+        ));
     }
     for e in sec.exec.engines.clone().unwrap_or_default() {
         let v = e.trim();
@@ -1539,11 +1545,16 @@ mod tests {
         assert!(issues.iter().any(|i| i.rule == "R8" && i.msg.contains("不是 .wasm")), "{issues:?}");
         assert!(issues.iter().any(|i| i.rule == "R8" && i.msg.contains("network")), "{issues:?}");
 
-        // 非 agent 带声明 → 提醒
-        p2.kind = "harness".into();
-        p2.id = "H-hotel-x-000000".into();
+        // 不可执行的 profile 带声明 → 提醒（现在按 profile 判：skill 不跑代码，
+        // 给它声明执行策略是空话）
+        p2.kind = "skill".into();
+        p2.profile = Some("skill".into());
+        p2.id = "hotel-skill".into();
         let issues = validate_security(&p2, &dir, Some(true));
-        assert!(issues.iter().any(|i| i.rule == "R8" && i.msg.contains("kind=agent")), "{issues:?}");
+        assert!(
+            issues.iter().any(|i| i.rule == "R8" && i.msg.contains("只有可执行的 profile")),
+            "{issues:?}"
+        );
     }
 
     /// 同一秒内跑两次不能互相覆盖：留痕是审计证据，丢了就等于没跑。

@@ -27,6 +27,12 @@ use crate::api;
 use crate::config::{self, CliConfig};
 use crate::mcp;
 
+/// `ncc hur init --kind` 的取值：**与规范里那张表同源**（`profile::AUTHORABLE_KINDS`）。
+///
+/// 为什么不写死一份字面量：写死了就会出现"命令说能生成、规范说生成不了"这种自相
+/// 矛盾（`--profile kb-seed` 以前正是这么被生成的）。取值的权威只有一处。
+pub const INIT_KINDS: [&str; profile::AUTHORABLE_KINDS.len()] = profile::AUTHORABLE_KINDS;
+
 #[derive(Subcommand)]
 pub enum HurCmd {
     /// 校验包目录或 `.hur` / `.hur.gz` 产物（R1~R11，全程离线；R9 = 制品签名）
@@ -61,6 +67,23 @@ pub enum HurCmd {
     Sign(HurSignArgs),
     /// 生成一个合规包工程
     Init(HurInitArgs),
+    /// 规范总览：profile 表 / 可创作 kind / 产物命名（`--json` 给 SDK 与工具用）
+    Spec {
+        #[arg(long)]
+        json: bool,
+    },
+    /// `hur.json` 的 JSON Schema（编辑器即时校验 / 任何语言的 SDK 都能拿它生成表单与校验器）
+    Schema {
+        /// 写进工程目录（hur.schema.json + .vscode/settings.json），而不是打到 stdout
+        #[arg(long)]
+        write: bool,
+        /// 写哪个目录（配合 --write；默认当前目录）
+        #[arg(default_value = ".")]
+        dir: PathBuf,
+        /// 以 JSON 打印一行结果（配合 --write，给脚本用）
+        #[arg(long)]
+        json: bool,
+    },
     /// 读包"是什么 / 要什么 / 给什么 / 怎么接"（profile），**带体检**；`--list` 列规范里的 profile
     Profile(HurProfileArgs),
     /// 按 profile / 宿主 / 能力在目录里找能用的包（**只读**，不改任何状态）
@@ -526,7 +549,9 @@ pub struct HurMatchArgs {
 
 #[derive(Args, Clone)]
 pub struct HurInitArgs {
-    #[arg(long, default_value = "agent", value_parser = ["agent", "harness", "repo"])]
+    /// 你要做的是什么：agent / harness / repo（脚手架）+ skill / mcp / plugin / app / scaffold。
+    /// 想做一个技能就写 `--kind skill` —— 不必先学 kind 与 profile 两套词汇。
+    #[arg(long, default_value = "agent", value_parser = crate::hur::INIT_KINDS)]
     pub kind: String,
     /// 这份包**是什么**（profile）。不给就按 kind 推导；给了就写进清单，且**决定必填项**
     #[arg(long, default_value = "")]
@@ -693,6 +718,8 @@ pub fn run(cfg: &CliConfig, a: &HurCmd) -> Result<()> {
         HurCmd::Pack { path, json } => pack_cmd(path, *json),
         HurCmd::Sign(s) => sign_cmd(s.clone()),
         HurCmd::Init(i) => init(i.clone()),
+        HurCmd::Spec { json } => spec_cmd(*json),
+        HurCmd::Schema { write, dir, json } => schema_cmd(*write, dir.clone(), *json),
         HurCmd::Profile(p) => profile_cmd(cfg, p.clone()),
         HurCmd::Match(m) => match_cmd(cfg, m.clone()),
         HurCmd::Data(d) => match d {
@@ -1008,7 +1035,10 @@ fn init(a: HurInitArgs) -> Result<()> {
     }
     let input = tpl::InitInput {
         kind: a.kind.clone(),
-        profile: Some(a.profile.trim().to_string()).filter(|x| !x.is_empty()),
+        // 写了 --profile 就用它；没写就写**推导出来的那个**。
+        // 以前只在显式传参时才写，于是 `--kind skill` 生成的包里没这一行 —— 清单里的
+        // profile 才是权威（名字是线索），新工程不该把身份写在“推导”上。
+        profile: Some(prof.to_string()),
         name: a.name.clone(),
         role: a.role.clone(),
         domain: a.domain.clone(),
@@ -1039,7 +1069,106 @@ fn init(a: HurInitArgs) -> Result<()> {
     // 锁也顺手建好：签名/打包都要求它存在
     pack::build_lock(&dir)?;
     println!("已生成 {}（{} v{} · {} · profile={}）", dir.display(), pkg.id, pkg.version, pkg.kind, pkg.profile_name());
-    println!("  下一步    ncc hur verify . → ncc hur sign . → ncc hur publish");
+    // 编辑器接线：schema + `.vscode/settings.json`。**它不进包**（只有 src / skills / kb / data /
+    // assets 算包内容），但写清单时字段名与枚举写错，在编辑器里当场就能看见。
+    // 失败不影响工程可用（例如用户对 settings.json 有自己的写法），所以只提示、不报错。
+    match hur_core::schema::write_editor_wiring(&dir) {
+        Ok(_) => println!("  编辑器    hur.schema.json + .vscode/settings.json（写 hur.json 时即时校验）"),
+        Err(e) => println!("  编辑器    跳过：{e}"),
+    }
+    println!("  下一步    {}", init_next_step(prof));
+    Ok(())
+}
+
+/// 生成之后该敲什么 —— **按 profile 不一样**：技能要渲染到宿主、MCP 要先把 server
+/// 跑起来、app 要先体检。以前一律印「verify → sign → publish」，对一半的包是错的指路
+/// （刚生成的 skill 包里根本没有可执行的东西，签什么名）。
+fn init_next_step(prof: &str) -> &'static str {
+    match prof {
+        "skill" => "ncc hur verify . → ncc hur interop . --targets claude --write → ncc hur publish . --namespace @you",
+        "mcp" => "ncc hur verify . → node --experimental-strip-types src/server.ts（先本地跑通）→ ncc hur publish . --namespace @you",
+        "plugin" => "ncc hur verify . → ncc hur interop . --write → ncc hur publish . --namespace @you",
+        "app" => "ncc hur verify . → ncc app doctor（体检舱）→ ncc hur publish . --namespace @you",
+        "scaffold" => "ncc hur verify . → ncc hur pack . → ncc hur publish . --namespace @you",
+        _ => "ncc hur verify . → ncc hur interop .（看能接进哪些宿主）→ ncc hur publish . --namespace @you",
+    }
+}
+
+/// `ncc hur spec`：规范总览 —— **"我要做一个 X，该生成什么、该有什么"**。
+///
+/// 为什么单独有这条命令：这两个问题现在只能靠读 Rust 源码回答（profile 表在
+/// `hur-core::profile`，形状在 `spec::HurPackage`）。SDK、编辑器插件、别的语言的工具链
+/// 不该为了这个去啃源码，于是把**规范自己**导出一份：`--json` 给机器，默认给人看。
+///
+/// ⚠️ 它**不复制规则文案**：R1~R12 的权威实现永远在 `hur_core::spec::validate`，
+/// 这里只导形状与那张表（多一份规则描述 = 多一个会漂的地方）。
+fn spec_cmd(json_out: bool) -> Result<()> {
+    let schema = hur_core::schema::json_schema();
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "spec": spec::PKG_SPEC,
+                "profiles": schema["x-hur-profiles"],
+                "authorable_kinds": schema["x-hur-authorable-kinds"],
+                "artifact": schema["x-hur-artifact"],
+                "checks": schema["x-hur-checks"],
+                "schema": {
+                    "how": "ncc hur schema（stdout）/ ncc hur schema --write（落进工程）",
+                    "file": hur_core::schema::SCHEMA_FILE,
+                },
+            }))?
+        );
+        return Ok(());
+    }
+    println!("HUR 包规范 {} —— 一份封装（清单 + 锁 + 确定性字节 + 签名），多组 profile\n", spec::PKG_SPEC);
+    println!("能生成什么（ncc hur init --kind <kind>）：");
+    for k in profile::AUTHORABLE_KINDS {
+        let name = profile::from_kind(k);
+        let Some(d) = profile::get(name) else { continue };
+        let tag = if d.data { "数据快照" } else if d.executable { "可执行" } else { "只读" };
+        println!("  {k:<9} profile={name:<9} {tag}");
+        println!("  {:<9} {}", "", d.summary);
+        if let Some(e) = d.default_entry() {
+            println!("  {:<9} 默认入口 {e}", "");
+        }
+        println!("  {:<9} 接进宿主 {}", "", if d.hosts.is_empty() { "（无）".to_string() } else { d.hosts.join(" / ") });
+    }
+    println!("\n不能生成（要从源头导出，或另走一条命令）：");
+    for p in profile::PROFILES.iter().filter(|p| p.init_blocker().is_some()) {
+        let why = p.init_blocker().unwrap_or_default();
+        let first = why.lines().next().unwrap_or("").to_string();
+        println!("  {:<9} {}", p.name, first);
+    }
+    println!("\n完整 profile 表（要什么 / 给什么 / 怎么接，带体检）：ncc hur profile --list");
+    println!("机器可读（给 SDK / 编辑器 / 生成器）：ncc hur spec --json · ncc hur schema --write");
+    Ok(())
+}
+
+/// `ncc hur schema`：`hur.json` 的**形状契约**。默认打到 stdout（可重定向给任意工具链），
+/// `--write` 则落进工程 —— schema 文件 + `.vscode/settings.json` 接线，编辑器即时校验。
+fn schema_cmd(write: bool, dir: PathBuf, json_out: bool) -> Result<()> {
+    if !write {
+        println!("{}", serde_json::to_string_pretty(&hur_core::schema::json_schema())?);
+        return Ok(());
+    }
+    let files = hur_core::schema::write_editor_wiring(&dir).map_err(|e| anyhow!("{e}"))?;
+    if json_out {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "dir": dir.display().to_string(),
+                "written": files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            }))?
+        );
+    } else {
+        println!("已写入 {}：", dir.display());
+        for f in &files {
+            println!("  {}", f.display());
+        }
+        println!("  提示    写 hur.json 时编辑器按 schema 即时校验（字段名 / 枚举 / 必填）");
+        println!("  注意    这两个文件不进包（只有 src / skills / kb / data / assets 算包内容）");
+    }
     Ok(())
 }
 

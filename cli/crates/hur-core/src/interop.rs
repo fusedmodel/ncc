@@ -100,11 +100,12 @@ impl Artifact {
 
 /* ---------------- 渲染 ---------------- */
 
-/// 从包内容里取出 `agent{}` 声明；非 agent / 无声明时返回 None（调用方回落 summary）
+/// 从包内容里取出 `agent{}` 声明；没写或全空时返回 None（调用方回落 summary）。
+///
+/// ⚠️ 不是"只有 kind=agent 才有"：plugin / mcp 的 `agent{}` 里放的是 `adapters`
+/// （接进哪些宿主），那份声明是**会被读**的 —— 按 kind 一律裁掉，等于把它们的宿主
+/// 清单也一起丢了。
 pub fn agent_of(pkg: &HurPackage) -> Option<&spec::AgentSpec> {
-    if pkg.kind != "agent" {
-        return None;
-    }
     let a = pkg.agent.as_ref()?;
     if a.is_empty() {
         None

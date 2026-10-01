@@ -200,18 +200,64 @@ pub fn names() -> Vec<&'static str> {
     PROFILES.iter().map(|p| p.name).collect()
 }
 
+impl Profile {
+    /// 新建工程时的默认入口文件（`None` = 这类包**没有**代码入口）。
+    ///
+    /// 为什么放在规范里而不是模板里：入口名属于"这类包长什么样"—— `ncc hur init`
+    /// 按它写清单与文件、`ncc hur spec --json` 按它告诉 SDK 该生成什么、作者手写清单时
+    /// 也照它。这三处只能有一份说法，所以它是 profile 的一部分。
+    pub fn default_entry(&self) -> Option<&'static str> {
+        match self.name {
+            "agent" | "harness" => Some("src/agent.ts"),
+            "plugin" => Some("src/plugin.ts"),
+            "mcp" => Some("src/server.ts"),
+            "app" => Some("src/app.ts"),
+            // skill 是文档（技能不是程序）、scaffold 是模板、数据快照与 auth 都不跑代码
+            _ => None,
+        }
+    }
+
+    /// 这个 profile 能不能用 `ncc hur init` 的通用模板生成（能则 `None`，不能则给"该走哪条路"）。
+    pub fn init_blocker(&self) -> Option<String> {
+        init_refusal(self.name)
+    }
+}
+
+/// `kind` 是否可由 `ncc hur init` 直接生成（`--kind` 的取值表，供 CLI 与 SDK 共用）。
+pub fn is_authorable_kind(kind: &str) -> bool {
+    AUTHORABLE_KINDS.contains(&kind.trim())
+}
+
 /// 缺 `profile` 的老包按 `kind` 推导 —— **向后兼容**，老包不会因为没写 profile 就红。
 ///
 /// `repo`（脚手架）过去同时能当"可部署骨架"用，所以推导成 `scaffold` 而不是 `app`：
 /// 宁可少说，不要替发布者把它说成"一条命令能起"。
+///
+/// 2026-10-02：`ncc hur init --kind` 直接收 `skill / mcp / plugin / app / scaffold`
+/// 这五个名字（开发者想的是"我要做一个 skill"，不该先学两套词汇），所以这里也要认得出
+/// —— 否则用新 kind 生成的包，**只要清单里没写 profile 就会被当成 harness**。
 pub fn from_kind(kind: &str) -> &'static str {
     match kind {
         "agent" => "agent",
         "harness" => "harness",
         "repo" => "scaffold",
+        "skill" => "skill",
+        "mcp" => "mcp",
+        "plugin" => "plugin",
+        "app" => "app",
+        "scaffold" => "scaffold",
         _ => "harness",
     }
 }
+
+/// `ncc hur init --kind` 能直接生成的 kind（= 命令的可选值）。
+///
+/// 与 profile 名**故意同形**，外加老的三件套 `agent / harness / repo`（前两个就是 profile
+/// 名，`repo` 是 `scaffold` 的历史叫法）。
+/// **不能生成的不在这里**：数据快照要从源头导出、`auth` 要走 `ncc auth pkg init`
+/// —— 见 [`init_refusal`]。
+pub const AUTHORABLE_KINDS: [&str; 8] =
+    ["agent", "harness", "repo", "skill", "mcp", "plugin", "app", "scaffold"];
 
 /// 这份包声明的 profile 名（缺省按 kind 推导）。
 pub fn of(pkg_profile: Option<&str>, kind: &str) -> &'static str {
@@ -302,7 +348,44 @@ mod tests {
                     p.name
                 );
             }
+            // 入口与"能不能跑"必须一致：可执行 ⇔ 有默认入口名。
+            // 反例是会真出事的：给 skill 生成 `src/agent.ts` 等于把一份文档包说成程序
+            // （R12 又禁止 skill 有 entry），生成物当场自相矛盾。
+            assert_eq!(
+                p.executable,
+                p.default_entry().is_some(),
+                "{}：可执行={} 但默认入口={:?}",
+                p.name,
+                p.executable,
+                p.default_entry()
+            );
+            if let Some(e) = p.default_entry() {
+                assert!(e.starts_with("src/"), "{} 的入口要落在 src/ 下：{e}", p.name);
+            }
         }
+    }
+
+    #[test]
+    fn authorable_kinds_map_to_generatable_profiles() {
+        for k in AUTHORABLE_KINDS {
+            assert!(is_authorable_kind(k), "{k} 在表里却判不出来");
+            // kind → profile 必须落在一个能用通用模板生成的 profile 上，
+            // 否则 `ncc hur init --kind <k>` 会先是"能选"、再报"不能生成"（自相矛盾）。
+            let p = from_kind(k);
+            let def = get(p).unwrap_or_else(|| panic!("{k} 推导出的 profile「{p}」不存在"));
+            assert!(
+                def.init_blocker().is_none(),
+                "--kind {k} 推成 profile={p}，而这个 profile 恰好不能生成：{}",
+                def.init_blocker().unwrap_or_default()
+            );
+        }
+        // 数据的与 auth 的不在可生成表里
+        for k in ["kb-seed", "mem-seed", "ckpt-set", "trace-set", "auth"] {
+            assert!(!is_authorable_kind(k), "{k} 不该出现在 --kind 里");
+        }
+        assert_eq!(from_kind("skill"), "skill");
+        assert_eq!(from_kind("repo"), "scaffold");
+        assert_eq!(from_kind("scaffold"), "scaffold");
     }
 
     #[test]

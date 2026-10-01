@@ -7,6 +7,9 @@
 //!
 //! 边界：`pack` / `verify` / `build` / `sign` **全程离线**（签名不联网、不上传私钥）；
 //! 只有 `registry` 与 `install`（远端）需要网络。
+// 默认 128 层不够 `schema.rs` 里那份 JSON Schema 字面量（properties 嵌套很深，
+// `json!` 是递归展开的宏）。抬高上限比把 schema 拆成十几个中间变量更好读。
+#![recursion_limit = "512"]
 
 pub mod cfg;
 pub mod datapack;
@@ -19,6 +22,7 @@ pub mod policy;
 pub mod profile;
 pub mod publish;
 pub mod registry;
+pub mod schema;
 pub mod sign;
 pub mod spec;
 pub mod tpl;

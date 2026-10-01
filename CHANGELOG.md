@@ -14,6 +14,56 @@
 
 ## [未发布]
 
+### 新增 · 创作面：`init` 收八个 kind，`spec` / `schema` 把规范交出去（2026-10-02）
+
+用户口径：「站在开发者视角，如何生成一个 skill 或者 SDK 等，让用户基于 NCC 开发 hur 等或组件，不只是使用 registry 和 hub」。
+查出根子上的三处错配，都修了（设计与实测记进 `prd/ncc-hur-spec.md` §12）。
+
+**① `kind` 词表放开到与 profile 同名。** 以前只认 `agent|harness|repo`，想做一个技能只能二选一：
+写 `kind=harness`（R3 的端点 schema、R5 的网络声明都来管一份文档包），或写 `kind=agent`（R7 又来问 `agent{}` 去哪了）。
+而目录的 kind 词表里**一直**有 `skill / mcp / plugin / scaffold`，`profile::registry_kinds` 也正是往那儿映射。
+现在 R1 的词表 = `profile::AUTHORABLE_KINDS` = `ncc hur init --kind` 的取值（**八选一，同源不手抄**）：
+`agent | harness | repo | skill | mcp | plugin | app | scaffold`。三件套仍是合法值，**老包一个都不会红**。
+
+**② 规矩改按 profile 判，不再按 kind 判。** 否则会出现"一份技能被 harness 的规矩管"：R3 看 `profile==harness`、
+R7 只对 `profile==agent` 管提示词与工具面（**`adapters` 谁都管**）、R8 只在**不可执行的 profile** 上提醒、
+R11 认 `agent` 与 `app` 两个读者（app 的 `state{}` 不再被自己的规矩警告）。副产物：
+"`agent{}` 会被忽略"那条提醒不再误伤 plugin / mcp —— 它们的 `agent{}` 里放的是 `adapters`，那是会被读的。
+
+**③ `init` 按 profile 生成对的骨架。** `files_for` 原来只按 kind 分三支（agent/harness/repo），其余 profile 一律落进
+agent 模板 —— 于是 `--kind skill` 生成的"技能文档包"里躺着 `src/agent.ts`（一份 Agent 程序），而 R12 反过来禁止
+skill 带 entry：**生成物与自己矛盾**。现在每个 profile 都有名副其实的文件集：
+
+| kind | 生成什么 | 默认入口 |
+| --- | --- | --- |
+| `agent` / `harness` | `src/agent.ts`（+ harness 的端点 schema）与技能说明 | `src/agent.ts` |
+| `skill` | `skills/<名>.md`（带 frontmatter） | 无（R12 禁止 entry） |
+| `mcp` | `src/server.ts` —— **真能跑**的最小 stdio MCP server | `src/server.ts` |
+| `plugin` | `src/plugin.ts` + `agent.adapters` | `src/plugin.ts` |
+| `app` | `src/app.ts`（注释里写清要声明 `state{}` / `egress{}`） | `src/app.ts` |
+| `scaffold` | `src/index.json` + `assets/template/`（模板必须落在算包内容的目录里） | 无 |
+
+默认入口名进了规范（`Profile::default_entry`）：init 写清单、`spec --json` 报给 SDK、作者手写清单，三处一份说法。
+`init` 现在**总是**把 profile 写进清单，并且"下一步"按 profile 给（技能要渲染到宿主、MCP 要先本地把 server 跑起来、
+app 要先 `ncc app doctor`）—— 以前一律印 `verify → sign → publish`，对一半的包是错的指路。
+
+**顺手修掉两个真缺陷**：① `--kind harness` 的模板里写着 `https://api.example.com` 而 `permissions.network` 是空的
+—— **新工程一生成就被自己的 R5 判红**（现在不写死任何域名）；② 生成的包里不再出现"技能包带 Agent 程序"这种自相矛盾。
+
+**④ 两条新命令，把规范本身交出去**（这是"SDK"的地基）：
+
+- `ncc hur spec [--json]`：规范总览 —— 能生成什么、每个 profile 要什么给什么怎么接、产物怎么命名、哪些不能生成及理由。
+  **不复制规则文案**：R1~R12 的权威实现永远在 `spec::validate`，多一份描述就多一个会漂的地方。
+- `ncc hur schema [--write [dir]]`：`hur.json` 的 JSON Schema（形状 + profile 表 + 可创作 kind）。
+  `--write` 落 `hur.schema.json` 与 `.vscode/settings.json`（**并入**已有配置；JSONC 写的 settings.json **不覆盖**，
+  只告诉你怎么手动加）。两份文件都**不进包**（包内容只有 `src/skills/kb/data/assets`）—— `init` 现在顺手就落，写清单时
+  字段名 / 枚举 / 必填当场就能看见。有了它，别的语言的工具链（表单 / 生成器 / CI）不必读 Rust 源码，也不必各自重实现一遍校验。
+
+验证：八个 kind 的 `init → verify` **8/8 无错无提醒**；`cargo test --workspace` **202 通过**；
+`profile-smoke.sh` **142 通过 / 0 失败**（新增第 15 节 34 条）；生成的 MCP server 用
+`node --experimental-strip-types` 实跑，`initialize` / `tools/list` / `tools/call` 都答得出；
+技能包 `ncc hur interop . --targets claude` 出 `.claude/agents/…md` + `.claude/skills/<名>/SKILL.md`。
+
 ### 新增 · `docs-consistency.sh` 再加两条：缩写展开与宿主清单
 
 改 `NCC = Neural Cloud Computers` 时发现“展开词”也在 9 个文件里各写一遍（而且第二天就漏了一个落点）。

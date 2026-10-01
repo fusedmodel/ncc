@@ -332,5 +332,63 @@ OUT="$("${CLI}" hur profile "${HOOK}" 2>&1)"
 contains "profile 的下一步给的是 --targets（不是 --target）" "ncc hur interop . --targets" "${OUT}"
 contains "且说明它渲染的是宿主能直接用的产物" "渲染成宿主能用的产物" "${OUT}"
 
+# ---------------------------------------------------------------- 15. 创作入口
+# 开发者拿到的是一个工程，不是一个仓库：`ncc hur init --kind <k>` 的 8 个 kind
+# 都要**生成即通过校验**（生成物自己过不了自己的规矩，比不生成更糟）。
+say '15. 创作入口：`ncc hur init --kind` 的八个 kind 都能生成、都能过校验'
+DEV="${TMP}/dev"
+mkdir -p "${DEV}"
+SPEC_JSON="$("${CLI}" hur spec --json)"
+check "spec --json 的可创作 kind 是 8 个" "8" \
+  "$(printf '%s' "${SPEC_JSON}" | jget "['authorable_kinds'].__len__()")"
+check "spec --json 带上了规范里的 profile 表（12 个）" "12" \
+  "$(printf '%s' "${SPEC_JSON}" | jget "['profiles'].__len__()")"
+
+for k in agent harness repo skill mcp plugin app scaffold; do
+  ( cd "${DEV}" && "${CLI}" hur init --kind "$k" --name "Dev $k" --dir "k-${k}" >/dev/null 2>&1 )
+  OUT="$( cd "${DEV}/k-${k}" && "${CLI}" hur verify . 2>&1 )"
+  contains "${k}：生成即通过校验" "校验通过" "${OUT}"
+  not_contains "${k}：没有错误也没有提醒" "[R" "${OUT}"
+done
+
+# 清单里的身份：kind 是粗分类，profile 才是权威 —— 两个都要写对
+check "skill 包的 kind 记成 skill" "skill" "$(jget "['kind']" < "${DEV}/k-skill/hur.json")"
+check "skill 包的 profile 记成 skill" "skill" "$(jget "['profile']" < "${DEV}/k-skill/hur.json")"
+check "skill 包没有 entry（技能不是程序）" "" "$(jget "['entry']" < "${DEV}/k-skill/hur.json")"
+# 这条是这次改动的核心：以前一份技能文档包里躺着一份 Agent 程序
+test -f "${DEV}/k-skill/src/agent.ts" && SKILL_SRC=yes || SKILL_SRC=no
+check "skill 包里没有 src/（不再塞 Agent 模板）" "no" "${SKILL_SRC}"
+check "mcp 包的入口是 src/server.ts" "src/server.ts" "$(jget "['entry']" < "${DEV}/k-mcp/hur.json")"
+check "plugin 包的入口是 src/plugin.ts" "src/plugin.ts" "$(jget "['entry']" < "${DEV}/k-plugin/hur.json")"
+check "app 包的入口是 src/app.ts" "src/app.ts" "$(jget "['entry']" < "${DEV}/k-app/hur.json")"
+check "plugin 包声明了要接的宿主" "yes" "$(python3 -c "
+import json
+d = json.load(open('${DEV}/k-plugin/hur.json'))
+print('yes' if d['agent']['adapters'] else 'no')")"
+# 脚手架模板必须落在**算包内容**的目录里（只有 src/skills/kb/data/assets 会进包）
+test -f "${DEV}/k-scaffold/assets/template/README.md" && SC=yes || SC=no
+check "scaffold 的模板放进了包内容目录（assets/template）" "yes" "${SC}"
+# 编辑器接线：写清单时字段名 / 枚举当场就能看见错
+test -f "${DEV}/k-skill/hur.schema.json" && EW=yes || EW=no
+check "init 顺手落了 hur.schema.json" "yes" "${EW}"
+contains "并把 .vscode/settings.json 指向它" "json.schemas" "$(cat "${DEV}/k-skill/.vscode/settings.json")"
+contains "且 schema 本身带 profile 表（给 SDK 与编辑器用）" "x-hur-profiles" \
+  "$("${CLI}" hur schema)"
+# 生成的 MCP server 得**真跑得起来**（是骨架，不是伪代码）
+if command -v node >/dev/null 2>&1; then
+  MCP_DEV="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+    | node --experimental-strip-types "${DEV}/k-mcp/src/server.ts" 2>/dev/null | head -1)"
+  contains "生成的 MCP server 真答得出 initialize（node 实跑）" '"protocolVersion"' "${MCP_DEV}"
+else
+  echo '  （跳过 MCP 实跑：本机没有 node）'
+fi
+# 「下一步」按 profile 给，不是一句放之四海的 verify → sign → publish
+NEXT_MCP="$( cd "${DEV}" && "${CLI}" hur init --kind mcp --name "Dev mcp2" --dir k-mcp2 2>&1 )"
+contains "mcp 的下一步先让把 server 跑起来" "先本地跑通" "${NEXT_MCP}"
+NEXT_SKILL="$( cd "${DEV}" && "${CLI}" hur init --kind skill --name "Dev skill2" --dir k-skill2 2>&1 )"
+contains "skill 的下一步是渲染到宿主" "interop . --targets claude --write" "${NEXT_SKILL}"
+NEXT_APP="$( cd "${DEV}" && "${CLI}" hur init --kind app --name "Dev app2" --dir k-app2 2>&1 )"
+contains "app 的下一步是先去体检舱" "ncc app doctor" "${NEXT_APP}"
+
 printf '\n\033[1m结果：%d 通过 / %d 失败\033[0m\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" == "0" ]]
