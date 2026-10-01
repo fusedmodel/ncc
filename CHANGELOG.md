@@ -14,6 +14,49 @@
 
 ## [未发布]
 
+### 新增 · `ncc rsi`：动作之前的决策门（安全决策 / 不跑偏 / 偏好 / 账本）
+
+用户问：「增加一个 `ncc rsi` 的功能，增加一个 **Policy 接入**的方式，例如在 agent 的
+安全决策、开发决策等，在**无人值守**时候可以提升与增强，防止安全事故，以及**用户偏好跟踪**，
+以及**目标的正确性执行以及不跑偏**。」
+
+于是有了四块，**全部本地**（策略 / 目标 / 偏好 / 账本都是文件，离线也能拦，账本不出本机）：
+
+- **`ncc rsi check`** —— 决策门。收一份决策请求（`--file` / stdin / 命令行简写，也认宿主原生形状
+  `tool_name` / `tool_input.command` / `tool_input.file_path`），吐一份裁决，**退出码就是结果**：
+  `0` 放行 / `10` 留痕 / `20` 拦住 / **`1` 用法配置错**（与「拦住了」分开，免得宿主把配置坏了当合规）。
+- **`ncc rsi guard -- <命令>`** —— 守着跑：先 check，block 就**真的不跑**；跑了就按子进程退出码返回，
+  非 0 记成事故；`--explain` 只看不跑。
+- **`ncc rsi policy`** —— `show` / `path` / `presets` / `set --preset|--file` / `check`（体检：
+  读不读得懂、规则自相矛盾没有、当前目录会读到哪一份）。三个预设：`unattended-safe`（无人值守默认，
+  常规动作放行、危险动作拦）/ `dev-loose` / `strict-prod`（默认拦 + 白名单 + 必须挂在目标上）。
+- **`ncc rsi goal set|status|done`** —— 不跑偏：`--reject` 词命中 = 跑偏，`--accept` 没命中 =
+  **明说「看不出关系」**；`unattended-safe` 的 `onOffGoal=allow` 下无关步骤放行，但**理由里照样写清楚**。
+- **`ncc rsi pref add|ls|rm|suggest`** —— 用户偏好：`avoid` 参与裁决、`prefer` 只展示；
+  `ls` 带**命中次数**；`suggest` 从账本里捞反复出现的理由**给人挑**，不自动写。
+- **`ncc rsi report --since 24h`** —— 本机账本总账：决策数 / 拦住次数 / 事故 / 跑偏 / 偏好命中。
+- **`ncc rsi hook install --host claude|cursor|generic`** —— 装 30 行 sh shim，挂到宿主的
+  `PreToolUse` 钩子上（Claude 的配置片段直接打印），退出码 `20`（无人值守下 `NCC_RSI_BLOCK_CODE`，
+  缺省 2）= 拦住。
+
+六条红线（写在 `cli/src/rsi.rs` 头部）：**门在动作之前**（`check` 不执行任何东西）·
+**不确定就说不知道**（没命中规则 ≠ 安全）· **无人值守只能更严**（只把 warn 升 block，
+没有「无人值守就放宽」的开关）· **账本只记事实**（不记密钥、不记文件内容）·
+**不替人下结论**（`report` 只汇总，偏好不自动推断）· **失败要能看出来**（读不懂就非 0，且不是 0/10/20）。
+
+踩过的坑（都写进注释/冒烟了）：
+
+- **`--accept "deploy,release"` 一开始没拆开**：clap 的 `Vec<String>` 收到的是一个含逗号的整串，
+  于是 accept 词永远命中不了、目标永远判 `off` —— 冒烟把它抓出来了，现在 `,` 与 `，` 都拆。
+- **中文串里不能出现 ASCII 引号**：`"……叫 "self-improvement" 的那一半"` 直接编译不过（用「」）。
+- **`hook install` 的参数不能叫 `--target`**：顶层 `--target` 是 `global = true` 的目标选择器，
+  会被它先吃掉，报成「没有名为 claude 的目标」—— 改名 `--host`（与 `rsi check --host` 一致）。
+- **预设的 `default` 到底放 allow 还是 warn**：`unattended-safe` 定成 `allow` —— 门的职责是挡住
+  危险的那一小撮，不是让所有事都停下来等人；「多留痕」用 `onOffGoal=warn` 这类旋钮单独给。
+
+验收：`bash scripts/rsi-smoke.sh` **80/80**（含「拦住时守卫真的没跑」「账本里不出现环境变量里的密钥」
+「shim 真被喂 PreToolUse JSON」这些强断言）；口径与「明确不做」清单见 `ncc-platform/prd/ncc-rsi.md`。
+
 ### 新增 · `ncc auth pkg`：授权包（`profile=auth`）—— 加密的凭据库，开锁只在一瞬间
 
 用户问：「是否增加一种 Auth 的 hur 包，使用时 ncc 检查调用权限，只有 ncc 调用时通过设定的密钥

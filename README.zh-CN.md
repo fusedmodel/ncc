@@ -143,6 +143,12 @@ ncc auth pkg init ./team-auth --id @me/team-auth --project web --passphrase-file
 ncc auth pkg run ./team-auth --project web --reason "发版" --passphrase-file ./pass.txt -- ./deploy.sh
 # ↑ 授权包：包里只有元数据是明文；开锁只在这一条命令的那一小段时间，退出即抹、即上锁
 ncc services match "帮我订杭州的酒店"    # 按意图找服务（服务提供方打包的业务）
+ncc rsi init --preset unattended-safe    # 动作之前的决策门：项目级 .ncc-rsi/（跟着仓库走）
+ncc rsi goal set --statement "把 v0.3.0 发上线" --accept "deploy,release,发版" --reject "refactor,重写"
+ncc rsi check --command "git push --force"          # → 拦住（退出码 20）；--json 给机器读
+ncc rsi guard --reason "跑测试" -- npm test          # 守着跑：block 就真的不跑
+ncc rsi hook install --host claude                  # 挂成宿主的 PreToolUse 钩子
+ncc rsi report --since 24h                          # 无人值守过后的总账（本机，不上报）
 ncc terminal
 ```
 
@@ -308,6 +314,12 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc gateway report` / `usage` | 把本地审计聚合成**窗口摘要**签名上报（**先落盘再发送**：控制面不可达就进待传队列，恢复后补传）/ 用量汇总（写明是**自报计数**）|
 | `ncc gateway audit --remote` / `unbind` | 看/导出控制面留存的摘要（`--csv`＝合规导出）/ 注销并清本地绑定（控制面不可达也能解绑）|
 | `ncc app init` / `doctor` / `up` / `status` / `export` | **NCC 舱（`ncc app`）**：把「用户自己部署一个人助理」变成一条命令 —— 产品本体是你的（`app.json`）、引擎是 ncc、应用逻辑是 HUR 包（`hur.json`）、内容住节点、互联走平台；`up` 起本机控制台（loopback），`export` 出可交付目录 |
+| `ncc rsi init` / `policy` / `check` | **动作之前的决策门**：项目级 `.ncc-rsi/`（策略/目标/偏好/账本）；`check` 给一份决策请求（`--file` 或 stdin，也认 `tool_name`/`tool_input.command` 等宿主形状），吐裁决 —— **退出码 0 放行 / 10 留痕 / 20 拦住 / 1 配置错**（与「拦住了」分开）；`--unattended` **只把 warn 升成 block** |
+| `ncc rsi guard -- <命令>` | **守着跑**：先 check，block 就**真的不跑**（冒烟里验的是标记文件不存在），跑了就按子进程退出码返回、非 0 记成事故；`--explain` 只看不跑 |
+| `ncc rsi goal set` / `status` / `done` | **不跑偏**：`--accept a,b` 与 `--accept a --accept b` 两种写法都认；`--reject` 命中 = 跑偏，`--accept` 没命中 = **明说「看不出关系」**（不装看不见，也不当通过） |
+| `ncc rsi pref add` / `ls` / `rm` / `suggest` | **用户偏好**：`kind=avoid` 参与裁决（无人值守下按策略升到 block）、`prefer` 只展示不拦人；`ls` 带**命中次数**；`suggest` 从账本里捞反复出现的理由给人挑，**不自动写进偏好** |
+| `ncc rsi report --since 24h` / `--json` | 无人值守过后的**总账**（本机账本，**没有上报通道**）：决策数 / 拦住次数 / 事故 / 跑偏 / 偏好命中 |
+| `ncc rsi hook install --host claude\|cursor\|generic` | 装一个 30 行 sh shim，挂到宿主的 `PreToolUse` 钩子上：stdin 给 JSON，退出码 `20`（无人值守下 `NCC_RSI_BLOCK_CODE`，缺省 2）= 拦住；**⚠️ 是 `--host` 不是 `--target`**（顶层 `--target` 是全局目标选择器，会被它先吃掉） |
 | `ncc help <command>` | 查看任意命令的自动生成帮助 |
 | `ncc hur profile <包 \| @命名空间/slug>` | 读一份包**是什么**：要什么 / 给什么 / **怎么接**，外加**分级体检**（结构 · 自洽 · 签名分开报，不合成一个 ✅）；`--list` 列规范里的全部 profile |
 | `ncc hur match --profile kb-seed` | 按 profile / 集成宿主 / 能力在目录里找包（**只读**） |
@@ -851,6 +863,46 @@ ncc app export --dir ./my-pod --out ./my-pod-export   # 别人拿到就能部署
 
 ---
 
+### `ncc rsi`（动作之前的决策门：安全决策 / 不跑偏 / 偏好 / 账本）
+
+无人值守时最难受的两件事：**手滑**（`rm -rf`、`git push --force`、往生产库写一条）和
+**跑偏**（说好发版，半小时后在重构目录）。`ncc rsi` 把这两件事**放在动作之前**管住：
+问一句「这一步能不能做」，把裁决和理由记下来，事后能算总账。**全部本地**（策略/目标/偏好/账本都是文件），离线也能拦，账本不出本机。
+
+| 块 | 命令 | 回答什么 |
+|---|---|---|
+| **策略接入** | `rsi check` / `rsi policy` | 这一步**能不能做** |
+| **账本** | `rsi guard` / `rsi report` | 没人看着时**到底做了什么** |
+| **偏好** | `rsi pref` | 这个人以前说过**不要**什么 |
+| **目标** | `rsi goal` | 这一步**还在不在**原来的目标上 |
+
+```bash
+ncc rsi init --preset unattended-safe        # 项目级 .ncc-rsi/（跟着仓库走；离线也用得上）
+ncc rsi policy presets | set --preset strict-prod | check | show
+ncc rsi goal set --statement "把 v0.3.0 发上线" --accept "deploy,release,发版" --reject "refactor,重写"
+ncc rsi pref add "不要动 production 数据库" --kind avoid --evidence "2026-09 出过一次事故"
+ncc rsi check --command "git push --force"   # 退出码就是裁决：0 放行 / 10 留痕 / 20 拦住 / 1 配置错
+NCC_RSI_UNATTENDED=1 ncc rsi check --command "npm publish"   # 无人值守只会更严：warn → block
+ncc rsi guard --reason "跑测试" -- npm test  # 先 check，block 就真的不跑；退出码跟随子进程
+ncc rsi report --since 24h --json            # 拦了多少 / 几次事故 / 跑偏几次 / 哪些偏好起了作用
+ncc rsi hook install --host claude           # 装 30 行 sh shim + 打印 PreToolUse 配置片段
+```
+
+**四条要点**：
+
+| 要点 | 说明 |
+|---|---|
+| **退出码比 JSON 更重要** | `0` 放行 / `10` 留痕 / `20` 拦住 / **`1` 用法配置错**（与「拦住了」分开，免得宿主把配置坏了当成合规） |
+| **无人值守只升不降** | `--unattended` / `NCC_RSI_UNATTENDED=1` 只做一件事：把 warn 升成 block；**没有**「无人值守就放宽」的开关 |
+| **不跑偏靠目标** | `--reject` 词命中 = 跑偏；有目标但 `--accept` 一个都没命中 = **明说「看不出关系」**（不说成通过） |
+| **偏好由人写进来** | `avoid` 参与裁决、`prefer` 只展示；`pref suggest` 只从账本里捞清单给人挑，**不自动写** |
+
+三条边界：**门在动作之前**（`check` 不执行任何东西；`guard` 跑的是你自己的命令，不是沙箱）；**账本只记事实**（动作/裁决/理由，不记密钥、不记文件内容）；**读不懂就非 0**（不把「配置坏了」当放行）。
+
+端到端验证：`bash scripts/rsi-smoke.sh`（**80/80**），口径见 `ncc-platform/prd/ncc-rsi.md`。
+
+---
+
 ## 核心概念
 
 | 术语 | 含义 |
@@ -884,6 +936,9 @@ ncc app export --dir ./my-pod --out ./my-pod-export   # 别人拿到就能部署
 | `NCC_BIN` | npm 包装 | 强制指定二进制路径（最先检查） |
 | `NCC_RELEASE_BASE` | 安装脚本、npm 包装、`ncc upgrade` | 下载发布二进制的基址，默认本仓库的 GitHub Releases |
 | `NCC_UPDATE_URL` | `ncc upgrade` | 最新版本查询端点，默认 GitHub releases API |
+| `NCC_RSI_DIR` | `ncc rsi` | 强制用这个目录（否则：从当前目录往上找最近的 `.ncc-rsi/`，找不到就用 `~/.harnessuse/rsi`） |
+| `NCC_RSI_UNATTENDED` | `ncc rsi` | `=1` = 无人值守：**只把 warn 升成 block**（给宿主 / 定时任务用） |
+| `NCC_RSI_BLOCK_CODE` | `ncc rsi hook` | shim 把「拦住」映射成哪个退出码（缺省 2 = Claude 的约定） |
 | `NCC_HOME` | 安装脚本、npm 包装、`ncc upgrade` | 覆盖用来定位 `~/.ncc/bin/ncc` 的用户目录。测试时用，必须与包装脚本看到的同一个值 |
 
 `HOME`、`HOSTNAME`、`SHELL` 会被读取用于推导默认值（配置位置、设备名、POSIX 摘要），可按常规方式覆盖。

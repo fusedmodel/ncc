@@ -154,6 +154,12 @@ ncc conn pull deploy logs/app.log --to ./app.log            # pull artifacts; cl
 ncc auth pkg init ./team-auth --id @me/team-auth --project web --passphrase-file ./pass.txt
 ncc auth pkg run ./team-auth --project web --reason "release" --passphrase-file ./pass.txt -- ./deploy.sh
 # ↑ auth package: only metadata is plaintext; unlock lasts exactly one command, then it re-locks and wipes
+ncc rsi init --preset unattended-safe    # a decision gate before the action: project-level .ncc-rsi/
+ncc rsi goal set --statement "ship v0.3.0" --accept "deploy,release" --reject "refactor,rewrite"
+ncc rsi check --command "git push --force"          # -> blocked (exit code 20); --json for machines
+ncc rsi guard --reason "run tests" -- npm test      # check first; when blocked it really does not run
+ncc rsi hook install --host claude                 # wire it into a host's PreToolUse hook
+ncc rsi report --since 24h                         # the local ledger tally (no upload channel)
 ncc terminal
 ```
 
@@ -317,6 +323,12 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc upgrade` | Upgrade the CLI binary in place (`--check` only reports, `--force` reinstalls) |
 | `ncc mcp` | Start as an **MCP server** over stdio, so any agent can drive NCC. `--package <dir\|hur.json>` narrows the face to the collections that package declares (**the model face = the declared face**: read tools follow `mode`, a write tool exists only if the package declares a write, and a collection that is not declared is not even visible — nor callable) |
 | `ncc app init` / `doctor` / `up` / `status` / `export` | **NCC pod**: make "deploy your own personal assistant" one command — the product is yours (`app.json`), the engine is ncc, the app logic is a HUR package (`hur.json`), content lives on your node, interconnection on the platform; `up` runs a loopback console, `export` produces a hand-off directory |
+| `ncc rsi init` / `policy` / `check` | **A decision gate before the action**: project-level `.ncc-rsi/` (policy / goal / preferences / ledger); `check` takes a decision request (`--file` or stdin, and it accepts host shapes like `tool_name` / `tool_input.command`) and returns a verdict — **exit code 0 allow / 10 warn / 20 block / 1 config error** (kept separate from "blocked"); `--unattended` **only upgrades warn to block** |
+| `ncc rsi guard -- <cmd>` | **Guarded execution**: check first, and when blocked it **really does not run** (the smoke asserts the marker file is absent); otherwise the child's exit code is returned and a non-zero one is booked as an incident; `--explain` checks without running |
+| `ncc rsi goal set` / `status` / `done` | **No drift**: both `--accept a,b` and `--accept a --accept b` work; a `--reject` hit is drift, no `--accept` hit is reported as **"cannot tell how this relates"** (it neither hides that nor counts it as a pass) |
+| `ncc rsi pref add` / `ls` / `rm` / `suggest` | **User preferences**: `kind=avoid` takes part in the verdict (upgraded to block when unattended), `prefer` is display-only; `ls` shows **hit counts**; `suggest` surfaces repeated reasons from the ledger for a human to pick — it does **not** auto-write preferences |
+| `ncc rsi report --since 24h` / `--json` | The tally after unattended work, from the **local** ledger (**there is no upload channel**): decisions / blocks / incidents / drifts / preference hits |
+| `ncc rsi hook install --host claude\|cursor\|generic` | Writes a 30-line sh shim for a host's `PreToolUse` hook: JSON on stdin, exit code `20` (`NCC_RSI_BLOCK_CODE`, default 2, when unattended) means blocked; **⚠️ it is `--host`, not `--target`** (the top-level `--target` is the global target selector and would swallow it first) |
 | `ncc hur profile <path \| @ns/slug>` | Read what a package **is**: what it wants, what it gives, **how to hook it up** — plus a graded check (`structure / self-consistent / signature` reported separately, never smeared into one ✅). `--list` prints the whole profile table |
 | `ncc hur match --profile kb-seed` | Read-only search: find packages by profile / integration host / capability |
 | `ncc hur data import --package <dir>` | Pour a **data snapshot package** into the node (kb-seed / mem-seed / ckpt-set / trace-set). Prints a plan by default; `--apply` actually writes |
@@ -860,6 +872,49 @@ End-to-end: `bash scripts/app-smoke.sh` (engine + node + platform, isolated port
 
 ---
 
+### `ncc rsi` (a decision gate before the action: safety, drift, preferences, ledger)
+
+Two things hurt most when nobody is watching: **slips** (`rm -rf`, `git push --force`, a write to
+production) and **drift** (the task was "ship 0.3.0", and half an hour later it is refactoring the
+directory layout). `ncc rsi` puts both **in front of the action**: ask *"may this step happen?"*,
+record the verdict and the reasons, and be able to add it up afterwards. **Everything is local**
+(policy, goal, preferences and ledger are files), it works offline, and the ledger never leaves the
+machine.
+
+| Block | Commands | Answers |
+|---|---|---|
+| **Policy gate** | `rsi check` / `rsi policy` | may this step happen |
+| **Ledger** | `rsi guard` / `rsi report` | what actually happened while nobody watched |
+| **Preferences** | `rsi pref` | what did this person say not to do |
+| **Goal** | `rsi goal` | is this step still on the goal |
+
+```bash
+ncc rsi init --preset unattended-safe        # project-level .ncc-rsi/ (travels with the repo)
+ncc rsi policy presets | set --preset strict-prod | check | show
+ncc rsi goal set --statement "ship v0.3.0" --accept "deploy,release" --reject "refactor,rewrite"
+ncc rsi pref add "do not touch the production database" --kind avoid --evidence "an incident in 2026-09"
+ncc rsi check --command "git push --force"   # the exit code IS the verdict: 0 allow / 10 warn / 20 block / 1 config error
+NCC_RSI_UNATTENDED=1 ncc rsi check --command "npm publish"   # unattended only tightens: warn becomes block
+ncc rsi guard --reason "run tests" -- npm test  # check first; when blocked it really does not run
+ncc rsi report --since 24h --json            # blocks / incidents / drifts / which preferences did work
+ncc rsi hook install --host claude           # a 30-line sh shim + the PreToolUse snippet
+```
+
+| Point | Why it matters |
+|---|---|
+| **The exit code beats the JSON** | `0` allow / `10` warn / `20` block / **`1` usage or config error** — kept separate from "blocked", so no host ever reads a broken config as compliance |
+| **Unattended only tightens** | `--unattended` / `NCC_RSI_UNATTENDED=1` does exactly one thing: warn becomes block. There is no "loosen it when unattended" switch |
+| **Drift is judged against the goal** | a hit on a `--reject` word is drift; an active goal with no `--accept` hit is reported as **"cannot tell how this relates"** — never dressed up as a pass |
+| **Preferences are stated by a human** | `avoid` takes part in the verdict, `prefer` is display-only; `pref suggest` only lists repeated reasons for a human to pick, **it never auto-writes** |
+
+Three boundaries: **the gate is before the action** (`check` executes nothing; `guard` runs *your*
+command, not a sandbox); **the ledger records facts only** (action, verdict, reasons — no secrets, no
+file contents); **unreadable input exits non-zero** (never treat a broken config as a pass).
+
+End-to-end: `bash scripts/rsi-smoke.sh` (**80/80**); spec in `ncc-platform/prd/ncc-rsi.md`.
+
+---
+
 ## Core concepts
 
 | Term | Meaning |
@@ -894,6 +949,9 @@ current one.
 | `NCC_BIN` | npm wrapper | Force a specific binary path (checked first) |
 | `NCC_RELEASE_BASE` | install script, npm wrapper, `ncc upgrade` | Base URL for downloading release binaries. Defaults to this repo's GitHub Releases |
 | `NCC_UPDATE_URL` | `ncc upgrade` | Endpoint used for the latest-release lookup. Defaults to the GitHub releases API |
+| `NCC_RSI_DIR` | `ncc rsi` | Force this directory (otherwise the nearest `.ncc-rsi/` upwards wins, else `~/.harnessuse/rsi`) |
+| `NCC_RSI_UNATTENDED` | `ncc rsi` | `=1` means unattended: **warn is upgraded to block, nothing else** (for hosts and cron jobs) |
+| `NCC_RSI_BLOCK_CODE` | `ncc rsi hook` | Which exit code the shim maps "blocked" to (default 2, the Claude convention) |
 | `NCC_HOME` | install script, npm wrapper, `ncc upgrade` | Overrides the user home used to locate `~/.ncc/bin/ncc`. Handy for tests; must be the same value the wrappers see |
 
 `HOME`, `HOSTNAME` and `SHELL` are read for defaults (config location, device name, POSIX summary) and can be overridden as usual.

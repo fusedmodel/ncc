@@ -25,6 +25,7 @@ mod profile;
 mod registry;
 mod registryadd;
 mod registryp2p;
+mod rsi;
 mod sandbox;
 mod services;
 mod signcmd;
@@ -210,6 +211,14 @@ enum Cmd {
     /// 零服务端改动，复用你本机的 ssh 与 key）。建好后 `exec` / `push` / `pull` 反复用，
     /// `run` 把「推多个文件 + 跑一段脚本」一次做完；`close --purge` 收线。
     Conn(conn::ConnCmd),
+    /// NCC RSI：**运行时安全与自改进**（Runtime Safety & Improvement）
+    ///
+    /// 一句话：**动作发生之前拦住它、记下来、事后算总账**。
+    /// `rsi check`（决策门：给一份决策请求，拿 0/10/20 的裁决）、`rsi guard`（守着跑，
+    /// block 就真的不跑）、`rsi goal`（不跑偏）、`rsi pref`（用户偏好）、
+    /// `rsi report`（无人值守过后的总账）；`rsi hook install` 把它挂成宿主的 PreToolUse 钩子。
+    /// **全部本地**（策略 / 账本 / 偏好 / 目标都是文件），离线也能拦。
+    Rsi(rsi::RsiCmd),
     /// NCC Profile：查看 / 设置名片（定位角色 + 作品集 + 已发布能力）
     Profile(ProfileArgs),
     /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
@@ -971,6 +980,8 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Sandbox(_) => None,
         // 连接通道：同样不门禁（地址与凭据来自本地登记，连通性由 open/status 自己报）。
         Cmd::Conn(_) => None,
+        // RSI 一律本地：策略、账本、偏好、目标都是文件，不依赖服务端能力面。
+        Cmd::Rsi(_) => None,
         // 纯本地：打洞预检一样不依赖 NCC 服务端。
         Cmd::Gateway(_) => None,
         // 舱的命令自己报告能力（doctor 的职责就是回答「这个目标有没有这些能力」），不在这里门禁
@@ -1106,6 +1117,16 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         // 所以这里不做能力门禁（否则当前目标正好是个没声明 exec 的节点就全哑了）。
         Cmd::Sandbox(s) => sandbox::cmd(&s.action),
         Cmd::Conn(s) => conn::cmd(&s.action),
+        // RSI 全在本地（策略/账本/偏好/目标都是文件）：不门禁、离线也要能拦人。
+        // 退出码 0/10/20 是**给宿主看的裁决**，直接透出去。
+        Cmd::Rsi(a) => {
+            let mut code = None;
+            rsi::cmd(&a.action, &mut code)?;
+            match code {
+                Some(c) => std::process::exit(c),
+                None => Ok(()),
+            }
+        }
         Cmd::Trace(t) => trace::run(cfg, t),
         Cmd::Kb(k) => state::run_kb(cfg, k),
         Cmd::Mem(m) => state::run_mem(cfg, m),
