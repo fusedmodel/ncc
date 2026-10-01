@@ -6,6 +6,7 @@ mod auth;
 mod capability;
 mod config;
 mod configs;
+mod conn;
 mod gateway;
 mod gwreport;
 mod httpsrv;
@@ -200,6 +201,13 @@ enum Cmd {
     /// （OS 敏感任务，例如 `docker build && docker push`，需要对方运维显式放行）。
     /// 退出码跟随远端，可直接用在 CI 里。
     Sandbox(sandbox::SandboxCmd),
+    /// 通信基础设施：到 Cloud instance 的**连接通道**（跑命令 / 推拉文件 / 一批脚本）
+    ///
+    /// `open` 建一条会话（可用 `--on <已登记的云电脑>` 直接复用那台的地址与凭据），
+    /// 然后在通道上反复 `exec`、`push`、`pull`；`run` 把「推多个文件 + 跑一段脚本」
+    /// 一次做完。通道有 TTL，`close --purge` 连工作目录一起删。
+    /// **目标端要显式开 `NCCR_CONN_ALLOW=1`**（通道能跑任意命令、写文件，属最高权限）。
+    Conn(conn::ConnCmd),
     /// NCC Profile：查看 / 设置名片（定位角色 + 作品集 + 已发布能力）
     Profile(ProfileArgs),
     /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
@@ -959,6 +967,8 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Agent(_) => Some("share"),
         // 云电脑：不门禁（见 run() 里的说明）。
         Cmd::Sandbox(_) => None,
+        // 连接通道：同样不门禁（地址与凭据来自本地登记，连通性由 open/status 自己报）。
+        Cmd::Conn(_) => None,
         // 纯本地：打洞预检一样不依赖 NCC 服务端。
         Cmd::Gateway(_) => None,
         // 舱的命令自己报告能力（doctor 的职责就是回答「这个目标有没有这些能力」），不在这里门禁
@@ -1084,6 +1094,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         // 云电脑的地址来自本机环境表（不是当前目标）——连通性由 init/status 自己报，
         // 所以这里不做能力门禁（否则当前目标正好是个没声明 exec 的节点就全哑了）。
         Cmd::Sandbox(s) => sandbox::cmd(&s.action),
+        Cmd::Conn(s) => conn::cmd(&s.action),
         Cmd::Trace(t) => trace::run(cfg, t),
         Cmd::Kb(k) => state::run_kb(cfg, k),
         Cmd::Mem(m) => state::run_mem(cfg, m),

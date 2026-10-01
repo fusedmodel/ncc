@@ -146,6 +146,10 @@ ncc agent share ./my-agent             # hand my agent to a specific person (poi
 ncc agent add 'https://ncc.ai/a/AC-…'  # accept someone's agent: install the package + link the node
 ncc sandbox init --host 10.0.0.5 --port 8282 --key <key>   # cloud computer: register a machine that runs work
 ncc sandbox run --on office --cmd "docker build -t me/app . && docker push me/app" --reason "release"
+ncc conn open --on office --name deploy --ttl 7200         # connection channel: open a session on that machine
+ncc conn run deploy --file ./app.tar.gz --script ./deploy.sh --reason "release: v0.3.0"
+ncc conn exec deploy "tar -xzf app.tar.gz && ./app --check" --reason "verify"
+ncc conn pull deploy logs/app.log --to ./app.log            # pull artifacts; close --purge to hang up
 ncc terminal
 ```
 

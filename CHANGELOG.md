@@ -14,6 +14,30 @@
 
 ## [未发布]
 
+### 新增 · `ncc conn`：到 Cloud instance 的连接通道（通信基础设施）
+
+`ncc sandbox run` 是「把一条命令送过去跑」；`ncc conn` 是「**在那台机器上开一条会话**」——
+推文件、反复跑命令、把产物拉回来，全程留在账本里。用户要的「一系列命令 + 文件推送 + 目标端执行」
+就是 `ncc conn run`。
+
+- **`ncc conn open [--on <已登记的云电脑>\|--url <URL> --key <k>] [--name] [--note] [--ttl <秒>]`**：
+  建通道；凭据与地址写进 `~/.ncc/connections.json`（**0600**，`ls` 不回显 key）。`--on` 直接复用
+  `ncc sandbox init` 登记过的地址与凭据（不重复录一次）。
+- **`ncc conn ls`**：状态**现问目标端**（不可达就明说，不猜）。**`status <id\|名>`**：细节 +
+  **这条通道上跑过什么**（关掉后仍可看：账本不该随关闭一起消失）。
+- **`exec <id> "命令" [--cwd] [--timeout] --reason`**：可反复跑、工作目录跨命令保持；
+  **退出码跟随远端**（CI 可直接用）；日志尾巴直接打出来。
+- **`push <id> <文件> [--to <相对路径>] [--exec] --reason`** / **`pull <id> <相对路径> [--to <落点>]`**：
+  推/拉文件（锁在通道的工作目录里；拉回来会对 `sha256`）。
+- **`run <id> --file L[=R] --file … (--script <脚本>\|--sh "命令") --reason`**：一批做完
+  —— 推文件 → 推脚本（落 `.ncc-run.sh`，0700）→ 目标端执行。
+- **`close <id> [--purge] [--forget]`**：关闭。`--purge` 删远端工作目录；**默认保留本地登记**
+  （关了还能 `status` 看账本），要清掉用 `--forget`。
+- ⚠️ 踩过的坑（已钉住）：**位置参数字段不能叫 `target`** —— 顶层 `--target` 是 global 的，clap arg id
+  撞车，于是 `ncc conn run cli-chan …` 会报「没有名为 cli-chan 的目标」（与 `ncc info` / `ncc mem rm`
+  / `ncc verify` 同一个坑），一律叫 `conn`。
+- 冒烟：`ncc-registry/scripts/conn-smoke.sh`（57 项，含 CLI 串联与「远端退出码非 0 → CLI 也非 0」）。
+
 ### 新增 · `ncc auth`：凭据 + 设备码登录 + 授权管理（对第三方平台的授权颁发方）
 
 服务端那侧是 `ncc-platform` 的 NCC Auth（OIDC 授权服务器 + RFC 8628 设备码，设计见

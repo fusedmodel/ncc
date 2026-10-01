@@ -134,6 +134,10 @@ ncc agent share ./my-agent             # 把我设计好的 Agent 分享给指�
 ncc agent add 'https://ncc.ai/a/AC-…'  # 收下别人给的 Agent：装包 + 连接节点
 ncc sandbox init --host 10.0.0.5 --port 8282 --key <key>   # 云电脑：登记一台能接活的机器
 ncc sandbox run --on office --cmd "docker build -t me/app . && docker push me/app" --reason "发版"
+ncc conn open --on office --name deploy --ttl 7200         # 连接通道：在那台机器上开一段会话
+ncc conn run deploy --file ./app.tar.gz --script ./deploy.sh --reason "发版：v0.3.0"
+ncc conn exec deploy "tar -xzf app.tar.gz && ./app --check" --reason "验一版"
+ncc conn pull deploy logs/app.log --to ./app.log            # 产拉回来；close --purge 收线
 ncc services match "帮我订杭州的酒店"    # 按意图找服务（服务提供方打包的业务）
 ncc terminal
 ```

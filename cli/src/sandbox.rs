@@ -210,6 +210,11 @@ fn auth_check(url: &str, token: Option<&str>) -> Result<usize> {
     Ok(d["total"].as_i64().unwrap_or(0) as usize)
 }
 
+/// 字节摘要（“推文件先给指纹，目标端核对才落盘”两处都用它 —— 只该有一份实现）。
+pub fn sha256_hex(b: &[u8]) -> String {
+    spec::sha256_hex(b)
+}
+
 fn engine_of(a: &RunArgs) -> String {
     if let Some(e) = a.engine.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         return e.to_string();
