@@ -323,7 +323,10 @@ for p in must:
     t = open(p, encoding='utf-8', errors='replace').read()
     if NEW not in t:
         bad.append(f"{os.path.relpath(p, repo)} 没有新展开")
-# 旧展开（**完整三连**才算；PRD 决策记录里单独提 `Capability · Catalog` 是允许的）：全仓不许再出现
+# 旧展开（**完整三连**才算；PRD 决策记录里单独提 `Capability · Catalog` 是允许的）：**对外文案**不许再出现。
+# 例外：改动记录本身要能引用旧写法（"原为 X" / "旧的三连是 Y"），否则 CHANGELOG 只能写"改过一处"这种没信息量的话。
+# 这些文件的"新展开必须有"由上面的 must 列表照旧强制，所以例外不会让旧口径漏回对外文案。
+HISTORY = ('CHANGELOG.md', 'prd/ncc-agent-infra.md')
 skip = ('node_modules', '/target/', '/.git/', '/dist/', '/build/', '/data/', '/release/')
 for dp, dn, fn in os.walk(repo):
     if any(s in dp + '/' for s in skip):
@@ -331,10 +334,13 @@ for dp, dn, fn in os.walk(repo):
     for f in fn:
         if not f.endswith(('.md', '.jsx', '.js', '.html', '.txt', '.json')):
             continue
+        rel = os.path.relpath(os.path.join(dp, f), repo)
+        if any(rel.endswith(h) or rel == h for h in HISTORY):
+            continue
         p = os.path.join(dp, f)
         for i, line in enumerate(open(p, encoding='utf-8', errors='replace').read().split('\n'), 1):
             if OLD.search(line):
-                bad.append(f"{os.path.relpath(p, repo)}:{i} 还有旧展开：{line.strip()[:60]}")
+                bad.append(f"{rel}:{i} 还有旧展开：{line.strip()[:60]}")
 print(f"BAD={len(bad)}")
 for b in bad[:12]:
     print('  ' + b)
