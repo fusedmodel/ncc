@@ -143,12 +143,19 @@ ncc auth pkg init ./team-auth --id @me/team-auth --project web --passphrase-file
 ncc auth pkg run ./team-auth --project web --reason "发版" --passphrase-file ./pass.txt -- ./deploy.sh
 # ↑ 授权包：包里只有元数据是明文；开锁只在这一条命令的那一小段时间，退出即抹、即上锁
 ncc services match "帮我订杭州的酒店"    # 按意图找服务（服务提供方打包的业务）
+ncc feedback send --about 'artifact:@me/tool' --kind report --body '装完 run 报 ENOENT' --as-agent claude-code
+# ↑ 反馈：先说给你当前说话的那台目标（**默认私有**），要搬上云显式 relay（**只搬公开的**）
+ncc feedback inbox                      # 别人对我（我的制品/服务/名片）说的
+ncc feedback relay --all-mine           # 把内网节点上的公开反馈搬到云端（私有永不出机器）
 ncc rsi init --preset unattended-safe    # 动作之前的决策门：项目级 .ncc-rsi/（跟着仓库走）
 ncc rsi goal set --statement "把 v0.3.0 发上线" --accept "deploy,release,发版" --reject "refactor,重写"
 ncc rsi check --command "git push --force"          # → 拦住（退出码 20）；--json 给机器读
 ncc rsi guard --reason "跑测试" -- npm test          # 守着跑：block 就真的不跑
 ncc rsi hook install --host claude                  # 挂成宿主的 PreToolUse 钩子
 ncc rsi report --since 24h                          # 无人值守过后的总账（本机，不上报）
+ncc rsi learn consent set --source feedback:mine --source 'mem:@me' --source log:ledger
+ncc rsi learn consent on                            # 默认关闭：不点开就一个来源也不读
+ncc rsi learn plan                                  # 读一遍 → 出**提案**（不生效）；apply 要点名
 ncc terminal
 ```
 
@@ -319,7 +326,11 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc rsi goal set` / `status` / `done` | **不跑偏**：`--accept a,b` 与 `--accept a --accept b` 两种写法都认；`--reject` 命中 = 跑偏，`--accept` 没命中 = **明说「看不出关系」**（不装看不见，也不当通过） |
 | `ncc rsi pref add` / `ls` / `rm` / `suggest` | **用户偏好**：`kind=avoid` 参与裁决（无人值守下按策略升到 block）、`prefer` 只展示不拦人；`ls` 带**命中次数**；`suggest` 从账本里捞反复出现的理由给人挑，**不自动写进偏好** |
 | `ncc rsi report --since 24h` / `--json` | 无人值守过后的**总账**（本机账本，**没有上报通道**）：决策数 / 拦住次数 / 事故 / 跑偏 / 偏好命中 |
+| `ncc feedback send` / `ls` / `get` / `reply` / `status` | **跨 Agent / 跨用户的反馈**：四个身份分开写（author / agent / about / owner，**owner 由服务端解析**）；**只追加**（内容不可改，唯一能改的是**处置状态**，且只有目标拥有者）；**默认私有**（`--public` 才公开）；`--about` 写法 `service:@alice/stay` / `artifact:@alice/tool` / `@alice`（名片）/ 一句话（词条） |
+| `ncc feedback inbox` / `summary` / `spool` | 收件箱（别人对我说的）/ 聚合（**不是排名分**：不参与排序·匹配·信任分）/ 本地队列（**先落盘再发送**：送不出去 → 命令非 0 退出，那条留在队列里） |
+| `ncc feedback relay --about \| --all-mine` / `--flush` | 把一台目标上的**公开**反馈搬到另一台（默认搬到 hub）：**私有的一律不搬**（服务端再拒一次）、**搬运者身份为准**（原作者只作转述写进 originAuthor）、按 `(origin, originId)` 幂等；`--flush` 先把本地队列送出去 |
 | `ncc rsi hook install --host claude\|cursor\|generic` | 装一个 30 行 sh shim，挂到宿主的 `PreToolUse` 钩子上：stdin 给 JSON，退出码 `20`（无人值守下 `NCC_RSI_BLOCK_CODE`，缺省 2）= 拦住；**⚠️ 是 `--host` 不是 `--target`**（顶层 `--target` 是全局目标选择器，会被它先吃掉） |
+| `ncc rsi learn consent` / `plan` / `apply` / `digest` / `export` | **从反馈与状态里学**（RSI 的另一块）：默认**什么都不学**；`consent set --source feedback:mine|mem:@me|kb:@ns/doc|ckpt:@ns/app|log:ledger` 声明来源（**声明即许可**），`consent on` 才开；`plan` 只出**提案**（pref / guard / lesson，每条带 why + 依据），`apply` 要点名，**策略类永远不自动写**；`export --dir` 出数据集（`manifest.json` + `items.jsonl`，带来源/同意/脱敏清单） |
 | `ncc help <command>` | 查看任意命令的自动生成帮助 |
 | `ncc hur profile <包 \| @命名空间/slug>` | 读一份包**是什么**：要什么 / 给什么 / **怎么接**，外加**分级体检**（结构 · 自洽 · 签名分开报，不合成一个 ✅）；`--list` 列规范里的全部 profile |
 | `ncc hur match --profile kb-seed` | 按 profile / 集成宿主 / 能力在目录里找包（**只读**） |

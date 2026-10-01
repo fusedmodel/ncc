@@ -14,6 +14,48 @@
 
 ## [未发布]
 
+### 新增 · `ncc feedback`：跨 Agent、跨用户的反馈（CLI → 节点 → 云端 → 服务）
+
+用户问：「增加一个 feedback 功能，实现跨 Agent、跨用户反馈等能力，实现一个 CLI 到 node、到 hub、
+到 service 等反馈。」
+
+一条链，四个决定：
+
+- **`ncc feedback send`** —— 先说给**你当前说话的那台目标**（内网就落节点、云端就落云端）。
+  `--about` 写法：`service:@alice/stay` / `artifact:@alice/tool` / `@alice`（名片）/ 一句话（词条）；
+  `--as-agent` 写清楚是哪个 Agent 说的（跨 Agent 就是这一栏）。
+- **先落盘再发送** —— `~/.ncc/feedback/spool.jsonl`（0600）。送不出去 → 命令**非 0** 退出，
+  那条**留在队列**里（`spool` 看、`relay --flush` 一起送）。绝不"看起来发出去了"。
+- **`ncc feedback relay`** —— 把一台目标上的**公开**反馈搬到另一台（默认搬 hub）。
+  **私有的永不出机器**（搬运必须显式说搬什么：`--about` 或 `--all-mine`）；
+  搬运者身份为准（原作者只作转述），按 `(origin, originId)` 幂等。
+- **`ls` / `get` / `reply` / `status` / `summary` / `inbox`** —— 看、回、处置（**只有目标拥有者**）、
+  聚合（**不是排名分**：不参与排序 / 匹配 / 信任分）。
+
+红线：内容**只追加**（要补充就再回一条）、**默认私有**（`--public` 才公开）、
+归属由**服务端**解析（客户端说了不算）、**不替你切目标**（`service:` 落在没声明 services 的目标上会
+报出该敲的命令）。
+
+验证：`bash scripts/feedback-smoke.sh` **50/50**（CLI + 节点 + 云端三个东西一起跑）。
+
+### 新增 · `ncc rsi learn`：从反馈与状态里学（默认关闭、提案制、策略永不自动改）
+
+用户问：「RSI 可以通过 Feedback、state（mem, ckpt, log, knowledgebase）等内容进行自改进和学习；
+用户可以设置或通过 Agent 设置 RSI 可以用于进化的轨迹与数据。」
+
+- `learn consent show|on|off|set` —— 同意声明（`.ncc-rsi/learn.json`）：读哪些来源、读多少、
+  脱敏词、**谁设的**（`set_by_user` / `set_by_agent` / `set_at`）、什么时候过期。
+- `learn plan` —— 读一遍已授权的来源（feedback / mem / kb / ckpt / log），出一份**提案**：
+  `pref`（把记忆里的偏好正式化）/ `guard`（账本里反复要人确认 → 建议收紧）/ `lesson`（反复出问题、纠正、规范）。
+  每条带 `why` + `count` + `evidence`，材料不够反复就**不硬凑**。
+- `learn apply <id|all>` —— 点名应用；**策略类永远不自动写**（只打印可粘贴的片段）。
+- `learn digest` / `export --dir` —— 只读摘要 / 导出数据集（`manifest.json` + `items.jsonl`）。
+
+六条红线：默认关闭 · 声明即许可（没声明的来源一律不读）· 只读 · 提案不自动生效 · 策略永不自动改 · 不出本机。
+学到的偏好会真的接进裁决（下一次 `rsi check` 就拦人，因此标 `inferred` 等人复核）。
+
+验证：`bash scripts/rsi-learn-smoke.sh` **53/53**。
+
 ### 新增 · `ncc rsi`：动作之前的决策门（安全决策 / 不跑偏 / 偏好 / 账本）
 
 用户问：「增加一个 `ncc rsi` 的功能，增加一个 **Policy 接入**的方式，例如在 agent 的

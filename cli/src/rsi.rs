@@ -54,8 +54,9 @@
 //!     或由人从账本里挑出来（`rsi pref add --from-ledger`）。
 //!  6. **失败要能看出来**：读不懂的策略/请求一律非 0 退出，避免宿主把"配置坏了"当"放行"。
 use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -738,6 +739,119 @@ pub enum PrefAction {
     },
 }
 
+/// 从反馈与状态里学 —— 命令树。
+///
+/// **默认什么都不学**：没在 `learn.json` 里声明过的来源，一律不读（声明即许可）。
+#[derive(clap::Args)]
+pub struct LearnArgs {
+    #[command(subcommand)]
+    pub action: LearnAction,
+}
+
+#[derive(clap::Subcommand)]
+pub enum LearnAction {
+    /// 同意声明：`show` / `on` / `off` / `set`（读哪些、读多少、脱敏、谁设的）
+    Consent(LearnConsentArgs),
+    /// 读已授权的来源，出一份**提案**（绝不自动生效）
+    Plan(LearnPlanArgs),
+    /// 显式应用某几条提案（策略类永远不自动写）
+    Apply(LearnApplyArgs),
+    /// 只读摘要：读了哪些来源、得出几条提案、最近几条教训
+    Digest(LearnDigestArgs),
+    /// 把「进化用的数据」导成一个数据集目录（来源、时刻、同意、条目）
+    Export(LearnExportArgs),
+}
+
+#[derive(clap::Args)]
+pub struct LearnConsentArgs {
+    #[command(subcommand)]
+    pub action: LearnConsentAction,
+}
+
+#[derive(clap::Subcommand)]
+pub enum LearnConsentAction {
+    /// 现在允许学什么（含"谁设的、什么时候、什么时候过期"）
+    Show {
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// 打开（保留已有的来源声明）
+    On {
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// 关掉（**声明不删**：下次开还是同一批来源）
+    Off {
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// 设来源：`--source feedback:mine` / `mem:@me` / `kb:@me/notes` / `ckpt:@me/app` / `log:ledger`
+    Set {
+        #[arg(long = "source", value_name = "kind:where")]
+        sources: Vec<String>,
+        /// 先清空再设（不写就是增量替换同名来源）
+        #[arg(long)]
+        replace: bool,
+        /// 脱敏词（命中的字段在导出/摘要里打码），可重复
+        #[arg(long = "redact", value_name = "词")]
+        redact: Vec<String>,
+        /// 一次最多读多少条（预算制）
+        #[arg(long, default_value_t = 200)]
+        max_items: i64,
+        /// 多少天后自动失效（0 = 不过期）
+        #[arg(long, default_value_t = 0)]
+        expires_in_days: i64,
+        /// 谁设的（Agent 代设时写清楚；缺省取 NCC_AGENT）
+        #[arg(long = "by-agent", default_value = "")]
+        by_agent: String,
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+}
+
+#[derive(clap::Args)]
+pub struct LearnPlanArgs {
+    /// 来源不够就明说不够，不硬凑（缺省：来源全空也算"学完了"）
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dir: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+pub struct LearnApplyArgs {
+    /// 提案 id（`P-1`）或 `all`
+    pub id: String,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dir: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+pub struct LearnDigestArgs {
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dir: Option<PathBuf>,
+}
+
+#[derive(clap::Args)]
+pub struct LearnExportArgs {
+    /// 导到哪个目录（会写 manifest.json + items.jsonl）
+    #[arg(long)]
+    dir: String,
+    /// 只看会导出什么（写文件前先看一眼）
+    #[arg(long)]
+    dry: bool,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    home: Option<PathBuf>,
+}
+
 #[derive(clap::Args)]
 pub struct ReportArgs {
     #[arg(long, default_value = "24h")]
@@ -794,6 +908,8 @@ pub enum RsiAction {
     Goal(GoalCmd),
     /// 偏好：add / ls / rm / suggest
     Pref(PrefCmd),
+    /// **从反馈与状态里学**：同意声明 / 出提案 / 显式应用 / 摘要 / 导出数据集
+    Learn(LearnArgs),
     /// 无人值守过后的总账：拦了多少、出了几次事故、哪些偏好起了作用
     Report(ReportArgs),
     /// 接进 agent 宿主：装 PreToolUse 钩子
@@ -821,6 +937,7 @@ pub fn cmd(action: &RsiAction, code_out: &mut Option<i32>) -> Result<()> {
         }
         RsiAction::Goal(g) => goal_cmd(g),
         RsiAction::Pref(p) => pref_cmd(p),
+        RsiAction::Learn(l) => learn_cmd(l),
         RsiAction::Report(r) => report(r),
         RsiAction::Hook(h) => hook_cmd(h),
     }
@@ -1657,6 +1774,986 @@ fn hook_cmd(a: &HookArgs) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/* ================================================================
+   learn：从**反馈**与**状态**里学（RSI 的另一半：增强与提升）
+   ================================================================
+
+   用户的原话：
+
+   > 「RSI 可以通过 Feedback、state（mem, ckpt, log, knowledgebase）等内容进行自改进和学习；
+   >   用户可以设置或通过 Agent 设置 RSI 可以用于进化的轨迹与数据。」
+
+   于是这里做四件事：**声明（同意）/ 读取 / 出提案 / 显式应用**。四条红线：
+
+     1. **默认关闭**：没有 `learn.json` 或 `enabled=false` → 一个来源都不读。
+     2. **声明即许可**：`sources` 里没写的来源**一律不读**（还要在输出里说清跳过了哪些）。
+     3. **只读**：学习不改任何来源数据；写只写 `.ncc-rsi/` 里的文件。
+     4. **提案不自动生效**：`plan` 只出提案；`apply` 要人（或人授权的 Agent）点名。
+        **策略类提案永远不自动写** —— 那等于让工具自己给自己松绑。
+*/
+
+const LEARN: &str = "learn.json";
+const PROPOSALS: &str = "proposals.json";
+const LESSONS: &str = "lessons.jsonl";
+
+/// 允许的学习来源种类（少而清楚：多一种就要多一份"它凭什么被读"的说法）。
+const LEARN_KINDS: [&str; 5] = ["feedback", "mem", "kb", "ckpt", "log"];
+
+/// 一条来源声明。
+#[derive(Serialize, Deserialize, Clone)]
+struct LearnSource {
+    id: String,
+    kind: String,
+    /// 取哪儿：`mine`（我的）/ `@ns/slug`（某个东西）/ `ledger`（本机账本）/ 空（默认范围）
+    #[serde(default)]
+    r#where: String,
+    #[serde(default)]
+    limit: i64,
+}
+
+/// 同意声明（`.ncc-rsi/learn.json`）。
+///
+/// 刻意把 `set_by_*` 与 `set_at` 写进文件：**谁允许的、什么时候允许的**要留痕 ——
+/// Agent 代设时更要留（`--by-agent`），因为"它能读我的记忆"这件事必须有人认账。
+#[derive(Serialize, Deserialize, Clone)]
+struct LearnConsent {
+    #[serde(default = "one")]
+    version: u64,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    sources: Vec<LearnSource>,
+    #[serde(default)]
+    redact: Vec<String>,
+    #[serde(default = "default_max_items")]
+    max_items: i64,
+    #[serde(default)]
+    expires_unix: u64,
+    #[serde(default)]
+    set_by_user: String,
+    #[serde(default)]
+    set_by_agent: String,
+    #[serde(default)]
+    set_at: u64,
+}
+
+fn one() -> u64 {
+    1
+}
+
+fn default_max_items() -> i64 {
+    200
+}
+
+impl Default for LearnConsent {
+    fn default() -> Self {
+        LearnConsent {
+            version: 1,
+            enabled: false,
+            sources: Vec::new(),
+            redact: Vec::new(),
+            max_items: default_max_items(),
+            expires_unix: 0,
+            set_by_user: String::new(),
+            set_by_agent: String::new(),
+            set_at: 0,
+        }
+    }
+}
+
+fn learn_file(dir: &Path) -> PathBuf {
+    dir.join(LEARN)
+}
+
+fn load_consent(dir: &Path) -> Option<LearnConsent> {
+    fs::read(learn_file(dir))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<LearnConsent>(&b).ok())
+}
+
+fn save_consent(dir: &Path, c: &LearnConsent) -> Result<()> {
+    write_atomic(&learn_file(dir), format!("{}\n", serde_json::to_string_pretty(c)?).as_bytes(), 0o600)
+}
+
+fn consent_expired(c: &LearnConsent) -> bool {
+    c.expires_unix > 0 && now_unix() > c.expires_unix
+}
+
+/// 读同意声明并检查"现在能不能学"（不能就明说为什么，别默默什么都不做）。
+fn require_consent(dir: &Path) -> Result<LearnConsent> {
+    let c = load_consent(dir).ok_or_else(|| {
+        anyhow!(
+            "这里还没有学习同意声明（{}）—— 默认**什么都不学**。\n  \
+             先看一眼要读什么：`ncc rsi learn consent show`\n  \
+             再打开并声明来源：`ncc rsi learn consent set --source feedback:mine --source log:ledger` 然后 `ncc rsi learn consent on`",
+            learn_file(dir).display()
+        )
+    })?;
+    if !c.enabled {
+        bail!(
+            "学习是关着的（{} 里 enabled=false）。要开：`ncc rsi learn consent on`（声明还在，来源不用重配）",
+            learn_file(dir).display()
+        );
+    }
+    if consent_expired(&c) {
+        bail!(
+            "这份同意已经在 {} 过期了 —— 过期就不再读（要续：`ncc rsi learn consent set --expires-in-days <天数>`）",
+            fmt_epoch(c.expires_unix as i64)
+        );
+    }
+    Ok(c)
+}
+
+/// `kind:where` → 一条来源声明（`where` 可省：`feedback` = `feedback:mine`）。
+fn parse_source(raw: &str) -> Result<LearnSource> {
+    let s = raw.trim();
+    let (kind, w) = match s.split_once(':') {
+        Some((k, v)) => (k.trim().to_string(), v.trim().to_string()),
+        None => (s.to_string(), String::new()),
+    };
+    if !LEARN_KINDS.contains(&kind.as_str()) {
+        bail!("来源种类只认 {}（给的是 {kind}）", LEARN_KINDS.join("|"));
+    }
+    let w = match (kind.as_str(), w.as_str()) {
+        ("feedback", "") => "mine".to_string(),
+        ("log", "") => "ledger".to_string(),
+        (_, v) => v.to_string(),
+    };
+    Ok(LearnSource {
+        id: format!("L{}", 0),
+        kind,
+        r#where: w,
+        limit: 0,
+    })
+}
+
+/// 脱敏（导出与摘要里都走它）：命中词的字段打码，**原值不进任何输出**。
+fn redact_text(s: &str, words: &[String]) -> String {
+    let mut out = s.to_string();
+    for w in words {
+        let w = w.trim();
+        if w.is_empty() {
+            continue;
+        }
+        out = out.replace(w, "***");
+    }
+    out
+}
+
+/// 收集到的一条"学习材料"。
+///
+/// `text` 是**引用级别的摘要**（谁、什么时候、去了哪儿），不是原文搬运 —— 学习要能说清依据，
+/// 但不该把一份语料整本拷进 `.ncc-rsi/`。
+#[derive(Serialize, Deserialize, Clone)]
+struct LearnItem {
+    source: String,
+    kind: String,
+    r#ref: String,
+    at: u64,
+    text: String,
+    /// 额外事实（如 `kind=preference` / `agent=claude-code` / 标签）
+    #[serde(default)]
+    meta: BTree<String, String>,
+}
+
+/// BTreeMap 的别名（保序的 key-value，打印稳定）。
+type BTree<K, V> = std::collections::BTreeMap<K, V>;
+
+fn item(source: &str, kind: &str, r#ref: &str, at: u64, text: &str) -> LearnItem {
+    LearnItem {
+        source: source.to_string(),
+        kind: kind.to_string(),
+        r#ref: r#ref.to_string(),
+        at,
+        text: text.to_string(),
+        meta: BTree::new(),
+    }
+}
+
+/// 一台目标的能力清单（探测不到 = 未知 = 不拦，交给具体请求报错）。
+fn target_caps(cfg: &crate::config::CliConfig) -> Vec<String> {
+    crate::capability::probe(cfg).capabilities
+}
+
+/// 读本机账本（log:ledger）：把"发生过什么"折成学习材料。
+fn collect_ledger(dir: &Path, limit: i64) -> (Vec<LearnItem>, BTree<String, i32>) {
+    let raw = fs::read_to_string(dir.join(LEDGER)).unwrap_or_default();
+    let mut items = Vec::new();
+    // 理由 → 次数（反复出现的才算"值得学的信号"）
+    let mut why_count: BTree<String, i32> = BTree::new();
+    for line in raw.lines().rev() {
+        if items.len() as i64 >= limit.max(1) {
+            break;
+        }
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let at = v["at"].as_u64().unwrap_or(0);
+        let act = v["act"].as_str().unwrap_or("");
+        let verdict = v["verdict"].as_str().unwrap_or("");
+        let reasons: Vec<String> = v["reasons"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| r.as_str().map(str::to_string))
+            .collect();
+        let mut it = item("log:ledger", if act == "guard" { "run" } else { "decision" },
+            &v["action"].as_str().unwrap_or(""), at,
+            &format!("{act} {verdict}: {}", reasons.join("；")));
+        it.meta.insert("verdict".into(), verdict.to_string());
+        if let Some(g) = v["goalState"].as_str() {
+            if !g.is_empty() {
+                it.meta.insert("goalState".into(), g.to_string());
+            }
+        }
+        items.push(it);
+        for r in reasons {
+            // 只把"要人点头"这种**可以固化成策略**的理由单独计数
+            if let Some(p) = r.split('「').nth(1).and_then(|s| s.split('」').next()) {
+                if r.contains("confirmCommands") {
+                    *why_count.entry(p.to_string()).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+    (items, why_count)
+}
+
+/// 读反馈（feedback:mine / feedback:@ns/slug）：跨 Agent、跨用户说过的话。
+fn collect_feedback(cfg: &crate::config::CliConfig, s: &LearnSource, limit: i64, redact: &[String]) -> Vec<LearnItem> {
+    let about = if s.r#where.is_empty() || s.r#where == "mine" {
+        None
+    } else {
+        let (k, r) = crate::feedback::parse_about(&s.r#where);
+        Some((k, r))
+    };
+    let kind_ref = about.clone();
+    let rows = crate::feedback::fetch_for_learning(cfg, about.as_ref().map(|(k, r)| (k.as_str(), r.as_str())), limit);
+    rows.iter()
+        .map(|f| {
+            let at = 0;
+            let mut it = item(
+                &s.id,
+                f["kind"].as_str().unwrap_or("report"),
+                f["aboutRef"].as_str().unwrap_or(""),
+                at,
+                &redact_text(f["body"].as_str().unwrap_or(""), redact),
+            );
+            it.meta.insert("feedbackId".into(), f["id"].as_str().unwrap_or("").to_string());
+            it.meta.insert("aboutKind".into(), f["aboutKind"].as_str().unwrap_or("").to_string());
+            if let Some(a) = f["agent"].as_str() {
+                if !a.is_empty() {
+                    it.meta.insert("agent".into(), a.to_string());
+                }
+            }
+            if let Some(st) = f["status"].as_str() {
+                it.meta.insert("status".into(), st.to_string());
+            }
+            if !kind_ref.is_none() {
+                it.meta.insert("scope".into(), s.r#where.clone());
+            }
+            it
+        })
+        .collect()
+}
+
+/// 读记忆（mem:*）：`kind=preference` 的记忆是**人/Agent 写过的偏好**，最值得正式化。
+fn collect_mem(cfg: &crate::config::CliConfig, s: &LearnSource, limit: i64, redact: &[String]) -> Result<Vec<LearnItem>> {
+    let token = crate::config::token_opt(cfg);
+    let d = crate::api::get(cfg, &format!("/api/mem?limit={}", limit.clamp(1, 500)), token.as_deref())?;
+    let rows = d["memories"].as_array().cloned().unwrap_or_default();
+    Ok(rows
+        .iter()
+        .filter(|m| !m["expired"].as_bool().unwrap_or(false))
+        .map(|m| {
+            let key = m["key"].as_str().unwrap_or("");
+            let body = m["value"].as_str().or_else(|| m["text"].as_str()).unwrap_or("");
+            let mut it = item(
+                &s.id,
+                m["kind"].as_str().unwrap_or("fact"),
+                key,
+                0,
+                &redact_text(body, redact),
+            );
+            it.meta.insert("subject".into(), m["subject"].as_str().unwrap_or("").to_string());
+            if let Some(src) = m["source"].as_str() {
+                if !src.is_empty() {
+                    it.meta.insert("source".into(), src.to_string());
+                }
+            }
+            it
+        })
+        .collect())
+}
+
+/// 读知识库（kb:*）：只取**引用级别**的摘要（slug / title / kind），不搬正文。
+fn collect_kb(cfg: &crate::config::CliConfig, s: &LearnSource, limit: i64, redact: &[String]) -> Result<Vec<LearnItem>> {
+    let token = crate::config::token_opt(cfg);
+    let d = crate::api::get(cfg, &format!("/api/kb?size={}", limit.clamp(1, 200)), token.as_deref())?;
+    let rows = d["docs"].as_array().cloned().unwrap_or_default();
+    Ok(rows
+        .iter()
+        .map(|k| {
+            let slug = k["slug"].as_str().unwrap_or("");
+            let title = k["title"].as_str().unwrap_or("");
+            let mut it = item(
+                &s.id,
+                k["kind"].as_str().unwrap_or("doc"),
+                slug,
+                0,
+                &redact_text(&format!("{title}（{slug}）"), redact),
+            );
+            if let Some(sm) = k["summary"].as_str() {
+                if !sm.is_empty() {
+                    it.meta.insert("summary".into(), redact_text(sm, redact));
+                }
+            }
+            it
+        })
+        .collect())
+}
+
+/// 读检查点（ckpt:*）：只记"哪一次交接点"，不搬字节。
+fn collect_ckpt(cfg: &crate::config::CliConfig, s: &LearnSource, limit: i64, redact: &[String]) -> Result<Vec<LearnItem>> {
+    let token = crate::config::token_opt(cfg);
+    let d = crate::api::get(cfg, &format!("/api/ckpt?limit={}", limit.clamp(1, 200)), token.as_deref())?;
+    let rows = d["checkpoints"].as_array().cloned().unwrap_or_default();
+    Ok(rows
+        .iter()
+        .map(|c| {
+            let id = c["id"].as_str().unwrap_or("");
+            let name = c["name"].as_str().unwrap_or("");
+            let mut it = item(&s.id, "ckpt", id, 0, &redact_text(name, redact));
+            if let Some(r) = c["ref"].as_str() {
+                if !r.is_empty() {
+                    it.meta.insert("ref".into(), r.to_string());
+                }
+            }
+            it
+        })
+        .collect())
+}
+
+/// 按同意声明读一遍（**未声明的来源不读**，并返回"跳过了什么"给人看）。
+struct Collected {
+    items: Vec<LearnItem>,
+    /// 每个来源读到了几条（含读不到的原因）
+    report: Vec<(String, String, i64)>,
+    /// 明确跳过（没声明 / 目标不支持）
+    skipped: Vec<String>,
+}
+
+fn collect_all(dir: &Path, c: &LearnConsent) -> Collected {
+    let cfg = crate::config::load();
+    let caps = target_caps(&cfg);
+    let budget = c.max_items.max(1);
+    let mut per = (budget / (c.sources.len().max(1) as i64)).max(1);
+    let mut out = Collected { items: Vec::new(), report: Vec::new(), skipped: Vec::new() };
+    // 来源声明都带 id（L1/L2…），现场补上（文件里可能手写漏了）。
+    let mut sources = c.sources.clone();
+    for (i, s) in sources.iter_mut().enumerate() {
+        if s.id.trim().is_empty() {
+            s.id = format!("L{}", i + 1);
+        }
+    }
+    for s in &sources {
+        let lim = if s.limit > 0 { s.limit.min(per) } else { per };
+        per = per.max(1);
+        match s.kind.as_str() {
+            "log" => {
+                let (items, _) = collect_ledger(dir, lim);
+                out.report.push((s.id.clone(), "log:ledger".into(), items.len() as i64));
+                out.items.extend(items);
+            }
+            "feedback" => {
+                if !caps.is_empty() && !caps.iter().any(|x| x == "feedback") {
+                    out.skipped.push(format!("{}（目标 {} 没声明 feedback 能力）", s.id, cfg.current_name()));
+                    continue;
+                }
+                let items = collect_feedback(&cfg, s, lim, &c.redact);
+                out.report.push((s.id.clone(), format!("feedback:{}", s.r#where), items.len() as i64));
+                out.items.extend(items);
+            }
+            "mem" | "kb" | "ckpt" => {
+                let need = s.kind.as_str();
+                if !caps.is_empty() && !caps.iter().any(|x| x == need) {
+                    out.skipped.push(format!("{}（目标 {} 没声明 {} 能力）", s.id, cfg.current_name(), need));
+                    continue;
+                }
+                let r = match s.kind.as_str() {
+                    "mem" => collect_mem(&cfg, s, lim, &c.redact),
+                    "kb" => collect_kb(&cfg, s, lim, &c.redact),
+                    _ => collect_ckpt(&cfg, s, lim, &c.redact),
+                };
+                match r {
+                    Ok(items) => {
+                        out.report.push((s.id.clone(), format!("{}:{}", s.kind, s.r#where), items.len() as i64));
+                        out.items.extend(items);
+                    }
+                    Err(e) => {
+                        out.report.push((s.id.clone(), format!("{}:{}", s.kind, s.r#where), -1));
+                        out.skipped.push(format!("{}（{} 读不到：{e}）", s.id, s.kind));
+                    }
+                }
+            }
+            _ => out.skipped.push(format!("{}（不认识的来源种类）", s.id)),
+        }
+    }
+    // 预算封顶（读多了不是好事：学习材料要能被复核）
+    if out.items.len() as i64 > budget {
+        out.items.truncate(budget as usize);
+    }
+    out
+}
+
+/// 一条提案（**不是行动**：它躺在文件里等人点头）。
+#[derive(Serialize, Deserialize, Clone)]
+struct Proposal {
+    id: String,
+    /// pref（写进偏好）/ guard（收紧策略，**不自动写**）/ lesson（记一条教训）
+    kind: String,
+    title: String,
+    /// 建议写成的样子（pref 的人话 / guard 的策略片段）
+    suggested: String,
+    why: String,
+    count: i32,
+    evidence: Vec<String>,
+    /// 落到哪儿
+    target: String,
+}
+
+/// 读一遍材料 → 出提案（规则全部可解释：每条都说清"凭什么"）。
+fn propose(items: &[LearnItem], why_count: &BTree<String, i32>, dir: &Path) -> Vec<Proposal> {
+    let mut out: Vec<Proposal> = Vec::new();
+    let mut idx = 0;
+    let mut next_id = || {
+        idx += 1;
+        format!("LP-{idx}")
+    };
+
+    // ① 偏好正式化：`mem` 里 kind=preference 的记忆条目
+    for it in items.iter().filter(|i| i.kind == "preference") {
+        let n = out.len() + 1;
+        out.push(Proposal {
+            id: next_id(),
+            kind: "pref".into(),
+            title: format!("把记忆里的偏好正式化：{}", it.text.chars().take(40).collect::<String>()),
+            suggested: it.text.clone(),
+            why: format!(
+                "记忆 {}{} 是 kind=preference（人/Agent 写过的偏好）—— 正式化成 avoid 偏好后，`rsi check` 就会拿它拦人",
+                it.meta.get("subject").map(|s| format!("{s}/")).unwrap_or_default(),
+                it.r#ref
+            ),
+            count: 1,
+            evidence: vec![format!("mem:{}", it.r#ref)],
+            target: "prefs.json".into(),
+        });
+        let _ = n;
+    }
+
+    // ② 策略收紧：账本里"要人点头"被反复要求 → 出提案（**但不自动改策略**）
+    //
+    // 分两种说法，因为它们的下一步不一样：
+    //   · 还不在策略里 → 建议加进 confirmCommands（把它变成"要人确认"）
+    //   · 已经在 confirmCommands 里、却还是被反复撞到 → 建议**升到 deny**，
+    //     或者确认这条路确实需要每次点头（两种都是人的判断，工具只把事实摆出来）
+    let pol = load_policy(dir).unwrap_or(Value::Null);
+    let existing: Vec<String> = pol["rules"]["confirmCommands"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|x| x.as_str().map(str::to_string))
+        .collect();
+    for (pattern, n) in why_count.iter() {
+        if *n < 2 {
+            continue;
+        }
+        if existing.iter().any(|e| e == pattern) {
+            out.push(Proposal {
+                id: next_id(),
+                kind: "guard".into(),
+                title: format!("「{pattern}」被反复要求人确认（{n} 次）—— 要不要更严？"),
+                suggested: format!("{{\"rules\": {{\"denyCommands\": [\"{pattern}\"]}}}}"),
+                why: format!(
+                    "它已经在 confirmCommands 里，但过去 {n} 次都被撞到 —— 要么把它升到 denyCommands（更严），\
+                     要么确认这条路确实每次都要人点头。**两种都得你来定**"
+                ),
+                count: *n,
+                evidence: vec![format!("log:ledger ×{n}")],
+                target: "policy.json（手动）".into(),
+            });
+        } else {
+            out.push(Proposal {
+                id: next_id(),
+                kind: "guard".into(),
+                title: format!("把「{pattern}」固化成要人确认（账本里 {n} 次）"),
+                suggested: format!("{{\"rules\": {{\"confirmCommands\": [\"{pattern}\"]}}}}"),
+                why: format!(
+                    "过去这条被要求过 {n} 次人点头 —— 与其每次现场判断，不如写进策略（**但要你自己写**：策略永不自动改）"
+                ),
+                count: *n,
+                evidence: vec![format!("log:ledger ×{n}")],
+                target: "policy.json（手动）".into(),
+            });
+        }
+    }
+
+    // ③ 教训：反馈里反复出现的问题 / 纠正
+    let mut by_ref: BTree<String, Vec<&LearnItem>> = BTree::new();
+    for it in items.iter().filter(|i| i.source.starts_with('L') && i.kind == "report") {
+        by_ref.entry(it.r#ref.clone()).or_default().push(it);
+    }
+    for (aref, rows) in by_ref.iter() {
+        if rows.len() < 2 {
+            continue;
+        }
+        out.push(Proposal {
+            id: next_id(),
+            kind: "lesson".into(),
+            title: format!("关于 {aref} 反复出问题（{} 条反馈）", rows.len()),
+            suggested: format!(
+                "用 {aref} 之前先过一遍这几条反馈：{}",
+                rows.iter().map(|r| r.text.chars().take(30).collect::<String>()).collect::<Vec<_>>().join(" / ")
+            ),
+            why: "同一个东西被反复报告 —— 这不是噪音，是它真的不稳".into(),
+            count: rows.len() as i32,
+            evidence: rows.iter().map(|r| format!("feedback:{}", r.meta.get("feedbackId").cloned().unwrap_or_default())).collect(),
+            target: "lessons.jsonl".into(),
+        });
+    }
+    for it in items.iter().filter(|i| i.kind == "correction") {
+        out.push(Proposal {
+            id: next_id(),
+            kind: "lesson".into(),
+            title: format!("纠正：{}", it.text.chars().take(40).collect::<String>()),
+            suggested: it.text.clone(),
+            why: "有人明确说是「纠正」—— 那就是上一条说法不对，值得记下来".into(),
+            count: 1,
+            evidence: vec![format!("feedback:{}", it.meta.get("feedbackId").cloned().unwrap_or_default())],
+            target: "lessons.jsonl".into(),
+        });
+    }
+
+    // ④ 知识依据：kb 里 kind=spec 的文档 → 提醒按它做（只在被声明读过时才有）
+    for it in items.iter().filter(|i| i.kind == "spec") {
+        out.push(Proposal {
+            id: next_id(),
+            kind: "lesson".into(),
+            title: format!("知识库里有一份规范：{}", it.text.chars().take(40).collect::<String>()),
+            suggested: format!("动手前先看这份规范：{}", it.r#ref),
+            why: "声明让我读知识库，读到一份 kind=spec —— 规范类的东西值得挂在教训里".into(),
+            count: 1,
+            evidence: vec![format!("kb:{}", it.r#ref)],
+            target: "lessons.jsonl".into(),
+        });
+    }
+    out
+}
+
+fn learn_cmd(a: &LearnArgs) -> Result<()> {
+    match &a.action {
+        LearnAction::Consent(x) => learn_consent(x),
+        LearnAction::Plan(x) => learn_plan(x),
+        LearnAction::Apply(x) => learn_apply(x),
+        LearnAction::Digest(x) => learn_digest(x),
+        LearnAction::Export(x) => learn_export(x),
+    }
+}
+
+fn learn_consent(a: &LearnConsentArgs) -> Result<()> {
+    match &a.action {
+        LearnConsentAction::Show { json: j, dir } => {
+            let d = rsi_dir(dir.as_deref());
+            match load_consent(&d) {
+                None => {
+                    if *j {
+                        println!("{}", serde_json::to_string_pretty(&json!({
+                            "dir": d.to_string_lossy(), "exists": false, "enabled": false,
+                            "note": "没有同意声明 = 什么都不学（默认关闭）"
+                        }))?);
+                    } else {
+                        println!("还没有学习同意声明（{}）", learn_file(&d).display());
+                        println!("   默认**什么都不学**：没有声明，就没得读");
+                        println!("   打开：`ncc rsi learn consent set --source feedback:mine --source log:ledger` 然后 `ncc rsi learn consent on`");
+                    }
+                    Ok(())
+                }
+                Some(c) => {
+                    if *j {
+                        println!("{}", serde_json::to_string_pretty(&json!({
+                            "dir": d.to_string_lossy(), "exists": true,
+                            "enabled": c.enabled, "expired": consent_expired(&c),
+                            "sources": c.sources, "redact": c.redact,
+                            "maxItems": c.max_items, "expiresAt": c.expires_unix,
+                            "setBy": {"user": c.set_by_user, "agent": c.set_by_agent, "at": c.set_at},
+                        }))?);
+                        return Ok(());
+                    }
+                    println!("学习同意声明 {}", learn_file(&d).display());
+                    println!("   状态     {}", if c.enabled { "开" } else { "关" });
+                    println!(
+                        "   谁设的   {}{}  {}",
+                        if c.set_by_user.is_empty() { "（没记）" } else { &c.set_by_user },
+                        if c.set_by_agent.is_empty() { String::new() } else { format!("（代设 Agent：{}）", c.set_by_agent) },
+                        if c.set_at > 0 { fmt_epoch(c.set_at as i64) } else { String::new() }
+                    );
+                    println!("   读多少   ≤ {} 条", c.max_items);
+                    if c.expires_unix > 0 {
+                        println!(
+                            "   什么时候过期 {}（现在{}）",
+                            fmt_epoch(c.expires_unix as i64),
+                            if consent_expired(&c) { "**已经过期**" } else { "还没过期" }
+                        );
+                    }
+                    if c.sources.is_empty() {
+                        println!("   来源     （一条也没有 —— 就算开着也学不到东西）");
+                    } else {
+                        println!("   来源     {} 条", c.sources.len());
+                        for s in &c.sources {
+                            println!(
+                                "     {}  {:<9} {}{}",
+                                s.id,
+                                s.kind,
+                                s.r#where,
+                                if s.limit > 0 { format!("（≤{}）", s.limit) } else { String::new() }
+                            );
+                        }
+                    }
+                    if !c.redact.is_empty() {
+                        println!("   脱敏     {}", c.redact.join(" · "));
+                    }
+                    println!("   ⚠️ 学习**只读**来源；写只写 .ncc-rsi/ 里，而且提案要你点头才生效。");
+                    Ok(())
+                }
+            }
+        }
+        LearnConsentAction::On { dir } => {
+            let d = rsi_dir(dir.as_deref());
+            let mut c = load_consent(&d).unwrap_or_default();
+            c.enabled = true;
+            c.set_by_user = whoami();
+            c.set_by_agent = std::env::var("NCC_AGENT").unwrap_or_default();
+            c.set_at = now_unix();
+            save_consent(&d, &c)?;
+            println!("✅ 学习已打开（{}）", learn_file(&d).display());
+            if c.sources.is_empty() {
+                println!("   ⚠️ 但一条来源都没声明 —— 声明即许可，什么都没声明就什么都读不到。");
+                println!("   例：`ncc rsi learn consent set --source feedback:mine --source log:ledger --source mem:@me`");
+            } else {
+                println!("   会读 {} 条来源（`ncc rsi learn consent show` 看清单）", c.sources.len());
+            }
+            Ok(())
+        }
+        LearnConsentAction::Off { dir } => {
+            let d = rsi_dir(dir.as_deref());
+            let mut c = load_consent(&d).unwrap_or_default();
+            c.enabled = false;
+            c.set_by_user = whoami();
+            c.set_at = now_unix();
+            save_consent(&d, &c)?;
+            println!("⏸  学习已关闭（声明留着：来源清单还在，下次 `on` 不用重配）");
+            Ok(())
+        }
+        LearnConsentAction::Set { sources, replace, redact, max_items, expires_in_days, by_agent, dir } => {
+            let d = rsi_dir(dir.as_deref());
+            if sources.is_empty() && !*replace && redact.is_empty() {
+                bail!("什么都没改：要给来源（`--source feedback:mine`）或 `--replace` 清空");
+            }
+            let mut c = load_consent(&d).unwrap_or_default();
+            if *replace {
+                c.sources.clear();
+            }
+            for raw in sources {
+                let mut s = parse_source(raw)?;
+                // 给个稳定 id：L1/L2…（同名来源替换，不重复堆）
+                if let Some(pos) = c.sources.iter().position(|x| x.kind == s.kind && x.r#where == s.r#where) {
+                    s.id = c.sources[pos].id.clone();
+                    c.sources[pos] = s;
+                } else {
+                    s.id = format!("L{}", c.sources.len() + 1);
+                    c.sources.push(s);
+                }
+            }
+            for w in redact {
+                if !c.redact.contains(w) {
+                    c.redact.push(w.clone());
+                }
+            }
+            c.max_items = (*max_items).max(1);
+            if *expires_in_days > 0 {
+                c.expires_unix = now_unix() + (*expires_in_days as u64) * 86400;
+            }
+            c.set_by_user = whoami();
+            c.set_by_agent = if by_agent.trim().is_empty() {
+                std::env::var("NCC_AGENT").unwrap_or_default()
+            } else {
+                by_agent.clone()
+            };
+            c.set_at = now_unix();
+            save_consent(&d, &c)?;
+            println!("📝 同意声明已更新（{} 条来源，≤{} 条/次）", c.sources.len(), c.max_items);
+            for s in &c.sources {
+                println!("   {}  {}:{}", s.id, s.kind, s.r#where);
+            }
+            if !c.enabled {
+                println!("   （现在还是关着的：`ncc rsi learn consent on` 才开）");
+            }
+            Ok(())
+        }
+    }
+}
+
+fn learn_plan(a: &LearnPlanArgs) -> Result<()> {
+    let d = rsi_dir(a.dir.as_deref());
+    let c = require_consent(&d)?;
+    let got = collect_all(&d, &c);
+    let (_, why_count) = collect_ledger(&d, c.max_items.max(1));
+    let props = propose(&got.items, &why_count, &d);
+    write_atomic(
+        &d.join(PROPOSALS),
+        format!("{}\n", serde_json::to_string_pretty(&json!({
+            "at": now_unix(), "sources": c.sources, "items": got.items.len(), "proposals": props
+        }))?).as_bytes(),
+        0o600,
+    )?;
+    ledger_append(&d, &json!({
+        "at": now_unix(), "act": "learn-plan", "by": whoami(),
+        "items": got.items.len(), "proposals": props.len()
+    }))?;
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&json!({
+            "dir": d.to_string_lossy(), "items": got.items.len(),
+            "read": got.report.iter().map(|(id, w, n)| json!({"source": id, "where": w, "items": n})).collect::<Vec<_>>(),
+            "skipped": got.skipped, "proposals": props,
+            "note": "这些是**提案**，不是行动：`ncc rsi learn apply <id>` 才生效；策略类永远要你自己改"
+        }))?);
+        return Ok(());
+    }
+    println!("📖 读完了（{} 条材料 → {} 条提案）", got.items.len(), props.len());
+    for (id, w, n) in &got.report {
+        println!("   {id}  {w}  {}", if *n < 0 { "读不到".to_string() } else { format!("{n} 条") });
+    }
+    for s in &got.skipped {
+        println!("   ⏭  跳过 {s}");
+    }
+    if props.is_empty() {
+        println!("   （没有可提的 —— 材料太少或都不够反复，这是好事：**不硬凑提案**）");
+        return Ok(());
+    }
+    println!("\n提案（都要你点头才生效）：");
+    for p in &props {
+        println!(
+            "   {}  [{}] {}（依据 {} 次）",
+            p.id, p.kind, p.title, p.count
+        );
+        println!("        → {}", p.suggested);
+        println!("        为什么：{}", p.why);
+        println!("        依据：{}   落到：{}", p.evidence.join(" · "), p.target);
+    }
+    println!("\n应用：`ncc rsi learn apply {}`（或一条条挑）", props[0].id);
+    if props.iter().any(|p| p.kind == "guard") {
+        println!("⚠️ 其中 guard 类**不会自动写策略** —— 那等于让工具自己给自己松绑。");
+    }
+    Ok(())
+}
+
+fn learn_apply(a: &LearnApplyArgs) -> Result<()> {
+    let d = rsi_dir(a.dir.as_deref());
+    let raw = fs::read(d.join(PROPOSALS)).map_err(|_| {
+        anyhow!("还没有提案（先 `ncc rsi learn plan`）—— apply 只能应用已经出过的东西")
+    })?;
+    let v: Value = serde_json::from_slice(&raw)?;
+    let all: Vec<Proposal> = serde_json::from_value(v["proposals"].clone()).unwrap_or_default();
+    let want_all = a.id.trim() == "all";
+    let picked: Vec<&Proposal> = if want_all {
+        all.iter().collect()
+    } else {
+        all.iter().filter(|p| p.id == a.id.trim()).collect()
+    };
+    if picked.is_empty() {
+        bail!(
+            "没有这条提案（{}）。现有：{}",
+            a.id,
+            all.iter().map(|p| p.id.clone()).collect::<Vec<_>>().join(" · ")
+        );
+    }
+    let mut applied: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    let mut prefs = load_prefs(&d);
+    for p in &picked {
+        match p.kind.as_str() {
+            "pref" => {
+                if prefs.prefs.iter().any(|x| x.statement == p.suggested) {
+                    skipped.push(format!("{}（偏好里已经有了）", p.id));
+                    continue;
+                }
+                let id = format!("P-{}", prefs.prefs.len() + 1);
+                prefs.prefs.push(Pref {
+                    id,
+                    statement: p.suggested.clone(),
+                    scope: String::new(),
+                    kind: "avoid".into(),
+                    evidence: p.evidence.clone(),
+                    confidence: "inferred".into(),
+                    hits: 0,
+                    created_unix: now_unix(),
+                });
+                applied.push(format!("{} → 偏好（inferred，会拦人；复核后可改）", p.id));
+            }
+            "lesson" => {
+                let line = json!({
+                    "at": now_unix(), "id": p.id, "statement": p.suggested,
+                    "why": p.why, "evidence": p.evidence, "source": "learn",
+                    "by": whoami(),
+                });
+                let mut f = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(d.join(LESSONS))
+                    .with_context(|| format!("打不开 {}", d.join(LESSONS).display()))?;
+                writeln!(f, "{}", serde_json::to_string(&line)?)?;
+                applied.push(format!("{} → 教训（{LESSONS}）", p.id));
+            }
+            // 策略永不自动改：给一段能粘贴的片段，剩下的交给人。
+            _ => skipped.push(format!(
+                "{}（**策略不自动改**）：把这段并进 policy.json 再 `ncc rsi policy check`\n        {}",
+                p.id, p.suggested
+            )),
+        }
+    }
+    if !applied.is_empty() {
+        // 只在真的有 pref 变动时存（免得空写一次把文件时间戳刷了）
+        if applied.iter().any(|l| l.contains("偏好")) {
+            save_prefs(&d, &prefs)?;
+        }
+        ledger_append(&d, &json!({
+            "at": now_unix(), "act": "learn-apply", "by": whoami(),
+            "applied": applied, "skipped": skipped
+        }))?;
+    }
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&json!({
+            "applied": applied, "skipped": skipped,
+            "note": "策略类永远不自动写；偏好类标 inferred，复核后再让它拦人"
+        }))?);
+        return Ok(());
+    }
+    for l in &applied {
+        println!("✅ 应用了 {l}");
+    }
+    for l in &skipped {
+        println!("⏭  跳过 {l}");
+    }
+    if applied.is_empty() && skipped.is_empty() {
+        println!("（什么都没做）");
+    }
+    Ok(())
+}
+
+fn learn_digest(a: &LearnDigestArgs) -> Result<()> {
+    let d = rsi_dir(a.dir.as_deref());
+    let consent = load_consent(&d);
+    let lessons: Vec<Value> = fs::read_to_string(d.join(LESSONS))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+    let props: Vec<Value> = fs::read_to_string(d.join(PROPOSALS))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .map(|v| v["proposals"].as_array().cloned().unwrap_or_default())
+        .unwrap_or_default();
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&json!({
+            "dir": d.to_string_lossy(),
+            "enabled": consent.as_ref().map(|c| c.enabled).unwrap_or(false),
+            "sources": consent.as_ref().map(|c| c.sources.clone()).unwrap_or_default(),
+            "expired": consent.as_ref().map(consent_expired).unwrap_or(false),
+            "proposals": props.len(),
+            "lessons": lessons.len(),
+            "recentLessons": lessons.iter().rev().take(5).cloned().collect::<Vec<_>>(),
+            "note": "只读摘要：学习的产物（提案 / 教训）都在 .ncc-rsi/ 里，且都要人点过头才存在"
+        }))?);
+        return Ok(());
+    }
+    println!("🧠 学习状态（{}）", d.display());
+    match &consent {
+        None => println!("   同意声明：没有 —— 默认什么都不学"),
+        Some(c) => println!(
+            "   同意声明：{}（{} 条来源{}）",
+            if c.enabled { "开着" } else { "关着" },
+            c.sources.len(),
+            if consent_expired(c) { "，**已过期**" } else { "" }
+        ),
+    }
+    println!("   待你点头的提案：{} 条", props.len());
+    println!("   已经记下的教训：{} 条", lessons.len());
+    for l in lessons.iter().rev().take(3) {
+        println!(
+            "     · [{}] {}",
+            l["id"].as_str().unwrap_or(""),
+            l["statement"].as_str().unwrap_or("").chars().take(60).collect::<String>()
+        );
+    }
+    if props.is_empty() && lessons.is_empty() {
+        println!("   （还什么都没有：`ncc rsi learn plan` 读一遍已授权的来源）");
+    }
+    Ok(())
+}
+
+fn learn_export(a: &LearnExportArgs) -> Result<()> {
+    let d = rsi_dir(a.home.as_deref());
+    let c = require_consent(&d)?;
+    let got = collect_all(&d, &c);
+    let out_dir = PathBuf::from(a.dir.trim());
+    let manifest = json!({
+        "spec": "ncc-learn-set/v1",
+        "at": now_unix(),
+        "by": whoami(),
+        "agent": std::env::var("NCC_AGENT").unwrap_or_default(),
+        "about": "RSI 的学习数据集：从**已授权的**来源读来的引用级摘要（不是原文搬运）",
+        "consent": {
+            "enabled": c.enabled,
+            "sources": c.sources,
+            "maxItems": c.max_items,
+            "expiresAt": c.expires_unix,
+            "setByUser": c.set_by_user,
+            "setByAgent": c.set_by_agent,
+        },
+        "redact": c.redact,
+        "counts": got.report.iter().map(|(id, w, n)| json!({"source": id, "where": w, "items": n})).collect::<Vec<_>>(),
+        "skipped": got.skipped,
+        "items": got.items.len(),
+        "note": "这份目录**包含被授权读到的内容摘要**：分享前先自己看一眼（`--dry` 只看不写）",
+    });
+    if a.dry {
+        println!("（--dry）会导出 {} 条到 {}", got.items.len(), out_dir.display());
+        println!("{}", serde_json::to_string_pretty(&manifest)?);
+        return Ok(());
+    }
+    fs::create_dir_all(&out_dir).with_context(|| format!("建不了目录 {}", out_dir.display()))?;
+    write_atomic(&out_dir.join("manifest.json"), format!("{}\n", serde_json::to_string_pretty(&manifest)?).as_bytes(), 0o600)?;
+    let mut lines = String::new();
+    for it in &got.items {
+        lines.push_str(&serde_json::to_string(it)?);
+        lines.push('\n');
+    }
+    write_atomic(&out_dir.join("items.jsonl"), lines.as_bytes(), 0o600)?;
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&json!({
+            "dir": out_dir.to_string_lossy(), "items": got.items.len(), "manifest": manifest
+        }))?);
+        return Ok(());
+    }
+    println!("📦 导出 {} 条学习材料 → {}", got.items.len(), out_dir.display());
+    println!("   manifest.json（来源 / 时刻 / 同意 / 脱敏）+ items.jsonl（引用级摘要）");
+    println!("   注意：目录里是**被授权读到的内容**，分享前自己看一眼");
+    Ok(())
 }
 
 fn whoami() -> String {

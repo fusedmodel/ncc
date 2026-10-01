@@ -160,6 +160,12 @@ ncc rsi check --command "git push --force"          # -> blocked (exit code 20);
 ncc rsi guard --reason "run tests" -- npm test      # check first; when blocked it really does not run
 ncc rsi hook install --host claude                 # wire it into a host's PreToolUse hook
 ncc rsi report --since 24h                         # the local ledger tally (no upload channel)
+ncc feedback send --about 'artifact:@me/tool' --kind report --body 'run reports ENOENT' --as-agent claude-code
+ncc feedback inbox                                 # what others said about my items / services / profile
+ncc feedback relay --all-mine                      # carry **public** node feedback up to the hub (private never leaves)
+ncc rsi learn consent set --source feedback:mine --source 'mem:@me' --source log:ledger
+ncc rsi learn consent on                           # off by default: nothing is read until you say so
+ncc rsi learn plan                                 # read once -> **proposals** (nothing applied); apply by name
 ncc terminal
 ```
 
@@ -328,6 +334,10 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc rsi goal set` / `status` / `done` | **No drift**: both `--accept a,b` and `--accept a --accept b` work; a `--reject` hit is drift, no `--accept` hit is reported as **"cannot tell how this relates"** (it neither hides that nor counts it as a pass) |
 | `ncc rsi pref add` / `ls` / `rm` / `suggest` | **User preferences**: `kind=avoid` takes part in the verdict (upgraded to block when unattended), `prefer` is display-only; `ls` shows **hit counts**; `suggest` surfaces repeated reasons from the ledger for a human to pick — it does **not** auto-write preferences |
 | `ncc rsi report --since 24h` / `--json` | The tally after unattended work, from the **local** ledger (**there is no upload channel**): decisions / blocks / incidents / drifts / preference hits |
+| `ncc feedback send` / `ls` / `get` / `reply` / `status` | **Cross-agent, cross-user feedback**: four identities kept apart (author / agent / about / owner, with **owner resolved by the server**); **append-only** (content cannot be edited — only the **disposition**, and only by the target owner); **private by default** (`--public` to open it up); `--about` forms: `service:@alice/stay` / `artifact:@alice/tool` / `@alice` (profile) / a bare sentence (topic) |
+| `ncc feedback inbox` / `summary` / `spool` | Inbox (what others said about my things) / summary (**not a score**: never feeds ranking, matching or trust) / the local spool (**spool first, send second**: on failure the command exits non-zero and the entry stays queued) |
+| `ncc feedback relay --about \| --all-mine` / `--flush` | Carry **public** feedback from one target to another (hub by default): private ones are **never** carried (and the server rejects them again), the relayer is the author of record (the original author is quoted as `originAuthor`), idempotent by `(origin, originId)`; `--flush` first drains the local spool |
+| `ncc rsi learn consent` / `plan` / `apply` / `digest` / `export` | **Learn from feedback and state**: nothing is learned by default; `consent set --source feedback:mine|mem:@me|kb:@ns/doc|ckpt:@ns/app|log:ledger` declares sources (**declaration is permission**), `consent on` switches it on; `plan` only produces **proposals** (pref / guard / lesson, each with a why and its evidence), `apply` is by name, and **policy is never written automatically**; `export --dir` emits a dataset (`manifest.json` + `items.jsonl` with sources, consent and redaction) |
 | `ncc rsi hook install --host claude\|cursor\|generic` | Writes a 30-line sh shim for a host's `PreToolUse` hook: JSON on stdin, exit code `20` (`NCC_RSI_BLOCK_CODE`, default 2, when unattended) means blocked; **⚠️ it is `--host`, not `--target`** (the top-level `--target` is the global target selector and would swallow it first) |
 | `ncc hur profile <path \| @ns/slug>` | Read what a package **is**: what it wants, what it gives, **how to hook it up** — plus a graded check (`structure / self-consistent / signature` reported separately, never smeared into one ✅). `--list` prints the whole profile table |
 | `ncc hur match --profile kb-seed` | Read-only search: find packages by profile / integration host / capability |

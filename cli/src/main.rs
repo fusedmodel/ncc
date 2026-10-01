@@ -9,6 +9,7 @@ mod config;
 mod configs;
 mod conn;
 mod connssh;
+mod feedback;
 mod gateway;
 mod gwreport;
 mod httpsrv;
@@ -219,6 +220,13 @@ enum Cmd {
     /// `rsi report`（无人值守过后的总账）；`rsi hook install` 把它挂成宿主的 PreToolUse 钩子。
     /// **全部本地**（策略 / 账本 / 偏好 / 目标都是文件），离线也能拦。
     Rsi(rsi::RsiCmd),
+    /// NCC Feedback：跨 Agent / 跨用户的反馈（CLI → 节点 → 云端 → 服务）
+    /// 一句话：**说一句关于某个东西的话，它自己知道该落在哪儿。**
+    /// `feedback send`（先落盘再发送，送不出去就留在本地队列）、`ls` / `get` / `reply`、
+    /// `status`（只有目标拥有者能改处置状态）、`summary` / `inbox`（聚合与收件箱）、
+    /// `relay`（把内网节点上的**公开**反馈搬到 hub：私有的永不出机器）、`spool` 看本地队列。
+    #[command(subcommand)]
+    Feedback(feedback::FeedbackCmd),
     /// NCC Profile：查看 / 设置名片（定位角色 + 作品集 + 已发布能力）
     Profile(ProfileArgs),
     /// NCC Node：节点连接（我的节点 + 连接别人的节点 + 发现 / 区域推荐）
@@ -995,6 +1003,8 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Mem(m) => m.capability(),
         Cmd::Ckpt(c) => c.capability(),
         Cmd::Store(s) => s.capability(),
+        // 反馈：词表与本地队列是本地的事（`FeedbackCmd::capability` 自己答）。
+        Cmd::Feedback(f) => f.capability(),
         Cmd::Profile(_) => Some("profile"),
         Cmd::Nodes(_) => Some("nodes"),
         Cmd::Services(_) => Some("services"),
@@ -1132,6 +1142,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         Cmd::Mem(m) => state::run_mem(cfg, m),
         Cmd::Ckpt(c) => state::run_ckpt(cfg, c),
         Cmd::Store(s) => store::run(cfg, s),
+        Cmd::Feedback(f) => feedback::cmd(f),
         // Gateway 是纯本地命令（不需要服务器）：不查能力面，也不读写 NCC 配置。
         Cmd::App(a) => match a {
             AppCmd::Init {
