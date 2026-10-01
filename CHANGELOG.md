@@ -37,6 +37,16 @@
   撞车，于是 `ncc conn run cli-chan …` 会报「没有名为 cli-chan 的目标」（与 `ncc info` / `ncc mem rm`
   / `ncc verify` 同一个坑），一律叫 `conn`。
 - 冒烟：`ncc-registry/scripts/conn-smoke.sh`（57 项，含 CLI 串联与「远端退出码非 0 → CLI 也非 0」）。
+- **`--ssh`：走 SSH 的通道（零服务端改动）**。目标端只要有 `sshd`，不用装 ncc、不改一行服务端代码；
+  调的是**本机的 `ssh`**（`~/.ssh/config`、key、agent、跳板机、`known_hosts` 照旧生效；`NCC_SSH_BIN`
+  可换实现），通道 = 目标机上一个目录 + `.ncc-channel.json` + `.ncc-ledger.jsonl`（账本）。
+  `exec/push/pull/run/status/close` 与 HTTP 通道**同一条命令**，按登记自动分流。
+  四条差别写在 `--help` 与 PRD 里：① 门禁**就是 SSH 本身**（不新增第二套权限模型）；② 客户端
+  的路径检查是**防手滑**，不是安全边界；③ 账本是 CLI 写在目标机上的，**自报、不防篡改**；
+  ④ TTL 是**软约束**（sshd 不参与，过期后 CLI 自己拒绝并给出重开办法）。`--purge` 只删认得出来的
+  目录（里面有 `.ncc-channel.json`），认不出来就拒删。
+- 冒烟：`scripts/conn-ssh-smoke.sh`（56 项，替身 ssh 确定性跑 + 本机开了远程登录时再跑一遍**真 ssh**
+  端到端；没开则明确跳过、不装成通过）。
 
 ### 新增 · `ncc auth`：凭据 + 设备码登录 + 授权管理（对第三方平台的授权颁发方）
 

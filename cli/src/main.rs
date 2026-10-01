@@ -7,6 +7,7 @@ mod capability;
 mod config;
 mod configs;
 mod conn;
+mod connssh;
 mod gateway;
 mod gwreport;
 mod httpsrv;
@@ -203,10 +204,10 @@ enum Cmd {
     Sandbox(sandbox::SandboxCmd),
     /// 通信基础设施：到 Cloud instance 的**连接通道**（跑命令 / 推拉文件 / 一批脚本）
     ///
-    /// `open` 建一条会话（可用 `--on <已登记的云电脑>` 直接复用那台的地址与凭据），
-    /// 然后在通道上反复 `exec`、`push`、`pull`；`run` 把「推多个文件 + 跑一段脚本」
-    /// 一次做完。通道有 TTL，`close --purge` 连工作目录一起删。
-    /// **目标端要显式开 `NCCR_CONN_ALLOW=1`**（通道能跑任意命令、写文件，属最高权限）。
+    /// 两种运输层：`--on <已登记的云电脑>` / `--url … --key …`（HTTP：目标端跑 ncc-registry，
+    /// 要开 `NCCR_CONN_ALLOW=1`）；或 `--ssh [user@]host[:port]`（**只要对方有 sshd**，
+    /// 零服务端改动，复用你本机的 ssh 与 key）。建好后 `exec` / `push` / `pull` 反复用，
+    /// `run` 把「推多个文件 + 跑一段脚本」一次做完；`close --purge` 收线。
     Conn(conn::ConnCmd),
     /// NCC Profile：查看 / 设置名片（定位角色 + 作品集 + 已发布能力）
     Profile(ProfileArgs),
