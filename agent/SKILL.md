@@ -1,6 +1,6 @@
 ---
 name: ncc-registry
-description: 使用 NCC 检索、取回与发布能力制品（skill / mcp / harness / plugin 等），按意图匹配对外服务，读取团队托管配置，按工作角色找人，读 Agent 的知识库 / 记忆 / 检查点与运行轨迹，以及查自己组织的 NCC Gateway 在线状态与合规审计摘要。当用户提到「发布能力/skill 到目录」「找一个现成的 skill / MCP」「复用别人的能力包」「帮我订酒店/找能办这件事的服务」「团队的网络/基础设施配置是什么」「谁做过 FDE/AIGC」「上次那件事的结论是什么 / 这个 Agent 的记忆里有什么」「这个包跑了多少次、成不成」「我们有哪些网关 / 哪台掉线了 / 这周多少请求被拒」时使用。
+description: 使用 NCC 检索、取回与发布能力制品（skill / mcp / harness / plugin 等），按意图匹配对外服务，读取团队托管配置，按工作角色找人，读 Agent 的知识库 / 记忆 / 检查点与运行轨迹，查自己组织的 NCC Gateway 在线状态与合规审计摘要，跨 Agent / 跨用户看和发反馈，以及在本机跑 RSI 决策门（动手前先问一句）/ 看风险总账与学习状态。当用户提到「发布能力/skill 到目录」「找一个现成的 skill / MCP」「复用别人的能力包」「帮我订酒店/找能办这件事的服务」「团队的网络/基础设施配置是什么」「谁做过 FDE / AIGC」「上次那件事的结论是什么 / 这个 Agent 的记忆里有什么」「这个包跑了多少次、成不成」「我们有哪些网关 / 哪台掉线了 / 这周多少请求被拒」「上次用过之后感觉怎么样 / 给那个东西留一句」「这条命令能不能跑 / 无人值守下会不会出事」时使用。
 ---
 
 # NCC Registry：能力的目录与分发
@@ -25,7 +25,10 @@ ncc 有两个世界，同一个 CLI / 同一套 MCP 工具都可能连到其中�
 | 世界 | 目标名 | 提供什么 |
 |---|---|---|
 | **云端 ncc.ai** | `hub` | 公共目录、服务市场（`ncc_match_services`）、名片与找人、分享页、P2P **控制面**（信令 / 票据 / ICE 配置），以及**网关控制面**（`ncc_list_gateways` / `ncc_gateway_audit` / `ncc_gateway_usage`） |
-| **内网 registry 节点** | 自定（`local` / `office` …） | 制品、节点、**团队配置**（`ncc_list_configs`）、分享链接、**节点侧打洞画像与入口**（`ncc_p2p_node`）、**运行轨迹**（`ncc_list_traces` / `ncc_trace_stats`）、**三样状态**（`ncc_list_kb` / `ncc_get_kb` / `ncc_list_mem` / `ncc_get_mem` / `ncc_list_ckpt`） |
+| **内网 registry 节点** | 自定（`local` / `office` …） | 制品、节点、**团队配置**（`ncc_list_configs`）、分享链接、**节点侧打洞画像与入口**（`ncc_p2p_node`）、**运行轨迹**（`ncc_list_traces` / `ncc_trace_stats`）、**三样状态**（`ncc_list_kb` / `ncc_get_kb` / `ncc_list_mem` / `ncc_get_mem` / `ncc_list_ckpt`）、**反馈**（`ncc_feedback_list` / `ncc_feedback_summary` / `ncc_feedback_send`） |
+
+> **反馈**两边都能声明（`feedback` 能力）——说一句会落在**你当下说话的那台**目标上。
+> **RSI 三个工具全在本机**（策略 / 账本 / 偏好都在文件里），不需要任何目标，也不做能力门禁。
 
 每个节点在 `GET /api/meta` 里**声明自己的能力**（`registry` / `services` / `profile` /
 `config` / `nodes` / `grants` / `p2p` / `gateway` / `trace` / `kb` / `mem` / `ckpt` …），
@@ -59,7 +62,8 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp", "--base", "http://localhost:8282"] } } }
 ```
 
-提供的工具（38 个，按能力分组；不在当前目标能力清单里的会明确报错）：
+提供的工具（43 个，按能力分组；不在当前目标能力清单里的会明确报错；
+目标声明 `store` 时另有通用记录仓的 3 个浏览工具：`ncc_list_store_collections` / `ncc_list_store_records` / `ncc_get_store_record`）：
 
 | 能力 | 工具 | 用途 |
 |---|---|---|
@@ -93,6 +97,12 @@ NCC 自带 MCP server，任何 MCP 客户端都能接入：
 | 网关控制面（云端） | `ncc_list_gateways` | 我/我们名下的网关：在线状态（**推导**）、最近心跳、用量 |
 | | `ncc_gateway_audit` | 某台网关留存的**审计摘要**（计数 / 主机名 / 状态桶 / 延迟分位） |
 | | `ncc_gateway_usage` | 某台网关的用量汇总（**自报计数**，口径写在返回里） |
+| 反馈（跨 Agent / 跨用户，目标声明 `feedback`） | `ncc_feedback_list` | 看反馈（默认：公开 + 我发的 + 发给我的）；`about` 缩小到某个东西，`inbox=true` 看发给我的 |
+| | `ncc_feedback_summary` | 聚合：条数 / 性质 / 处置分布 / 带分均分 / 谁在说。**它不是排名分** |
+| | `ncc_feedback_send` | **说一句**（`about` + `body`，可带 `kind` / `score` / `tags` / `traceRef` / `agent`）；落**当前目标** |
+| RSI（本机，动手前的门） | `ncc_rsi_check` | 一条命令 / 一句意图 → `allow` / `warn` / `block` + 理由。**只裁决，不执行** |
+| | `ncc_rsi_report` | 本机总账：拦了多少 / 事故几次 / 跑偏几次 / 偏好命中几次 |
+| | `ncc_rsi_learn_digest` | 学习状态（默认**关**）：允许读哪些来源、有几条待点头的提案、已记下的教训 |
 
 ### 方式二：HTTP API（无需 MCP 客户端）
 
@@ -348,8 +358,65 @@ Agent 自己的**状态**住节点上（不是制品：制品是能力，状态�
 - 注册网关、改名、**吊销**、让网关开始上报（`ncc gateway bind|unbind|report`）都是**那台机器上的人**的
   动作，不在工具里；吊销之后网关心跳/上报会立刻 401，但**本地审计一条不丢**（进待传队列）。
 
+### J. 「用过之后觉得怎么样 / 把这句话说给作者」——反馈（跨 Agent / 跨用户）
+
+反馈是**一条追加的话**（不是评分、不是审核、不是排名），四件事分清：
+
+| 想干什么 | 工具 | 注意 |
+|---|---|---|
+| 说一句 | `ncc_feedback_send`（`about` + `body`） | `about` 写 `artifact:@ns/slug` / `service:@提供方/标识` / `@handle`（名片）/ 一句话；带上 `traceRef` 与 `agent`，对方能定位到你那次运行 |
+| 看别人说过什么 | `ncc_feedback_list`（`about` / `kind` / `inbox` / `mine` / `open`） | 默认可见范围 = **公开 ∪ 我发的 ∪ 发给我的**；私有的看不见是设计，不是坏了 |
+| 看聚合 | `ncc_feedback_summary` | 条数 / 性质 / 处置分布 / 带分均分 / 谁在说；**它不是排名分** |
+
+几条必须说清的边界（用户问起时如实说）：
+
+- **默认私有**：`visibility` 默认 `private`（只有作者与目标拥有者看得到），要公开得用户
+  显式开（`--public`）；跨到云端靠用户跑 `ncc feedback relay`（**只搬 public，私有的永不搬家**）；
+- **只追加**：内容改不了；处置状态（`open` / `acked` / `resolved` / `wontfix`）只有
+  目标拥有者能改 —— **改状态与回复都不在工具里**（那是替别人说话）；
+- **`resolved: false` 不是失败**：说明服务端**没对上具体的东西**（作者/条目不存在或
+  还没解析出归属），话照样记下了，如实告诉用户；
+- **说一句要落在对的目标上**：服务反馈得在声明 `services` 的那台（通常是云端 hub）；
+  工具**不会替你切目标**，会直接报错并告诉你该敲 `ncc --target hub feedback send …`。
+
+### K. 「这条命令能不能跑 / 无人值守下会不会出事」——RSI 门（本机）
+
+RSI 是**运行时安全与自改进**，三个工具全在**跑 MCP 的这台机器**上，不需要目标：
+
+1. **动手前先问**：`ncc_rsi_check` 传 `command`（要跑的命令）或 `text`（一句意图），
+   换回 `verdict`（`allow` / `warn` / `block`）、`reasons`、`policy`、`exitCode`：
+   - `allow`（退出码 0）→ 做；
+   - `warn`（10）→ 可以做，但**把理由说给用户听**；
+   - `block`（20）→ **别做**，换做法，别绕过去（也别换个说法重试）；
+2. 无人值守（跑定时任务 / 没人看着）把 `unattended: true` 传进去 —— 策略**只会更严**
+   （比如把 `warn` 升级成 `block`），响应里会用 `upgraded` 说明；
+3. 只想看一眼、不留痕 → `dry: true`（连偏好计数也不加）；
+4. `ncc_rsi_report`（`since`）看本机总账：拦了几次、几次事故、几次跑偏、偏好命中几次；
+5. `ncc_rsi_learn_digest` 看学习状态：默认**关着**、允许读哪些来源、有几条待点头的提案。
+
+⚠️ 三条别说错：
+
+- **裁决不是执行**：`ncc_rsi_check` **什么都不跑**，它只回答「这一步安不安全」；
+- **裁决不是授权**：`allow` 只代表"这一步本身没被策略拦"，用户没点头的事仍然不能做；
+- **学习不是自动改进**：学习默认关闭、提案要人点头（`apply` 不在工具面里），
+  **策略永不自动改**。
+
 ## 约定与边界
 
+- **动手前先问一句（RSI 门）**：要跑有副作用的命令、或要做一件说不清后果的事之前，先
+  `ncc_rsi_check` 拿一份裁决。`allow` 直接做；`warn` 可以做但**把理由说给用户听**；
+  `block` 就**换做法**，不要绕过去（也别换个说法重试）。无人值守场景把 `unattended: true`
+  传进去（策略只会更严）；只想看一眼不想留痕就 `dry: true`。**裁决不是授权** ——
+  它管的只是「这一步安不安全」，用户没点头的事依然不能做。
+- **反馈要说就说给相关的人听**：`ncc_feedback_send` 是**跨 Agent / 跨用户**的正门 ——
+  用过某个制品 / 服务之后，把「好不好用、哪里不对」说出去（带 `traceRef` 与 `agent`
+  便于对方定位）。默认**私有**（只有作者与目标拥有者看得到），要公开得用户显式拍；
+  内容**只追加**（说了不能改）、聚合**不是排名分**。回复别人、改处置状态（open → resolved）、
+  把节点上的公开反馈 relay 上云 —— 这三件都是**替别人说话 / 把话带出机器**，不在工具里，
+  让用户跑 `ncc feedback reply|status|relay`。
+- **学习（learn）默认关**：`ncc_rsi_learn_digest` 只能看状态；开不开、允许读哪些来源、
+  提案要不要 apply 全是用户的动作。**策略永不自动改** —— 别把「系统会自己变好」这种话
+  说给用户听：今天的 RSI 只做**记录、裁决、提案**。
 - **发布前先征求用户同意**：发布是公开可见的对外动作，除非用户明确要求，不要自动发布。
 - **不要发布密钥**：制品正文会上传并存档，token / 私钥 / 内部地址不要写进去。
 - **分享 ≠ 授权**：`ncc registry share` 给的是**临时下载链接**（可限次/限时/撤销，拿到字节即结束）；

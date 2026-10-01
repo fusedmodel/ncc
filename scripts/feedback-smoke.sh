@@ -228,6 +228,96 @@ contains "词表离线可读" "三条红线" "${OUT}"
 contains "词表还对着一跃目标确认了一份" "的声明：" "${OUT}"
 check "本地队列路径在词表里" "yes" "$(printf '%s' "${OUT}" | grep -q 'spool.jsonl' && echo yes || echo no)"
 
+say "10. Agent 面（MCP）：先问后做、说得出话、不替人处置"
+# 这一节验的是**Agent 直接用的那层**（`ncc mcp` 的 stdio 面）：工具面里有什么 /
+# 没什么，门到底拦不拦，说出去的话落在哪台目标上。
+mcp_ask() {  # $1=方法 $2=params JSON（可空） $3=落到哪个文件
+  local req
+  if [[ -n "${2:-}" ]]; then
+    req="$(printf '{"jsonrpc":"2.0","id":1,"method":"%s","params":%s}' "$1" "$2")"
+  else
+    req="$(printf '{"jsonrpc":"2.0","id":1,"method":"%s"}' "$1")"
+  fi
+  "${CLI}" mcp <<< "${req}" 2>/dev/null | head -1 > "$3"
+}
+mcp_call() {  # $1=工具名 $2=arguments JSON（可空） $3=落到哪个文件
+  local a="${2:-}"
+  [[ -n "${a}" ]] || a='{}'
+  mcp_ask tools/call "$(printf '{"name":"%s","arguments":%s}' "$1" "${a}")" "$3"
+}
+mcp_text() {  # $1=响应文件 → 工具返回的文本
+  python3 - "$1" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+out = [c.get('text', '') for c in ((d.get('result') or {}).get('content') or [])]
+print('\n'.join(out))
+PY
+}
+mcp_names() {  # $1=tools/list 的响应文件
+  python3 - "$1" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(' '.join(t['name'] for t in d['result']['tools']))
+PY
+}
+
+"${CLI}" target use node >/dev/null
+mcp_ask tools/list "" "${TMP}/m-tools.json"
+M_NAMES="$(mcp_names "${TMP}/m-tools.json")"
+contains "工具面里有「说一句」的正门" "ncc_feedback_send" "${M_NAMES}"
+contains "有看反馈与聚合的口子" "ncc_feedback_summary" "${M_NAMES}"
+contains "决策门也在工具面里" "ncc_rsi_check" "${M_NAMES}"
+not_contains "回复不在工具面里（那是替别人说话）" "ncc_feedback_reply" "${M_NAMES}"
+not_contains "改处置状态不在工具面里" "ncc_feedback_status" "${M_NAMES}"
+not_contains "中继不在工具面里（把话带出机器得人点头）" "ncc_feedback_relay" "${M_NAMES}"
+not_contains "学习提案 apply 不在工具面里（策略永不自动改）" "ncc_rsi_learn_apply" "${M_NAMES}"
+mcp_ask initialize '{}' "${TMP}/m-init.json"
+M_INIT="$(cat "${TMP}/m-init.json")"
+contains "说明书里交代了默认私有" "默认私有" "${M_INIT}"
+contains "说明书里交代了门只裁决不执行" "不执行任何东西" "${M_INIT}"
+
+mcp_call ncc_rsi_check '{"command":"rm -rf /","unattended":true}' "${TMP}/m-block.json"
+M_BLOCK="$(mcp_text "${TMP}/m-block.json")"
+contains "危险命令 + 无人值守 → 拦住" "⛔ 拦住" "${M_BLOCK}"
+contains "给的退出码就是拦住的码（调用方据此停手）" "退出码 20" "${M_BLOCK}"
+contains "并明说这只是裁决、那一步没被执行" "裁决不是执行" "${M_BLOCK}"
+contains "还把升级理由说清了（只会更严）" "只会更严" "${M_BLOCK}"
+mcp_call ncc_rsi_check '{"command":"ls -la"}' "${TMP}/m-warn.json"
+contains "普通命令 → 不拦（留痕，非 0 退出码）" "退出码 10" "$(mcp_text "${TMP}/m-warn.json")"
+mcp_call ncc_rsi_check '{}' "${TMP}/m-argless.json"
+contains "既不给 command 也不给 text → 明确报错（不猜）" "至少给 command" \
+  "$(mcp_text "${TMP}/m-argless.json")"
+M_BEFORE="$("${CLI}" rsi report --json | jget "['checks']")"
+mcp_call ncc_rsi_check '{"command":"ls -la","dry":true}' "${TMP}/m-dry.json"
+contains "dry=true 照样给裁决" "裁决不是执行" "$(mcp_text "${TMP}/m-dry.json")"
+check "dry=true 没往账本里写（只看一眼不留痕）" "${M_BEFORE}" \
+  "$("${CLI}" rsi report --json | jget "['checks']")"
+mcp_call ncc_rsi_report '{"since":"24h"}' "${TMP}/m-report.json"
+M_REPORT="$(mcp_text "${TMP}/m-report.json")"
+contains "总账从 MCP 也给得出来" "RSI 总账" "${M_REPORT}"
+contains "并且说清了账本不记什么" "不记密钥" "${M_REPORT}"
+mcp_call ncc_rsi_learn_digest '{}' "${TMP}/m-learn.json"
+M_LEARN="$(mcp_text "${TMP}/m-learn.json")"
+contains "学习状态默认是关着的" "关着" "${M_LEARN}"
+contains "并说清提案 apply 不在工具面里" "apply 不在工具面里" "${M_LEARN}"
+
+mcp_call ncc_feedback_send \
+  '{"about":"artifact:@me/demo-tool","body":"从 MCP 说一句：升级后 run 还是崩","kind":"report","tags":["mcp"],"agent":"mcp-agent"}' \
+  "${TMP}/m-send.json"
+M_SEND="$(mcp_text "${TMP}/m-send.json")"
+contains "从 MCP 说得出去（带 id）" "收下了" "${M_SEND}"
+contains "并把「默认私有」写进回执（模型知道边界）" "只有你与目标拥有者看得到" "${M_SEND}"
+mcp_call ncc_feedback_list '{"about":"artifact:@me/demo-tool","mine":true}' "${TMP}/m-ls.json"
+M_LS="$(mcp_text "${TMP}/m-ls.json")"
+contains "从 MCP 看得到刚说的那条" "从 MCP 说一句" "${M_LS}"
+contains "也带上了 Agent 身份" "mcp-agent" "${M_LS}"
+mcp_call ncc_feedback_summary '{"about":"artifact:@me/demo-tool"}' "${TMP}/m-sum.json"
+M_SUM="$(mcp_text "${TMP}/m-sum.json")"
+contains "聚合从 MCP 也给得出来" "性质：" "${M_SUM}"
+contains "并说清它不是排名分" "不是排名分" "${M_SUM}"
+M_CLI="$("${CLI}" feedback ls --about 'artifact:@me/demo-tool' 2>&1)"
+contains "MCP 说的那句真的落在节点上（换回 CLI 也看得到）" "从 MCP 说一句" "${M_CLI}"
+
 say "结果"
 printf '  通过 %s · 失败 %s\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" -eq 0 ]]

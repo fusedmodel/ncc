@@ -1141,8 +1141,9 @@ scripts/             build-release.sh (cross-compile + checksums)
 
 `ncc mcp` runs NCC as an **MCP server** over stdio, so any MCP-capable agent can search the catalog,
 fetch artifacts, publish results and look up people, read its own knowledge base / memory / checkpoints
-and run traces, and check an organisation's gateways plus their compliance audit summaries — no extra
-service to run (38 tools, gated by what the connected target declares):
+and run traces, read and leave **cross-agent / cross-user feedback**, check an organisation's gateways
+plus their compliance audit summaries, and run the **RSI gate** (ask before acting) on this machine —
+no extra service to run (43 tools, gated by what the connected target declares):
 
 ```jsonc
 { "mcpServers": { "ncc": { "command": "ncc", "args": ["mcp"] } } }
@@ -1182,12 +1183,28 @@ service to run (38 tools, gated by what the connected target declares):
 | `ncc_list_gateways` | Gateway control plane: which gateways exist, **are they online** (derived from heartbeats), how much they moved |
 | `ncc_gateway_audit` | Retained audit **summaries** for one gateway: counts, **hostnames**, status buckets, latency percentiles |
 | `ncc_gateway_usage` | Usage rollup for one gateway (**self-reported counters**, labelled in the response) |
+| `ncc_feedback_list` | Read feedback (default: public ∪ mine ∪ addressed to me) |
+| `ncc_feedback_summary` | Aggregates: counts / kinds / status / mean score / who is speaking (**not a ranking score**) |
+| `ncc_feedback_send` | **Say one thing** (`about` + `body`); lands on the current target, private by default |
+| `ncc_rsi_check` | **The gate before acting**: a command / an intent → `allow` / `warn` / `block` + reasons (**it judges, it never executes**) |
+| `ncc_rsi_report` | Local ledger: blocks / incidents / drifts |
+| `ncc_rsi_learn_digest` | Learning state (off by default; proposals need a human, `apply` is not a tool) |
 
 The node, grant, service and **state** tools are **read-only on purpose**. Anything that changes what
-another party can obtain — declaring a service, linking a node, granting access — stays in the
+another party can obtain — declaring a service, linking a node, granting access, replying to feedback,
+changing a feedback's disposition, relaying a node's public feedback to the cloud — stays in the
 CLI, where the user performs it deliberately. That also covers the state tools: letting a single
 tool call silently rewrite an agent's memory or knowledge makes it impossible to reconstruct
 afterwards who changed what — so `ncc kb set` / `ncc mem set` / `ncc ckpt save` stay in the CLI.
+
+Two edges of feedback worth stating plainly: `ncc_feedback_send` is the front door for saying something
+across agents and users, but it is **private by default** (only the author and the target owner see it)
+and **append-only** (content cannot be edited), and its aggregates are **never ranking scores** (they do
+not feed catalog ordering, service matching or any trust score); service feedback belongs on the target
+declaring `services` and the tools **never switch targets for you**. The three RSI tools run on **the
+machine running MCP**: a verdict is **not execution** (`check` runs nothing) and **not an authorization**
+(anything needing the user's go-ahead still does); pass `unattended: true` when nobody is watching
+(stricter only) and `dry: true` to look without leaving a ledger entry.
 
 The three gateway tools read the **window summaries** the control plane retains — not the full audit:
 paths, payloads and credentials stay on the **gateway machine**, so "which URL did who call" cannot be

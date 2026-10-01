@@ -1654,6 +1654,96 @@ fn pref_cmd(a: &PrefCmd) -> Result<()> {
 
 /* ---------------- report ---------------- */
 
+/// **给 Agent 面用的决策门**（`ncc mcp` 的 `ncc_rsi_check`）：给一份决策请求，拿一份裁决 JSON。
+///
+/// 与 `rsi check` 同一套判断、同一本账：
+///   · 只回答「能不能做」，**不执行任何东西**（Agent 拿到 block 就该换做法，而不是绕过去）；
+///   · 仍然写账本（Agent 问过门这件事本身是事实，审计要靠它）；
+///   · 仍然给偏好计数（"这条偏好真的在拦人"要有证据）。
+///
+/// 为什么不在 MCP 里另写一套判断：那样就会出现「CLI 拦住、工具放行」这种最坏的不一致。
+pub fn check_json(
+    action: &str,
+    command: &str,
+    text: &str,
+    paths: &[String],
+    unattended: bool,
+    dry: bool,
+    dir: Option<&Path>,
+) -> Result<Value> {
+    let d = rsi_dir(dir);
+    let req = Request {
+        action: action.to_string(),
+        command: command.to_string(),
+        text: text.to_string(),
+        paths: paths.to_vec(),
+        host: std::env::var("NCC_AGENT").unwrap_or_else(|_| "mcp".into()),
+        dry,
+        unattended,
+        goal_id: String::new(),
+    };
+    let v = evaluate(&d, &req, unattended)?;
+    // `dry` 真的不写（连偏好计数也不加）：否则"只看一眼"会留下痕迹。
+    if !dry {
+        ledger_append(
+            &d,
+            &json!({
+                "at": now_unix(), "act": "check", "by": whoami(), "host": req.host,
+                "via": "mcp",
+                "action": req.action, "command": req.command, "paths": req.paths, "text": req.text,
+                "verdict": v.verdict, "reasons": v.reasons, "policy": v.policy_name,
+                "goalId": v.goal_id, "goalState": v.goal_state, "prefs": v.prefs_hit,
+                "unattended": v.unattended, "upgraded": v.upgraded,
+            }),
+        )?;
+        if !v.prefs_hit.is_empty() {
+            let mut f = load_prefs(&d);
+            for p in f.prefs.iter_mut() {
+                if v.prefs_hit.contains(&p.id) {
+                    p.hits += 1;
+                }
+            }
+            let _ = save_prefs(&d, &f);
+        }
+    }
+    Ok(json!({
+        "verdict": v.verdict,
+        "exitCode": match v.verdict.as_str() { "allow" => EXIT_ALLOW, "warn" => EXIT_WARN, _ => EXIT_BLOCK },
+        "reasons": v.reasons,
+        "policy": v.policy_name,
+        "goal": {"id": v.goal_id, "state": v.goal_state},
+        "prefs": v.prefs_hit,
+        "unattended": v.unattended,
+        "upgraded": v.upgraded,
+        "dir": d.to_string_lossy(),
+        "note": "这是**裁决**不是执行：block 就别做那一步（换做法），别绕过去",
+    }))
+}
+
+/// **给 Agent 面用的总账**（`ncc mcp` 的 `ncc_rsi_report`）：与 `rsi report --json` 同一份。
+pub fn report_json(since: &str, dir: Option<&Path>) -> Result<Value> {
+    let d = rsi_dir(dir);
+    let from = since_epoch(since)?;
+    let led: Vec<Value> = ledger_all(&d).into_iter().filter(|e| e["at"].as_u64().unwrap_or(0) >= from).collect();
+    let count_verdict = |want: &str| -> u64 {
+        led.iter()
+            .filter(|e| e["verdict"].as_str() == Some(want) && e["act"].as_str() != Some("guard"))
+            .count() as u64
+    };
+    let goal = load_goal(&d);
+    let prefs_hits: u64 = load_prefs(&d).prefs.iter().map(|p| p.hits).sum();
+    Ok(json!({
+        "dir": d.to_string_lossy(), "since": since,
+        "checks": {"allow": count_verdict("allow"), "warn": count_verdict("warn"), "block": count_verdict("block")},
+        "guards": led.iter().filter(|e| e["act"].as_str() == Some("guard")).count() as u64,
+        "incidents": led.iter().filter(|e| e["incident"].as_bool().unwrap_or(false)).count() as u64,
+        "drifts": led.iter().filter(|e| e["goalState"].as_str() == Some("drift")).count() as u64,
+        "prefHits": prefs_hits,
+        "goal": goal.map(|g| json!({"id": g.id, "statement": g.statement, "status": g.status})),
+        "note": "账本只记动作与理由，**不记密钥、不记文件内容**",
+    }))
+}
+
 fn report(a: &ReportArgs) -> Result<()> {
     let d = rsi_dir(a.dir.as_deref());
     let from = since_epoch(&a.since)?;
@@ -2653,6 +2743,34 @@ fn learn_apply(a: &LearnApplyArgs) -> Result<()> {
         println!("（什么都没做）");
     }
     Ok(())
+}
+
+/// **给 Agent 面用的学习摘要**（`ncc mcp` 的 `ncc_rsi_learn_digest`）。
+///
+/// 只读：同意声明 + 待点头的提案数 + 最近的教训。
+/// （**没有**"让 Agent 自己 apply 提案"的工具 —— 学习产物要人点头，这是红线。）
+pub fn learn_digest_json(dir: Option<&Path>) -> Result<Value> {
+    let d = rsi_dir(dir);
+    let consent = load_consent(&d);
+    let lessons: Vec<Value> = fs::read_to_string(d.join(LESSONS))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .collect();
+    let props: Vec<Value> = fs::read_to_string(d.join(PROPOSALS))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .map(|v| v["proposals"].as_array().cloned().unwrap_or_default())
+        .unwrap_or_default();
+    Ok(json!({
+        "dir": d.to_string_lossy(),
+        "enabled": consent.as_ref().map(|c| c.enabled).unwrap_or(false),
+        "sources": consent.as_ref().map(|c| c.sources.iter().map(|s| format!("{}:{}", s.kind, s.r#where)).collect::<Vec<_>>()).unwrap_or_default(),
+        "expired": consent.as_ref().map(consent_expired).unwrap_or(false),
+        "proposals": props.iter().map(|p| json!({"id": p["id"], "kind": p["kind"], "title": p["title"]})).collect::<Vec<_>>(),
+        "lessons": lessons.iter().rev().take(5).cloned().collect::<Vec<_>>(),
+        "note": "默认什么都不学；提案要人点头才生效（apply 不在工具面里），策略永不自动改",
+    }))
 }
 
 fn learn_digest(a: &LearnDigestArgs) -> Result<()> {

@@ -13,7 +13,7 @@
     "protocols": [
       "mcp"
     ],
-    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、在索引（频道）里按一句需求找人 / 找需求、读团队托管配置、按角色找人、判断跨局域网直连（P2P）条件，读 Agent 的知识库/记忆/检查点与运行轨迹，看我登记过的持有证明凭据与我授出的应用，以及查自己组织的 NCC Gateway 在线状态与**只含摘要**的合规审计。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化；写动作（发布以外的改动、状态写入、网关注册/吊销、登录/绑凭据/撤销授权）一律留在 CLI，由持凭据的人执行。",
+    "description": "把 NCC 作为 MCP server 暴露给任意 Agent：检索/取回/发布能力制品、按意图匹配对外服务、在索引（频道）里按一句需求找人 / 找需求、读团队托管配置、按角色找人、判断跨局域网直连（P2P）条件，读 Agent 的知识库/记忆/检查点与运行轨迹，看我登记过的持有证明凭据与我授出的应用，查自己组织的 NCC Gateway 在线状态与**只含摘要**的合规审计，跨 Agent / 跨用户看和发反馈，以及在本机做 RSI 决策门 / 算风险账 / 看学习状态。工具面按当前目标声明的能力（GET /api/meta 的 capabilities）变化；写动作（发布以外的改动、状态写入、反馈回复与改处置状态、中继、网关注册/吊销、登录/绑凭据/撤销授权、学习提案 apply）一律留在 CLI，由持凭据的人执行。",
     "tools": [
       "ncc_list_kinds",
       "ncc_search_catalog",
@@ -51,7 +51,13 @@
       "ncc_list_ckpt",
       "ncc_list_gateways",
       "ncc_gateway_audit",
-      "ncc_gateway_usage"
+      "ncc_gateway_usage",
+      "ncc_feedback_list",
+      "ncc_feedback_summary",
+      "ncc_feedback_send",
+      "ncc_rsi_check",
+      "ncc_rsi_report",
+      "ncc_rsi_learn_digest"
     ],
     "inputs": [
       {
@@ -92,7 +98,22 @@
       {
         "name": "since",
         "type": "string",
-        "description": "时间下界：RFC3339 / 2026-09-27 / unix 秒（轨迹、审计摘要、用量都用它）"
+        "description": "时间下界：RFC3339 / 2026-09-27 / unix 秒（轨迹、审计摘要、用量、RSI 总账都用它）"
+      },
+      {
+        "name": "about",
+        "type": "string",
+        "description": "反馈对象：`artifact:@ns/slug` / `service:@提供方/标识` / `@handle`（名片）/ 一句话；`ncc_feedback_send` 必填"
+      },
+      {
+        "name": "body",
+        "type": "string",
+        "description": "反馈正文（一句话，最多 4000 字；`ncc_feedback_send` 必填）"
+      },
+      {
+        "name": "command",
+        "type": "string",
+        "description": "RSI 决策门：你准备跑的那条命令（提供即当命令裁决；与 text 至少给一个）"
       },
       {
         "name": "limit",

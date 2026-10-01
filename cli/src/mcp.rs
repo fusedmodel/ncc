@@ -66,11 +66,26 @@ NCC Registry 是中立、跨协议的能力制品目录（api / skill / mcp / ha
    边界：NCC 发的是**凭据不是权限**（拿令牌 ⊥ 能取私有东西）；**登录 / 绑凭据 / 撤销都不在工具里**
    （都会改变「别人能拿到什么」，由用户自己跑 ncc auth …）；NCC 从不采集硬件指纹。
 
+13. 反馈（跨 Agent / 跨用户）：ncc_feedback_list 看别人对某个东西说过什么、ncc_feedback_summary 看聚合。
+    **跨 Agent 反馈的正门是 ncc_feedback_send** —— 用过之后说一句（带上 traceRef 与 agent），
+    它落在**你当下说话的那台**目标上。
+    三条边界要记住：① **默认私有**（只有作者与目标拥有者看得到），公开要人显式开；
+    ② **只追加**：内容改不了，处置状态（open/resolved…）只有目标拥有者能改，而那个动作**不在工具里**；
+    ③ 聚合**不是排名分** —— 反馈不参与目录排序 / 服务匹配 / 任何信任分；
+    ④ relay（把内网节点上的公开反馈搬上云）**不在工具里** —— 那是「把话带出机器」，由人显式做。
+
+14. RSI（运行时安全与自改进）：**动手前先问一句** —— ncc_rsi_check 拿一条命令 / 一句意图，
+    换一份裁决：allow（放行）/ warn（留痕）/ block（**别做**），带理由。它**不执行任何东西**，
+    block 就换做法，别绕过去；无人值守时把 unattended=true 传进去（策略只会更严）。
+    ncc_rsi_report 看本机总账（拦了多少 / 出了几次事故 / 跑偏几次）。
+    ncc_rsi_learn_digest 看学习状态（默认关闭；提案要人点头，**apply 不在工具面里**，策略永不自动改）。
+
 边界：节点（ncc_list_nodes / ncc_discover_nodes）、授权（ncc_list_grants）、对外授权
 （ncc_list_credentials / ncc_list_consents）与你自己声明的服务属于用户的私人数据，
 只在用户问起时用，不要转发给第三方。
-声明服务、连接节点、授权这类会改变「别人能拿到什么」的动作只有读工具 —— 需要变更时，
-让用户自己跑 CLI（ncc services add / ncc nodes link / ncc grant set / ncc index publish），并先征得同意。
+声明服务、连接节点、授权、改反馈处置状态这类会改变「别人能拿到什么」的动作只有读工具 —— 需要变更时，
+让用户自己跑 CLI（ncc services add / ncc nodes link / ncc grant set / ncc index publish /
+ ncc feedback reply·status），并先征得同意。
 
 制品引用统一写成 `@命名空间/slug`，也可用 `R-…` 形式的 id。
 检索与取回是公开只读的，无需登录；节点类工具需要凭据（API-Key 需 nodes:read / grants:read）。";
@@ -114,6 +129,9 @@ fn tool_capability(tool: &str) -> Option<&'static str> {
         // 本机预检与真实打洞都在**本地**算（不依赖目标），因此不做能力门禁。
         "ncc_p2p_node" => Some("p2p"),
         "ncc_list_roles" | "ncc_find_people" | "ncc_get_profile" => Some("profile"),
+        // 反馈：读写都要目标声明 `feedback` 能力（说得出口这件事本身也要授权）。
+        "ncc_feedback_list" | "ncc_feedback_summary" | "ncc_feedback_send" => Some("feedback"),
+        // RSI 全在**本机**（策略 / 账本 / 偏好 / 允许读什么都是文件）：不做能力门禁。
         _ => None,
     }
 }
@@ -734,6 +752,92 @@ fn tools() -> Vec<Value> {
                     "since": { "type": "string", "description": "统计起点（默认按留存期）" }
                 },
                 "required": ["gateway"],
+                "additionalProperties": false
+            }
+        }),
+        // ---- 反馈（跨 Agent / 跨用户）：读两个 + 说一句 ----
+        json!({
+            "name": "ncc_feedback_list",
+            "description": "看反馈（跨 Agent / 跨用户）：别人对某个东西说过什么。默认看你能看到的那部分 —— **匿名只看 public，登录后是 public ∪ 我发的 ∪ 发给我的**；私有的看不见不是坏了，是设计。用 `about` 缩小到某个东西（`artifact:@ns/slug` / `service:@p/s` / `@handle` / 一句话），`inbox=true` 看发给我的。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "about": { "type": "string", "description": "只看关于这个的（`service:@alice/stay` / `artifact:@alice/tool` / `@alice` 名片 / 一句话）" },
+                    "kind": { "type": "string", "description": "性质：report 问题 / praise 表扬 / request 需求 / correction 纠正 / rating 打分" },
+                    "inbox": { "type": "boolean", "description": "true = 只看发给我的（我的制品 / 服务 / 名片）" },
+                    "mine": { "type": "boolean", "description": "true = 只看我发的" },
+                    "open": { "type": "boolean", "description": "true = 只看还没处置的" },
+                    "limit": { "type": "number", "description": "最多几条（默认 20，上限 100）" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_feedback_summary",
+            "description": "反馈的聚合：多少条 / 什么性质 / 处置分布 / 带分的均分 / 公开与私有各几条 / 自己给自己记的几条 / 哪些 Agent 在说话。**它不是排名分** —— 反馈不参与目录排序、服务匹配或任何信任分。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "about": { "type": "string", "description": "只看关于这个的（同 ncc_feedback_list）" },
+                    "inbox": { "type": "boolean", "description": "true = 只看发给我的" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_feedback_send",
+            "description": "说一句关于某个东西的话（**跨 Agent 反馈的正门**：先说说的是哪次运行 / 是哪个 Agent）。落在**你当前说话的那台**目标（默认私有：只有你与目标拥有者看得到）。交付要**先落盘再发送**里没有的：这个工具是直接发；发不出去会报错（不会默默丢掉）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "about": { "type": "string", "description": "说的是哪个东西（必填）：`artifact:@alice/tool` / `service:@alice/stay` / `node:ND-…` / `profile:@alice` / `run:TR-…` / `topic:一句话`" },
+                    "body": { "type": "string", "description": "说的一句话（必填）—— 能复现就写清怎么复现" },
+                    "kind": { "type": "string", "description": "report（默认）| praise | request | correction | rating" },
+                    "score": { "type": "number", "description": "打分 1~5（kind=rating 时必填；0 = 不打分）" },
+                    "tags": { "type": "array", "items": { "type": "string" }, "description": "标签（最多 8 个）" },
+                    "traceRef": { "type": "string", "description": "这次反馈来自哪次运行（轨迹 id）—— **只记引用，不搬内容**" },
+                    "agent": { "type": "string", "description": "是哪个 Agent 说的（建议填；人不在场时它就是「谁说的」这一栏）" },
+                    "public": { "type": "boolean", "description": "true = 公开（默认 false = 私有；公开才可能被 relay 搬上云）" },
+                    "replyTo": { "type": "string", "description": "回哪一条（FB-…）：回复继承原帖的可见性" }
+                },
+                "required": ["about", "body"],
+                "additionalProperties": false
+            }
+        }),
+        // ---- RSI（运行时安全与自改进）：问门 / 算总账 / 看学习状态 ----
+        json!({
+            "name": "ncc_rsi_check",
+            "description": "**决策门**：动手前问一句「这一步能不能做」。收一条命令 / 一句意图，吐一份裁决：`allow`（放行）/ `warn`（可以做但留痕）/ `block`（**别做**），带理由。它 **不执行任何东西** —— block 就换做法，别绕过去。无人值守时把它给 unattended=true（策略只会更严）。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string", "description": "具体命令（如 `git push --force`）" },
+                    "text": { "type": "string", "description": "意图说明（人话）" },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "涉及的文件 / 目录" },
+                    "action": { "type": "string", "description": "动作名（如 Bash / Edit）" },
+                    "unattended": { "type": "boolean", "description": "true = 无人值守（只把 warn 升成 block，不会更松）" },
+                    "dry": { "type": "boolean", "description": "true = 只评估，不写账本" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_rsi_report",
+            "description": "RSI 总账（本机账本）：决策数 / 放行·留痕·拦住各几次 / 守着跑几次 / 事故几次 / 跑偏几次 / 偏好命中几次 / 当前目标。**账本只记动作与理由，不记密钥、不记文件内容**；它也不上报到任何地方。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "since": { "type": "string", "description": "窗口（如 24h / 7d，默认 24h）" }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "ncc_rsi_learn_digest",
+            "description": "RSI 的学习状态（**只读**）：同意声明开着吗、允许读哪几个来源、有几条提案等着点头、最近记下的教训。注意：**学习默认关闭**，而且提案要人点头才生效（apply 不在工具面里）—— 策略永不自动改。",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
                 "additionalProperties": false
             }
         }),
@@ -1474,6 +1578,19 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
     };
     // 布尔参数（缺省 false）。服务端的 `?following=1` 只认字面 "1"，由调用处拼。
     let barg = |k: &str| -> bool { args.get(k).and_then(|v| v.as_bool()).unwrap_or(false) };
+    // 字符串数组参数（决策请求里的 `paths`）。
+    let paths_of = |a: &Value| -> Vec<String> {
+        a.get("paths")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let token = config::token_opt(cfg);
 
     // 工具级失败按 MCP 约定回 isError=true，而不是 JSON-RPC error
@@ -2687,6 +2804,240 @@ fn call_tool(cfg: &CliConfig, params: Option<&Value>) -> Result<Value> {
             Ok(text(clip(&crate::configs::render_config(&v))))
         })()),
 
+        // ---- 反馈（跨 Agent / 跨用户）：读两个 + 说一句 ----
+        "ncc_feedback_list" => ok_or_text((|| {
+            let about = rarg("about").unwrap_or_default();
+            let mut qs: Vec<String> = Vec::new();
+            if !about.trim().is_empty() {
+                let (k, r) = crate::feedback::parse_about(&about);
+                qs.push(format!("aboutKind={}", api::urlenc(&k)));
+                qs.push(format!("aboutRef={}", api::urlenc(&r)));
+            }
+            if args.get("inbox").and_then(|v| v.as_bool()).unwrap_or(false) {
+                qs.push("owner=me".into());
+            }
+            if args.get("mine").and_then(|v| v.as_bool()).unwrap_or(false) {
+                qs.push("mine=1".into());
+            }
+            if let Some(k) = sarg("kind") {
+                qs.push(format!("kind={}", api::urlenc(&k)));
+            }
+            if args.get("open").and_then(|v| v.as_bool()).unwrap_or(false) {
+                qs.push("unresolved=1".into());
+            }
+            qs.push(format!("size={}", narg("limit", 20, 100)));
+            let d = api::get(cfg, &format!("/api/feedback?{}", qs.join("&")), token.as_deref())?;
+            let rows = d["feedback"].as_array().cloned().unwrap_or_default();
+            let mut out = String::new();
+            if rows.is_empty() {
+                out.push_str("（没有看得到的反馈）\n");
+            }
+            for f in &rows {
+                out.push_str(&format!(
+                    "- {} [{} {}] {}{} {} —— {}\n",
+                    f["id"].as_str().unwrap_or("-"),
+                    f["kind"].as_str().unwrap_or("-"),
+                    f["visibility"].as_str().unwrap_or("-"),
+                    f["aboutRef"].as_str().unwrap_or("-"),
+                    if f["score"].as_i64().unwrap_or(0) > 0 {
+                        format!(" {}分", f["score"].as_i64().unwrap_or(0))
+                    } else {
+                        String::new()
+                    },
+                    if f["agent"].as_str().unwrap_or("").is_empty() {
+                        f["author"]["handle"].as_str().unwrap_or("-").to_string()
+                    } else {
+                        format!("{} via {}", f["author"]["handle"].as_str().unwrap_or("-"), f["agent"].as_str().unwrap_or(""))
+                    },
+                    f["body"].as_str().unwrap_or("")
+                ));
+            }
+            out.push_str(&format!(
+                "\n共 {} 条（可见范围：公开 + 我发的 + 发给我的）· 聚合用 ncc_feedback_summary；\n\
+                 私有的看不见不是坏了，是设计；要回一条用用户跑的 `ncc feedback reply`（改别人东西的动作不在工具里）。",
+                d["total"].as_i64().unwrap_or(0)
+            ));
+            Ok(text(clip(&out)))
+        })()),
+
+        "ncc_feedback_summary" => ok_or_text((|| {
+            let about = rarg("about").unwrap_or_default();
+            let mut qs: Vec<String> = Vec::new();
+            if !about.trim().is_empty() {
+                let (k, r) = crate::feedback::parse_about(&about);
+                qs.push(format!("aboutKind={}", api::urlenc(&k)));
+                qs.push(format!("aboutRef={}", api::urlenc(&r)));
+            }
+            if args.get("inbox").and_then(|v| v.as_bool()).unwrap_or(false) {
+                qs.push("owner=me".into());
+            }
+            let path = if qs.is_empty() {
+                "/api/feedback/summary".to_string()
+            } else {
+                format!("/api/feedback/summary?{}", qs.join("&"))
+            };
+            let d = api::get(cfg, &path, token.as_deref())?;
+            let s = &d["summary"];
+            let kv = |v: &Value| -> String {
+                v.as_object()
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, n)| format!("{k} {}", n.as_i64().unwrap_or(0)))
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    })
+                    .unwrap_or_default()
+            };
+            let mut out = format!("共 {} 条\n", s["count"].as_i64().unwrap_or(0));
+            out.push_str(&format!("性质：{}\n", kv(&s["byKind"])));
+            out.push_str(&format!("处置：{}\n", kv(&s["byStatus"])));
+            out.push_str(&format!(
+                "可见性：公开 {} · 私有 {}（自己给自己记的 {}）\n",
+                s["publicCount"].as_i64().unwrap_or(0),
+                s["privateCount"].as_i64().unwrap_or(0),
+                s["selfCount"].as_i64().unwrap_or(0)
+            ));
+            if s["scored"].as_i64().unwrap_or(0) > 0 {
+                out.push_str(&format!(
+                    "带分：{} 条，均分 {:.1}\n",
+                    s["scored"].as_i64().unwrap_or(0),
+                    s["scoreAvg"].as_f64().unwrap_or(0.0)
+                ));
+            }
+            out.push_str(&format!("谁在说：{}\n", kv(&s["agents"])));
+            out.push_str(&format!(
+                "\n⚠️ 它不是排名分 —— 反馈不参与目录排序 / 服务匹配 / 任何信任分。\n{}",
+                d["note"].as_str().unwrap_or("")
+            ));
+            Ok(text(clip(&out)))
+        })()),
+
+        "ncc_feedback_send" => ok_or_text((|| {
+            let about = rarg("about").ok_or_else(|| anyhow::anyhow!("缺 about（说哪个东西）"))?;
+            let body = rarg("body").ok_or_else(|| anyhow::anyhow!("缺 body（说一句话）"))?;
+            let (kind, r) = crate::feedback::parse_about(&about);
+            let kind_of = sarg("kind").unwrap_or_else(|| "report".into());
+            let score = args.get("score").and_then(|v| v.as_i64()).unwrap_or(0);
+            let public = args.get("public").and_then(|v| v.as_bool()).unwrap_or(false);
+            let agent = sarg("agent").unwrap_or_else(|| std::env::var("NCC_AGENT").unwrap_or_default());
+            let payload = json!({
+                "aboutKind": kind,
+                "aboutRef": r,
+                "kind": kind_of,
+                "score": score,
+                "body": body,
+                "tags": args.get("tags").cloned().unwrap_or(json!([])),
+                "agent": agent,
+                "visibility": if public { "public" } else { "private" },
+                "traceRef": sarg("traceRef").unwrap_or_default(),
+            });
+            let reply_to = sarg("replyTo").unwrap_or_default();
+            let path = if reply_to.trim().is_empty() {
+                "/api/feedback".to_string()
+            } else {
+                format!("/api/feedback/{}/reply", api::urlenc(&reply_to))
+            };
+            let v = api::post_json(cfg, &path, token.as_deref(), &payload)?;
+            Ok(text(clip(&format!(
+                "✅ 收下了：{}（{}{}）\n{}\n\
+                 默认私有：只有你与目标拥有者看得到（要公开得在 CLI 里 `--public`）。\
+                 要让它上云，得由人显式 `ncc feedback relay`（**私有的永不搬家**）。",
+                v["feedback"]["id"].as_str().unwrap_or("-"),
+                v["feedback"]["aboutKind"].as_str().unwrap_or("-"),
+                v["feedback"]["aboutRef"].as_str().unwrap_or("-"),
+                if v["resolved"].as_bool().unwrap_or(false) {
+                    "归属已解析：目标拥有者看得到".to_string()
+                } else {
+                    format!("没对上具体的东西：{}", v["note"].as_str().unwrap_or("只有你自己看得到"))
+                }
+            ))))
+        })()),
+
+        // ---- RSI：问门 / 算总账 / 看学习状态（全部本机，不依赖目标） ----
+        "ncc_rsi_check" => ok_or_text((|| {
+            let command = sarg("command").unwrap_or_default();
+            let text_arg = sarg("text").unwrap_or_default();
+            let action = sarg("action").unwrap_or_default();
+            if command.trim().is_empty() && text_arg.trim().is_empty() {
+                return Err(anyhow::anyhow!("至少给 command 或 text（要说清是哪一步）"));
+            }
+            let unattended = args.get("unattended").and_then(|v| v.as_bool()).unwrap_or(false);
+            let dry = args.get("dry").and_then(|v| v.as_bool()).unwrap_or(false);
+            let v = crate::rsi::check_json(
+                &action,
+                &command,
+                &text_arg,
+                &paths_of(&args),
+                unattended,
+                dry,
+                None,
+            )?;
+            let icon = match v["verdict"].as_str().unwrap_or("") {
+                "allow" => "✅ 放行",
+                "warn" => "⚠️ 可以做，但留痕",
+                _ => "⛔ 拦住",
+            };
+            let reasons = v["reasons"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str()).map(|s| format!("· {s}")).collect::<Vec<_>>().join("\n"))
+                .unwrap_or_default();
+            Ok(text(clip(&format!(
+                "{}（策略 {} · 退出码 {}{}）\n{}\n\
+                 ⚠️ 这是**裁决不是执行**：block 就换做法，别绕过去（这一步没有、也不会被执行）。{}",
+                icon,
+                v["policy"].as_str().unwrap_or("-"),
+                v["exitCode"].as_i64().unwrap_or(-1),
+                if v["upgraded"].as_bool().unwrap_or(false) { " · 无人值守下从 warn 升到 block" } else { "" },
+                reasons,
+                if dry { "\n（dry=true：这次没写账本）" } else { "" }
+            ))))
+        })()),
+
+        "ncc_rsi_report" => ok_or_text((|| {
+            let since = sarg("since").unwrap_or_else(|| "24h".into());
+            let v = crate::rsi::report_json(&since, None)?;
+            Ok(text(clip(&format!(
+                "RSI 总账（窗口 {}）：\n决策 {} 次：放行 {} · 留痕 {} · **拦住 {}**\n\
+                 守着跑 {} 次 · 事故 {} 次 · 跑偏 {} 次 · 偏好命中 {} 次\n\
+                 目标：{}\n{}",
+                since,
+                v["checks"]["allow"].as_i64().unwrap_or(0) + v["checks"]["warn"].as_i64().unwrap_or(0) + v["checks"]["block"].as_i64().unwrap_or(0),
+                v["checks"]["allow"].as_i64().unwrap_or(0),
+                v["checks"]["warn"].as_i64().unwrap_or(0),
+                v["checks"]["block"].as_i64().unwrap_or(0),
+                v["guards"].as_i64().unwrap_or(0),
+                v["incidents"].as_i64().unwrap_or(0),
+                v["drifts"].as_i64().unwrap_or(0),
+                v["prefHits"].as_i64().unwrap_or(0),
+                v["goal"]["statement"].as_str().unwrap_or("没立（在做什么没人说得清）"),
+                v["note"].as_str().unwrap_or("")
+            ))))
+        })()),
+
+        "ncc_rsi_learn_digest" => ok_or_text((|| {
+            let v = crate::rsi::learn_digest_json(None)?;
+            let props = v["proposals"].as_array().cloned().unwrap_or_default();
+            let lessons = v["lessons"].as_array().cloned().unwrap_or_default();
+            let mut out = format!(
+                "学习：{}（允许读 {} 条来源{}）\n",
+                if v["enabled"].as_bool().unwrap_or(false) { "开着" } else { "关着 —— 默认什么都不学" },
+                v["sources"].as_array().map(|a| a.len()).unwrap_or(0),
+                if v["expired"].as_bool().unwrap_or(false) { "，**已过期**" } else { "" }
+            );
+            out.push_str(&format!("待点头的提案 {} 条", props.len()));
+            for p in props.iter().take(5) {
+                out.push_str(&format!("\n  · [{}] {} {}", p["id"].as_str().unwrap_or(""), p["kind"].as_str().unwrap_or(""), p["title"].as_str().unwrap_or("")));
+            }
+            out.push_str(&format!("\n已记下的教训 {} 条", lessons.len()));
+            for l in lessons.iter().take(3) {
+                out.push_str(&format!("\n  · {}", l["statement"].as_str().unwrap_or("")));
+            }
+            out.push_str(&format!("\n\n⚠️ {}\n\
+                 看一眼提案：人跑 `ncc rsi learn plan`（读一遍已授权的来源）与 `ncc rsi learn apply <id>`（点头）。",
+                v["note"].as_str().unwrap_or("")));
+            Ok(text(clip(&out)))
+        })()),
+
         other => tool_err(format!("未知工具: {other}")),
     })
 }
@@ -2936,7 +3287,7 @@ mod tests {
                 assert!(
                     [
                         "services", "config", "nodes", "grants", "trace", "kb", "mem", "ckpt",
-                        "p2p", "profile", "gateway", "index",
+                        "p2p", "profile", "gateway", "index", "feedback",
                         // `auth` = NCC 作为对第三方平台的授权颁发方（默认关，开了才声明）
                         "auth"
                     ]

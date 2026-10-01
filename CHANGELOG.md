@@ -36,7 +36,24 @@
 归属由**服务端**解析（客户端说了不算）、**不替你切目标**（`service:` 落在没声明 services 的目标上会
 报出该敲的命令）。
 
-验证：`bash scripts/feedback-smoke.sh` **50/50**（CLI + 节点 + 云端三个东西一起跑）。
+验证：`bash scripts/feedback-smoke.sh` **78/78**（CLI + 节点 + 云端三个东西一起跑，含下面那节 MCP 面）。
+
+### 新增 · Agent 面（MCP）也能看反馈、发反馈、跑 RSI 决策门
+
+用户问：「是否升级了 Agent」。答案是**当时没有** —— 反馈与 RSI 都只有 CLI。现在补上：
+`ncc mcp` 多了 6 个工具（工具面 37 → 43），并把边界写进 `initialize` 的说明书。
+
+- **反馈三个**：`ncc_feedback_list` / `ncc_feedback_summary` / `ncc_feedback_send`
+  （需目标声明 `feedback` 能力）——说一句默认**私有**，落**当前目标**。
+- **RSI 三个**（全在**本机**，不做能力门禁）：`ncc_rsi_check` / `ncc_rsi_report` /
+  `ncc_rsi_learn_digest`。
+- **故意不进的**：回复、改处置状态、relay（前两件是替别人说话，后一件是把话带出机器）；
+  `rsi learn apply` / `policy set` 也不在（策略永不自动改）。这几条在冒烟里是**逐个断言
+  “不该出现”**的，不只是文档口头声明。
+- `ncc_rsi_check` 返回 `allow`(0) / `warn`(10) / `block`(20) 与理由；`dry: true` 连偏好
+  计数都不写（冒烟对着账本前面的计数比，确认“只看一眼不留痕”）。
+- `agent/harness.json` 的工具清单与 `mcp.rs` 暴露的**逐个对齐**（有单测管着：改一边就要
+  同步另一边）；`agent/SKILL.md` 与 `agent/README.md` 同步加了两节工作流与边界。
 
 ### 新增 · `ncc rsi learn`：从反馈与状态里学（默认关闭、提案制、策略永不自动改）
 
