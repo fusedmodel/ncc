@@ -295,6 +295,93 @@ else
   bad "有 ${JSX_BAD} 处 JSX 文案带 markdown 强调标记（会显示成星号）：见上"
 fi
 
+say "7. 缩写展开：NCC = Neural Cloud Computers（旧展开不许残留）"
+# 2026-10-01 用户口径改过一次（原为 Neural · Capability · Catalog）—— 展开词出现在 7 个文件里，
+# 靠人记必漏。这里两头都查：该有的地方得有新展开，旧展开一个字都不许留。
+EXP_OUT="$(python3 - "${REPO}" "${PLAT}" <<'PY'
+import os, re, sys
+repo, plat = sys.argv[1], sys.argv[2]
+NEW = 'Neural Cloud Computers'
+OLD = re.compile(r'Neural\s*[·・]\s*Capability\s*[·・]\s*Catalog')
+# 该带新展开的落点（PRD §10 的清单）
+must = [
+    os.path.join(repo, 'README.md'),
+    os.path.join(plat, 'README.md'),
+    os.path.join(plat, 'prd/README.md'),
+    os.path.join(plat, 'prd/ncc-agent-infra.md'),
+    os.path.join(plat, 'web/index.html'),
+    os.path.join(plat, 'web/public/llms.txt'),
+    os.path.join(plat, 'web/src/pages/Landing.jsx'),
+    os.path.join(plat, 'web/src/docs/zh/registry.md'),
+    os.path.join(plat, 'web/src/docs/en/registry.md'),
+]
+bad = []
+for p in must:
+    if not os.path.exists(p):
+        bad.append(f"{os.path.relpath(p, repo)} 不存在")
+        continue
+    t = open(p, encoding='utf-8', errors='replace').read()
+    if NEW not in t:
+        bad.append(f"{os.path.relpath(p, repo)} 没有新展开")
+# 旧展开（**完整三连**才算；PRD 决策记录里单独提 `Capability · Catalog` 是允许的）：全仓不许再出现
+skip = ('node_modules', '/target/', '/.git/', '/dist/', '/build/', '/data/', '/release/')
+for dp, dn, fn in os.walk(repo):
+    if any(s in dp + '/' for s in skip):
+        continue
+    for f in fn:
+        if not f.endswith(('.md', '.jsx', '.js', '.html', '.txt', '.json')):
+            continue
+        p = os.path.join(dp, f)
+        for i, line in enumerate(open(p, encoding='utf-8', errors='replace').read().split('\n'), 1):
+            if OLD.search(line):
+                bad.append(f"{os.path.relpath(p, repo)}:{i} 还有旧展开：{line.strip()[:60]}")
+print(f"BAD={len(bad)}")
+for b in bad[:12]:
+    print('  ' + b)
+PY
+)"
+printf '%s\n' "${EXP_OUT}" | tail -n +2
+EXP_BAD="$(printf '%s' "${EXP_OUT}" | grep -oE 'BAD=[0-9]+' | cut -d= -f2)"
+if [[ "${EXP_BAD}" == "0" ]]; then
+  good "9 个落点都写 Neural Cloud Computers，旧展开已清干净"
+else
+  bad "有 ${EXP_BAD} 处缩写展开不一致：见上"
+fi
+
+say '8. 宿主清单：官网展示的 Agent 与 `ncc hur interop` 的目标必须对得上'
+# 清单是「可验证的集成目标」，不能让官网自己长出一份（多了 = 吹牛，少了 = 用户不知道自己能接）。
+HOST_OUT="$(python3 - "${ROOT}" "${PLAT}" <<'PY'
+import os, re, sys
+root, plat = sys.argv[1], sys.argv[2]
+targets = None
+for p in (os.path.join(root, 'cli/crates/hur-core/src/interop.rs'),):
+    m = re.search(r'TARGETS:\s*\[&str;\s*\d+\]\s*=\s*\[([^\]]+)\]', open(p, encoding='utf-8').read())
+    if m:
+        targets = sorted(t.strip().strip('"') for t in m.group(1).split(','))
+marks = os.path.join(plat, 'web/src/components/HostMarks.jsx')
+keys = sorted(re.findall(r"k:\s*'([a-z]+)'", open(marks, encoding='utf-8').read()))
+bad = []
+if targets is None:
+    bad.append('读不到 interop::TARGETS')
+else:
+    missing = [t for t in targets if t not in keys]
+    if missing:
+        bad.append('官网缺这些目标：' + ' '.join(missing))
+print(f"BAD={len(bad)}")
+print(f"TARGETS={' '.join(targets or [])}")
+print(f"HOSTS={' '.join(keys)}")
+for b in bad:
+    print('  ' + b)
+PY
+)"
+printf '%s\n' "${HOST_OUT}" | tail -n +2
+HOST_BAD="$(printf '%s' "${HOST_OUT}" | grep -oE 'BAD=[0-9]+' | cut -d= -f2)"
+if [[ "${HOST_BAD}" == "0" ]]; then
+  good "interop 的五个目标都在官网宿主清单里"
+else
+  bad "官网宿主清单与 interop 目标对不上：见上"
+fi
+
 say "结果"
 printf '  通过 %s · 失败 %s · 跳过 %s\n' "${PASS}" "${FAIL}" "${SKIP}"
 [[ "${FAIL}" -eq 0 ]]

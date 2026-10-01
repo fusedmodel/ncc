@@ -14,6 +14,18 @@
 
 ## [未发布]
 
+### 新增 · `docs-consistency.sh` 再加两条：缩写展开与宿主清单
+
+改 `NCC = Neural Cloud Computers` 时发现“展开词”也在 9 个文件里各写一遍（而且第二天就漏了一个落点）。
+两条新检查：
+
+- **第 7 条 缩写展开**：9 个落点必须都有 `Neural Cloud Computers`；旧的三连（`Neural · Capability · Catalog`）
+  全仓不许残留 —— 但 PRD 决策记录里**单独**提 `Capability · Catalog`（作为业务描述）是允许的，所以只查封完整三连。
+- **第 8 条 宿主清单**：`web/src/components/HostMarks.jsx` 的 `k` 必须 ⊇ `hur-core::interop::TARGETS`
+  （官网展示的宿主就是 CLI 真能渲染的目标，多了是吹牛、少了用户不知道自己能接）。
+
+现在 **11 通过 / 0 失败 / 0 跳过**。
+
 ### 新增 · `docs-consistency.sh` 扩到 7 条检查（数字与星号也是“同一事实多份副本”）
 
 整理官网时又碰到两类：工具数还写着 38（五处），以及 JSX 文案里的 `**重点**` 会**原样显示成星号**
