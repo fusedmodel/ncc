@@ -14,6 +14,26 @@
 
 ## [未发布]
 
+### 修复 · `ncc hur init` 造出了自己 `verify` 不过的包（且 profile 名写错会静静换成别的）
+
+用户问「现在 hur 的类型支持哪些」，逐个 profile 实跑了一遍，抓到两个诚实性问题：
+
+- **数据类与授权包用通用模板生成 = 生出来就是错的**：`ncc hur init --profile kb-seed` 以前照旧落盘，
+  生成物当场过不了自己的 `verify`（`[R12 错误] profile=kb-seed 必须带 data{} 声明`）——
+  同理 `auth`（缺 `auth{}`，还多了 `entry` 与 `agent{}`）。现在这些 profile **直接拒绝**，
+  并指明该走哪条路（快照从节点导：`ncc kb bundle|mem export|ckpt export|trace export --as-package`；
+  授权包走 `ncc auth pkg init`），而且**一个文件都不落**（不许先建目录再报错）。
+- **profile 名写错会被静默替换**：`ncc hur init --profile claude` 以前会安静地产出一份 `harness` 包；
+  现在 `init` 非 0 并列出可选值；清单里写了不认识的名字也不再“退化成默认”——
+  **R12 会报错**（读的时候不认识仍按 `harness` 算，那是给老包的兼容路径，不是新包的盾牌）。
+
+顺带把文档对齐现实：profile 数量 **11 → 12**（`auth` 一直没进表）；README 与站内文档补上
+“通用模板只生得出前 7 个”以及每个 profile 该走哪条路。
+
+验证：`cargo test -p hur-core` **118/118**（+`init_refuses_only_what_the_template_cannot_produce`
++`r12_unknown_profile_name_is_an_error_not_a_fallback`）· `profile-smoke.sh` **101 → 108/108**
+（第 13 节新增 5 条：拒绝非 0、指明导出器、指明 `ncc auth pkg init`、拒绝时不留文件、名字写错也非 0）。
+
 ### 修复 · `ncc hur interop` 渲染的 MCP 配置指向了**另一个工具面**
 
 用户问：「`ncc hur` 是否支持一种类型，既能被 ncc CLI 调用、又能作为 tool call 被宿主调用？」

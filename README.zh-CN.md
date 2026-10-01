@@ -719,18 +719,23 @@ ncc registry admin audit --limit 20                      # 谁在什么时候把
 ### `ncc hur profile` 与数据快照包
 
 一份包“**是什么**”，过去由一个只有三个值的 `kind`（`agent|harness|repo`）兼职。现在叫 **profile**，
-共 11 个：`agent` `harness` `plugin` `mcp` `app` `scaffold` `skill` `kb-seed` `mem-seed`
-`ckpt-set` `trace-set`。**封装不变**（确定性字节 + `hur.json` + `hur.lock` + 签名），profile 只决定
+共 12 个：`agent` `harness` `plugin` `mcp` `app` `scaffold` `skill` `kb-seed` `mem-seed`
+`ckpt-set` `trace-set` `auth`（授权包**不是**快照：它可更新、要开锁才读）。**封装不变**（确定性字节 + `hur.json` + `hur.lock` + 签名），profile 只决定
 **要什么、能不能跑、怎么接、按什么匹配**。
 
 ```sh
 ncc hur profile --list                 # 规范里的全部 profile
 ncc hur profile ./my-plugin            # 是什么 / 要什么 / 给什么 / 怎么接 + 分级体检
 ncc hur match --profile plugin --host cursor
+ncc hur init --profile mcp --name my-mcp        # 通用模板能生成前 7 个（agent…skill）
 ```
 
 **profile 的价值在约束，不在宽容**：数据类 profile 明确禁止 `entry` 与 `permissions.network` ——
 一份知识库快照不该能跑代码、也不该自己出网（新规则 R12，老包不受影响）。
+这条约束也管到**生成器**：通用模板生不出数据类与授权包（给不出 `data{}` 与 `auth{}`），
+所以 `ncc hur init --profile kb-seed` 会**直接拒绝并指出该走哪条路**（快照从节点导出：
+`ncc kb bundle --as-package` 等等；授权包走 `ncc auth pkg init`），
+而不是生成一份自己 `verify` 不过的包；profile 名写错也是错，不会悄悄给你个别的。
 
 产物文件名也带上这一段：`dist/…-0.1.0.kb-seed.hur.gz`、`…-0.1.0.plugin.hur.gz` —— 一个 `dist/` 里
 躺着几十个产物时，一眼看得出哪个是能跑的包、哪个是一份数据。**名字只是线索，清单才是权威**：

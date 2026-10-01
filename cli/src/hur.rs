@@ -992,6 +992,20 @@ pub(crate) fn sign_cmd(a: HurSignArgs) -> Result<()> {
 }
 
 fn init(a: HurInitArgs) -> Result<()> {
+    // 两个"先问再建目录"的判定，都在规范里（`profile::*`），不在命令实现里 ——
+    // 哪些名字存在、哪些能用通用模板生成，都是格式的事。**先判再落文件**：
+    // 不能先建一半目录再报错。
+    if !a.profile.trim().is_empty() && profile::get(a.profile.trim()).is_none() {
+        bail!(
+            "profile「{}」不在规范里（可选：{}）—— 用 `ncc hur profile --list` 看全部",
+            a.profile.trim(),
+            profile::names().join(" / ")
+        );
+    }
+    let prof = profile::of(Some(a.profile.trim()).filter(|s| !s.is_empty()), &a.kind);
+    if let Some(why) = profile::init_refusal(prof) {
+        bail!("不能生成这种包：\n  {why}");
+    }
     let input = tpl::InitInput {
         kind: a.kind.clone(),
         profile: Some(a.profile.trim().to_string()).filter(|x| !x.is_empty()),

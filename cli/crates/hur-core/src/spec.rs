@@ -1454,6 +1454,23 @@ pub fn validate_profile(pkg: &HurPackage, dir: &Path) -> Vec<Issue> {
         return out;
     };
 
+    // 清单**自己写的**那个值要认得出 —— 读的时候不认识会退化成 harness（`profile::of`，
+    // 只为兼容老包），但"写了就是不认识"是错，不是默认值：
+    // 以前 `ncc hur init --profile claude` 会安静地生出一份 harness 包，用户以为自己
+    // 拿到的是另一回事 —— 这种静默的替身必须报出来。
+    if let Some(declared) = pkg.profile.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if crate::profile::get(declared).is_none() {
+            out.push(Issue::err(
+                "R12",
+                format!(
+                    "清单里的 profile「{declared}」不在规范里（可选：{}）—— 未知值不是默认值，它就是写错了；\
+                     删掉这个字段则按 kind 推导",
+                    crate::profile::names().join(" / ")
+                ),
+            ));
+        }
+    }
+
     // 集合需求（`state.stores[]`）——与 profile 无关的那部分先判
     validate_stores(pkg, prof, def.data, &mut out);
 
@@ -2076,6 +2093,33 @@ mod tests {
             docs: vec![DataDoc { path: "data/sample.md".into(), slug: "sample".into(), ..Default::default() }],
         });
         p
+    }
+
+    /// 清单里写了一个不认识的名字 —— 这是**错**，不是"回落到默认值"。
+    /// 读的时候不认会退化成 harness（`profile::of`，只为兼容老包），但写错了要报出来：
+    /// 以前 `ncc hur init --profile claude` 会安静地产出一份 harness 包。
+    #[test]
+    fn r12_unknown_profile_name_is_an_error_not_a_fallback() {
+        let dir = temp_pkg("r12-profile-typo");
+        let mut p = data_pkg("kb-seed", &dir);
+        p.profile = Some("claude".into());
+        p.data = None; // 只想看 profile 这一条
+        p.entry = String::new();
+        let out = validate(&p, &dir, None, false);
+        assert!(
+            out.iter().any(|i| i.rule == "R12" && i.level == Level::Error && i.msg.contains("不在规范里")),
+            "{out:?}"
+        );
+        // 删掉这个字段（老包）则按 kind 推导，不报错
+        let mut legacy = data_pkg("kb-seed", &dir);
+        legacy.profile = None;
+        legacy.data = None;
+        legacy.entry = String::new();
+        let out2 = validate(&legacy, &dir, None, false);
+        assert!(
+            out2.iter().all(|i| !(i.level == Level::Error && i.msg.contains("不在规范里"))),
+            "{out2:?}"
+        );
     }
 
     #[test]

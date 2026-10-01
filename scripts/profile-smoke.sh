@@ -267,6 +267,22 @@ nz "不是包时非 0" "${R}"
 OUT="$("${CLI}" hur match --profile 不存在 2>&1)" && R=0 || R=$?
 nz "profile 写错时非 0" "${R}"
 contains "并给出可选值" "不在规范里" "${OUT}"
+# 通用模板**生不出**数据类与授权包：以前它照生成，生成物当场过不了自己的 verify
+# （`[R12 错误] profile=kb-seed 必须带 data{} 声明`）—— 工具造出一个自己都不认的
+# 东西，比直接拒绝更糟。现在拒绝并指明该走哪条路，且**一个文件都不落**。
+mkdir -p "${WORK}/refuse"
+( cd "${WORK}/refuse" && "${CLI}" hur init --profile kb-seed --name "Refused Seed" >/dev/null 2>&1 ) && R=0 || R=$?
+nz "数据类 profile 不让用通用模板生成" "${R}"
+REFUSE_SEED="$( cd "${WORK}/refuse" && { "${CLI}" hur init --profile kb-seed --name "Refused Seed" 2>&1 || true; } )"
+contains "并指出从节点导出真快照的命令" "--as-package" "${REFUSE_SEED}"
+REFUSE_AUTH="$( cd "${WORK}/refuse" && { "${CLI}" hur init --profile auth --name "Refused Auth" 2>&1 || true; } )"
+contains "授权包指向 ncc auth pkg init" "ncc auth pkg init" "${REFUSE_AUTH}"
+check "拒绝时一个文件都不落（不许先建目录再报错）" "" "$(ls -A "${WORK}/refuse" 2>/dev/null | tr -d '\n')"
+# profile 名字写错也不许"安静地给个别的"（以前 --profile claude 会生出一份 harness 包）
+( cd "${WORK}/refuse" && "${CLI}" hur init --profile claude --name "Typo" >/dev/null 2>&1 ) && R=0 || R=$?
+nz "profile 名写错时非 0" "${R}"
+contains "并给出可选值" "不在规范里" "$( cd "${WORK}/refuse" && { "${CLI}" hur init --profile claude --name "Typo" 2>&1 || true; } )"
+check "写错时也没落任何文件" "" "$(ls -A "${WORK}/refuse" 2>/dev/null | tr -d '\n')"
 
 say "14. 怎么接：MCP 产物必须指向**当前这个 CLI** 的 server"
 # 两个 MCP 面不是一回事：独立 `hur` 二进制的面是 8 个"装配 Agent"的工具，

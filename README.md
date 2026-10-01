@@ -715,8 +715,9 @@ Two rules the server enforces: **you cannot disable your own account**, and
 ### `ncc hur profile` and data snapshot packages
 
 What a package **is** used to be carried by a three-valued `kind` (`agent|harness|repo`). It now has a
-name: **profile** — 11 of them (`agent` `harness` `plugin` `mcp` `app` `scaffold` `skill` `kb-seed`
-`mem-seed` `ckpt-set` `trace-set`). The **envelope is unchanged** (deterministic bytes + `hur.json` +
+name: **profile** — 12 of them (`agent` `harness` `plugin` `mcp` `app` `scaffold` `skill` `kb-seed`
+`mem-seed` `ckpt-set` `trace-set`, plus `auth` — an **authorization package is not a snapshot**: it can
+be updated and needs unlocking to read). The **envelope is unchanged** (deterministic bytes + `hur.json` +
 `hur.lock` + signature); what the profile decides is **what it wants, whether it runs, how it hooks up,
 and what it matches on**.
 
@@ -724,11 +725,16 @@ and what it matches on**.
 ncc hur profile --list                 # the whole profile table
 ncc hur profile ./my-plugin            # what / wants / gives / how to hook up, plus a graded check
 ncc hur match --profile plugin --host cursor
+ncc hur init --profile mcp --name my-mcp        # the template generates the first 7 (agent…skill)
 ```
 
 **A profile is a constraint, not a label.** Data profiles explicitly forbid `entry` and
 `permissions.network` — a knowledge-base snapshot must not run code or reach the network on its own
-(new rule R12; legacy packages without a profile are unaffected).
+(rule R12; the constraint also binds the **generator**: the generic template cannot produce data or
+`auth` packages, so `ncc hur init --profile kb-seed` now **refuses and points at the right path**
+(export a real snapshot from a node: `ncc kb bundle --as-package`, …; for authorization packages use
+`ncc auth pkg init`) instead of writing a package that fails its own `verify`; a mistyped profile name
+is an error too, never a silent substitute).
 
 The artifact file name carries the same segment: `dist/…-0.1.0.kb-seed.hur.gz`, `…-0.1.0.plugin.hur.gz` —
 so a `dist/` full of artifacts is scannable at a glance. **The name is a hint, the manifest is the

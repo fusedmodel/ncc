@@ -257,6 +257,32 @@ pub fn table() -> Vec<(String, String)> {
         .collect()
 }
 
+/// 这个 profile **不能**用通用模板生成 —— 返回一句"该走哪条路"的说明（能生成则 `None`）。
+///
+/// 为什么要这条判定：`ncc hur init` 的通用模板给不出数据类的 `data{}`（更给不出
+/// `data/` 下的真字节），也给不出授权包的 `auth{}`（那要先定项目与解锁方式）。
+/// 以前它**照生成**，于是生成物当场过不了自己的 `verify`（`[R12 错误] profile=kb-seed
+/// 必须带 data{} 声明`）—— 工具造出一个自己都不认的东西，比直接拒绝更糟。
+pub fn init_refusal(name: &str) -> Option<String> {
+    let p = get(name)?;
+    if p.data {
+        return Some(format!(
+            "profile={} 是**数据快照**，通用模板生不出合规包（要 data{{}} 说清来历/时刻/隐私，还要 data/ 下真有文件）：\n  \
+             从节点导出一份真的：ncc kb bundle --as-package · ncc mem export --as-package · ncc ckpt export --as-package · ncc trace export --as-package\n  \
+             只想改一份已有的快照包：ncc hur data import --package <目录>（默认只出计划，--apply 才写）",
+            p.name
+        ));
+    }
+    if p.name == "auth" {
+        return Some(
+            "profile=auth 要先定项目与解锁方式（口令 / 本机身份），通用模板生不出它：\n  \
+             走 `ncc auth pkg init`（建包时会把密钥与 auth/vault.enc 一并建好）"
+                .to_string(),
+        );
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +337,30 @@ mod tests {
         assert_eq!(registry_kinds("ckpt-set"), ["hur"]);
         assert_eq!(names().len(), PROFILES.len());
         assert_eq!(table().len(), PROFILES.len());
+    }
+
+    /// 能用通用模板生成的 profile 与不能生成的，都要**一个不漏**地钉住 ——
+    /// 生成物过不了自己的 verify 是这条判定存在的全部理由。
+    #[test]
+    fn init_refuses_only_what_the_template_cannot_produce() {
+        for p in PROFILES.iter() {
+            let refusal = init_refusal(p.name);
+            if p.data || p.name == "auth" {
+                let why = refusal.unwrap_or_else(|| panic!("{} 不该能被通用模板生成", p.name));
+                assert!(
+                    why.contains(p.name),
+                    "{} 的拒绝说明里要点名是哪个 profile：{why}",
+                    p.name
+                );
+            } else {
+                assert!(refusal.is_none(), "{} 应该能生成：{refusal:?}", p.name);
+            }
+        }
+        // 数据类要说清去哪儿导、授权包要指向 `ncc auth pkg init`
+        let seed = init_refusal("kb-seed").unwrap();
+        assert!(seed.contains("--as-package"), "{seed}");
+        assert!(init_refusal("auth").unwrap().contains("ncc auth pkg init"));
+        // 未知名字不拦（那是 R12 的活，别在这儿抢）
+        assert!(init_refusal("nope").is_none());
     }
 }
