@@ -2781,7 +2781,7 @@ fn interop_cmd(a: HurInteropArgs) -> Result<()> {
         .into_iter()
         .filter_map(|p| std::fs::read_to_string(&p).ok().map(|t| (spec::rel(&dir, &p), t)))
         .collect();
-    let arts = interop::render(&pkg, &files, &targets).map_err(|e| anyhow!("{e:#}"))?;
+    let arts = interop::render_with(&pkg, &files, &targets, interop::NCC_MCP_SERVER).map_err(|e| anyhow!("{e:#}"))?;
     let out = if a.out.trim().is_empty() { ".".to_string() } else { a.out.trim().to_string() };
 
     if a.write {
@@ -3323,7 +3323,7 @@ fn profile_cmd(cfg: &CliConfig, a: HurProfileArgs) -> Result<()> {
             println!("           下一步：ncc hur data import --package <这个目录>（默认只出计划，--apply 才写）");
         } else if !d.hosts.is_empty() {
             println!(
-                "           下一步：ncc hur interop . --target {} --write（渲染成宿主能用的产物）",
+                "           下一步：ncc hur interop . --targets {} --write（渲染成宿主能用的产物）",
                 d.hosts.first().copied().unwrap_or("claude")
             );
         }
@@ -3358,17 +3358,17 @@ fn render_hookup(pkg: &spec::HurPackage, dir: Option<&Path>, hosts: &[&str]) -> 
     if targets.is_empty() {
         return match pkg.is_data() {
             true => "数据包：不接宿主，用 `ncc hur data import --package <目录>` 灌进节点".to_string(),
-            false => "没有可渲染的宿主（`ncc hur interop --target <宿主>` 可手指定）".to_string(),
+            false => "没有可渲染的宿主（`ncc hur interop --targets <宿主>` 可手指定）".to_string(),
         };
     }
     let mut parts = Vec::new();
     for t in targets {
-        match interop::render_target(pkg, &files, &t) {
+        match interop::render_target_with(pkg, &files, &t, interop::NCC_MCP_SERVER) {
             Ok(arts) => {
                 let paths: Vec<&str> = arts.iter().map(|a| a.path.as_str()).take(2).collect();
                 parts.push(format!("{t} → {}", if paths.is_empty() { "（无落点）".to_string() } else { paths.join(" , ") }));
             }
-            Err(_) => parts.push(format!("{t} → {}", interop::install_hint(pkg, &t))),
+            Err(_) => parts.push(format!("{t} → {}", interop::install_hint_with(pkg, &t, "ncc"))),
         }
     }
     parts.join("；")

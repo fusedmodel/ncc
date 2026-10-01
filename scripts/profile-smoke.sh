@@ -268,5 +268,53 @@ OUT="$("${CLI}" hur match --profile 不存在 2>&1)" && R=0 || R=$?
 nz "profile 写错时非 0" "${R}"
 contains "并给出可选值" "不在规范里" "${OUT}"
 
+say "14. 怎么接：MCP 产物必须指向**当前这个 CLI** 的 server"
+# 两个 MCP 面不是一回事：独立 `hur` 二进制的面是 8 个"装配 Agent"的工具，
+# `ncc hur mcp` 的面是 9 个治理工具。产物里写错命令名，宿主就会**连到另一个面**
+# （或者干脆找不到可执行文件）—— 所以这里把「产物写的命令」与「server 自己广告的
+# 工具」对起来验，而不是只看着像。
+mkdir -p "${WORK}/hook"
+( cd "${WORK}/hook" && "${CLI}" hur init --profile harness --name "Hook Probe" >/dev/null 2>&1 )
+HOOK="${WORK}/hook/hook-probe"
+check "生成了一份可接宿主的包" "yes" "$([[ -f "${HOOK}/hur.json" ]] && echo yes || echo no)"
+OUT="$("${CLI}" hur interop "${HOOK}" --targets mcp --out "${WORK}/hook-out" --write 2>&1)"
+contains "interop 写出了 .mcp.json" ".mcp.json" "${OUT}"
+MCP_JSON="${WORK}/hook-out/.mcp.json"
+check "产物里的命令是 ncc（不是老 hur 二进制）" "ncc" \
+  "$(jget "['mcpServers']['hur']['command']" < "${MCP_JSON}")"
+check "参数是 hur mcp" "hur:mcp" \
+  "$(python3 -c "
+import json
+d=json.load(open('${MCP_JSON}'))
+print(':'.join(d['mcpServers']['hur']['args']))")"
+check "env 里带上了包 id（宿主知道在替哪个包装东西）" "yes" \
+  "$(python3 -c "
+import json
+d=json.load(open('${MCP_JSON}'))
+print('yes' if d['mcpServers']['hur']['env'].get('HUR_MCP_AGENT') else 'no')")"
+# 一致性：产物用的命令/参数 = `ncc hur mcp --list-tools` 自己广告的那一份
+check "与 ncc hur mcp --list-tools 广告的 server 一致" "ncc hur mcp" \
+  "$("${CLI}" hur mcp --list-tools 2>/dev/null | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+print(' '.join([d['command']] + list(d['args'])))")"
+# 最强的一条：**按产物里的命令真起一次**，看它答不答得出工具表、是不是同一个面
+ARGS=()
+while IFS= read -r a; do ARGS+=("$a"); done < <(python3 -c "
+import json
+d=json.load(open('${MCP_JSON}'))
+print('\n'.join(d['mcpServers']['hur']['args']))")
+TOOLS="$("${CLI}" "${ARGS[@]}" <<< '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' 2>/dev/null | head -1)"
+check "按产物起的 server 真的答得出工具表（9 个）" "9" \
+  "$(printf '%s' "${TOOLS}" | python3 -c "
+import json,sys
+print(len(json.load(sys.stdin)['result']['tools']))")"
+contains "而且是治理面那套（hur_inspect 起头）" "hur_inspect" "${TOOLS}"
+not_contains "不是老的装配面（两代工具名不许混）" "hur_install_agent" "${TOOLS}"
+# 「下一步」里的参数名必须是真的（曾经写成 --target，实际是 --targets）
+OUT="$("${CLI}" hur profile "${HOOK}" 2>&1)"
+contains "profile 的下一步给的是 --targets（不是 --target）" "ncc hur interop . --targets" "${OUT}"
+contains "且说明它渲染的是宿主能直接用的产物" "渲染成宿主能用的产物" "${OUT}"
+
 printf '\n\033[1m结果：%d 通过 / %d 失败\033[0m\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" == "0" ]]

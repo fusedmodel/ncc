@@ -14,6 +14,30 @@
 
 ## [未发布]
 
+### 修复 · `ncc hur interop` 渲染的 MCP 配置指向了**另一个工具面**
+
+用户问：「`ncc hur` 是否支持一种类型，既能被 ncc CLI 调用、又能作为 tool call 被宿主调用？」
+查证时发现：`profile=harness`（`loader: mcp/stdio` + 入口脚本）这条路**是支持的**（活样例就是本仓
+`agent/`），但 `ncc hur interop --targets mcp` 渲染出来的 `.mcp.json` 里写的是 `hur mcp` ——
+那是**独立 `hur` 二进制**的面（8 个"装配 Agent"的工具），而 `ncc` 自己的治理面是
+`ncc hur mcp`（9 个工具：`hur_inspect` / `hur_verify` / `hur_dep` / `hur_policy` / `hur_plan` /
+`hur_sandbox` / `hur_tasks` / `hur_envs` / `hur_keys`）。后果不是"不好看"：宿主照着产物配出来
+会连到另一个面，或者干脆找不到 `hur` 这个可执行文件。
+
+- 渲染器改成**由调用方给 server 拼法**（`interop::render_target_with` / `render_with` +
+  `LEGACY_MCP_SERVER` / `NCC_MCP_SERVER`）：`ncc` 侧一律写 `{"command":"ncc","args":["hur","mcp"]}`，
+  与 `ncc hur mcp --list-tools` 自己广告的那份配置逐字一致；老拼法只作**默认值**保留，
+  老二进制的行为一字不变（有单测分别钉住两边）。
+- 顺手修掉两处提示词里写错的参数名：`ncc hur profile` 的"下一步"与"没有可渲染的宿主"都写成
+  `--target`，而真名是 `--targets`（`--target` 是全局的连接目标选择器，照着敲会去连一个叫
+  `mcp` 的目标）。
+- `install_hint` 也跟着分两套说法（`install_hint_with`）：ncc 侧给 `ncc hur install` /
+  `ncc hur interop … --targets …`，并说明拿到的是**只读治理工具**。
+
+验证：`bash scripts/profile-smoke.sh` **86 → 101/101**（新增第 14 节：产物里的命令是 `ncc`、
+与 `--list-tools` 广告的 server 一致、**按产物里的命令真起一次**答得出 9 个治理工具且不带老装配面、
+"下一步"给的是 `--targets`）；`cargo test -p hur-core` **116/116**。
+
 ### 新增 · `ncc feedback`：跨 Agent、跨用户的反馈（CLI → 节点 → 云端 → 服务）
 
 用户问：「增加一个 feedback 功能，实现跨 Agent、跨用户反馈等能力，实现一个 CLI 到 node、到 hub、

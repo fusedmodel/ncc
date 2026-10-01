@@ -25,6 +25,16 @@ pub const PROJECT_LOCK: &str = "lock.json";
 /// 支持的宿主目标（`codex` = 通用 `AGENTS.md`）
 pub const TARGETS: [&str; 5] = ["claude", "cursor", "cline", "codex", "mcp"];
 
+/// MCP 客户端配置里"该起哪个 server"（`command` + `args`）。
+///
+/// 为什么要由调用方给：同一个渲染器被**两代 CLI** 用 —— 独立 `hur` 二进制的 MCP 面是
+/// `hur mcp`（8 个只管 Agent 装配的工具），`ncc` 侧是 `ncc hur mcp`（9 个治理工具）。
+/// 写死一个的后果不是"不好看"，而是宿主按产物配出来**连到另一个工具面**（或干脆找不到
+/// 可执行文件）—— 所以默认保留历史拼法 [`LEGACY_MCP_SERVER`]，`ncc` 侧显式传自己的。
+pub const LEGACY_MCP_SERVER: (&str, &[&str]) = ("hur", &["mcp"]);
+/// `ncc` 的拼法（与 `ncc hur mcp --list-tools` 打印的那份配置逐字一致）。
+pub const NCC_MCP_SERVER: (&str, &[&str]) = ("ncc", &["hur", "mcp"]);
+
 pub fn valid_target(t: &str) -> bool {
     TARGETS.contains(&t)
 }
@@ -274,7 +284,13 @@ fn body_of(c: &BodyCtx) -> String {
 }
 
 /// 「怎么再往前一步」——把自己装到别的 Agent 里的可复制提示词（人和 Agent 都能读）
+///
+/// `cli` 是"该敲哪个 CLI"：`hur`（历史拼法）或 `ncc`（`ncc hur …`）。
 pub fn install_hint(pkg: &HurPackage, target: &str) -> String {
+    install_hint_with(pkg, target, "hur")
+}
+
+pub fn install_hint_with(pkg: &HurPackage, target: &str, cli: &str) -> String {
     let ref_ = if pkg.publish.slug.trim().is_empty() {
         format!("./dist/{}", crate::spec::artifact_name(pkg))
     } else if pkg.publish.slug.contains('/') {
@@ -282,6 +298,20 @@ pub fn install_hint(pkg: &HurPackage, target: &str) -> String {
     } else {
         pkg.publish.slug.clone()
     };
+    let ncc = cli.trim() == "ncc";
+    if ncc {
+        return match target {
+            "mcp" => format!(
+                "任何支持 MCP 的宿主：把 `{{\"mcpServers\":{{\"hur\":{{\"command\":\"ncc\",\"args\":[\"hur\",\"mcp\"]}}}}}}` 写进宿主配置，\
+                 之后可用只读工具 `hur_inspect` / `hur_verify` / `hur_policy` 看清包里是什么（写操作留在 CLI）。包引用：`{ref_}`"
+            ),
+            _ => format!(
+                "命令行安装到本机并生成宿主配置：`ncc hur install {ref_}` → `ncc hur interop {} --targets {} --write`",
+                pkg.id,
+                if valid_target(target) { target } else { "all" }
+            ),
+        };
+    }
     match target {
         "mcp" => format!(
             "任何支持 MCP 的宿主：把 `{{\"mcpServers\":{{\"hur\":{{\"command\":\"hur\",\"args\":[\"mcp\"]}}}}}}` 写进宿主配置，\
@@ -295,8 +325,19 @@ pub fn install_hint(pkg: &HurPackage, target: &str) -> String {
     }
 }
 
-/// 渲染单个目标（纯函数，可单测）
+/// 渲染单个目标（纯函数，可单测）。
+///
+/// `server` 决定 `.mcp.json` 里写哪个命令（见 [`LEGACY_MCP_SERVER`] / [`NCC_MCP_SERVER`]）。
 pub fn render_target(pkg: &HurPackage, files: &[(String, String)], target: &str) -> Result<Vec<Artifact>> {
+    render_target_with(pkg, files, target, LEGACY_MCP_SERVER)
+}
+
+pub fn render_target_with(
+    pkg: &HurPackage,
+    files: &[(String, String)],
+    target: &str,
+    server: (&str, &[&str]),
+) -> Result<Vec<Artifact>> {
     if !valid_target(target) {
         bail!("未知目标「{target}」（可选：{}）", TARGETS.join(" / "));
     }
@@ -359,11 +400,11 @@ pub fn render_target(pkg: &HurPackage, files: &[(String, String)], target: &str)
             );
             out.push(Artifact::marked("codex", "AGENTS.md", block));
         }
-        // MCP：让宿主通过 `hur mcp` 拿到全部 hur 能力（含装包/导出）
+        // MCP：让宿主通过 hur 的 MCP 面拿到治理能力（command 由调用方给，见 `render_target_with`）
         "mcp" => {
             let server = serde_json::json!({
-                "command": "hur",
-                "args": ["mcp"],
+                "command": server.0,
+                "args": server.1,
                 "env": { "HUR_MCP_AGENT": pkg.id }
             });
             out.push(Artifact::merge_json(
@@ -380,9 +421,18 @@ pub fn render_target(pkg: &HurPackage, files: &[(String, String)], target: &str)
 
 /// 渲染多个目标（`all` = 五个全出）
 pub fn render(pkg: &HurPackage, files: &[(String, String)], targets: &[String]) -> Result<Vec<Artifact>> {
+    render_with(pkg, files, targets, LEGACY_MCP_SERVER)
+}
+
+pub fn render_with(
+    pkg: &HurPackage,
+    files: &[(String, String)],
+    targets: &[String],
+    server: (&str, &[&str]),
+) -> Result<Vec<Artifact>> {
     let mut out = Vec::new();
     for t in targets {
-        out.extend(render_target(pkg, files, t)?);
+        out.extend(render_target_with(pkg, files, t, server)?);
     }
     Ok(out)
 }
@@ -1032,6 +1082,44 @@ mod tests {
         assert_eq!(hosts.iter().count(), 5);
         assert!(arts.iter().any(|a| a.path == "AGENTS.md"));
         assert!(arts.iter().any(|a| a.path == ".mcp.json"));
+    }
+
+    /// `.mcp.json` 里写哪个命令**由调用方决定**：老 `hur` 二进制与 `ncc` 的 MCP 面是
+    /// **两个不同的工具面**，写死一个会让宿主连错面（或找不到可执行文件）。
+    #[test]
+    fn mcp_target_renders_the_server_the_caller_asked_for() {
+        let legacy = render_target(&pkg_with_agent(), &files(), "mcp").unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&legacy[0].content).unwrap();
+        assert_eq!(doc["command"], "hur", "默认必须保持历史拼法（老二进制的宿主配置不能变）");
+        assert_eq!(doc["args"][0], "mcp");
+
+        let ncc = render_target_with(&pkg_with_agent(), &files(), "mcp", NCC_MCP_SERVER).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&ncc[0].content).unwrap();
+        assert_eq!(doc["command"], "ncc");
+        assert_eq!(doc["args"][0], "hur");
+        assert_eq!(doc["args"][1], "mcp");
+        // 包 id 照样写进 env：宿主知道自己在替**哪个包**装东西
+        assert_eq!(doc["env"]["HUR_MCP_AGENT"], "A-hotel-front-desk-abc123");
+        // 同一个包同一个落点：**只有命令不同**（免得以后顺手改了别处）
+        assert_eq!(legacy[0].path, ncc[0].path);
+        assert_eq!(legacy[0].merge_key, ncc[0].merge_key);
+        assert_eq!(legacy[0].mode, ncc[0].mode);
+
+        // 全量渲染也认这个参数（不是只有单目标那条路）
+        let all = render_with(&pkg_with_agent(), &files(), &parse_targets("all").unwrap(), NCC_MCP_SERVER)
+            .unwrap();
+        assert!(all.iter().any(|a| a.content.contains("\"ncc\"")));
+    }
+
+    /// 「怎么再往前一步」的提示词要说**当前这个 CLI** 的命令，别让 ncc 用户照着敲 `hur …`。
+    #[test]
+    fn hints_speak_the_cli_you_are_using() {
+        let p = pkg_with_agent();
+        assert!(install_hint(&p, "mcp").contains("\"command\":\"hur\""));
+        assert!(install_hint_with(&p, "mcp", "ncc").contains("\"command\":\"ncc\""));
+        assert!(install_hint_with(&p, "claude", "ncc").contains("ncc hur interop"));
+        // 老拼法不能被顺手改掉
+        assert!(install_hint(&p, "claude").contains("`hur install"));
     }
 
     #[test]
