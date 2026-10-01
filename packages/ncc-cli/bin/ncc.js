@@ -119,6 +119,34 @@ if (!bin) {
   process.exit(1);
 }
 
+// 「二进制找得到」不等于「PATH 上有 ncc」。
+//
+// 这个包装最常见的用法是 `npx @fusedmodel/ncc-cli …`：它能跑，但用户接着敲 `ncc`
+// 就是 command not found —— 因为二进制落在 ~/.ncc/bin，而那目录不在 PATH 上。
+// 判据只看**当前 PATH 上能不能解析出 ncc**：解析得出就闭嘴（例如 npm 全局软链
+// 已生效，或者你已经把 ~/.ncc/bin 加进去了），解析不出才提示怎么加。
+// 之所以不是"每次运行都提示"，是因为 PATH 正常时那会变成噪音。
+function onPath(name) {
+  const exts = process.platform === 'win32' ? ['.cmd', '.exe', '.bat', ''] : [''];
+  for (const d of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+    for (const e of exts) {
+      const p = path.join(d, name + e);
+      try {
+        fs.accessSync(p, fs.constants.X_OK);
+        return p;
+      } catch { /* 继续找 */ }
+    }
+  }
+  return null;
+}
+
+if (!process.env.NCC_BIN && process.env.NCC_NO_PATH_HINT !== '1' && !onPath('ncc')) {
+  console.error('ℹ 提示：PATH 上没有 ncc 命令（二进制在 ' + NCC_BIN + '）。');
+  console.error('  想直接敲 ncc，把它的目录加进 PATH 即可：');
+  console.error('    export PATH="$PATH:' + path.dirname(NCC_BIN) + '"');
+  console.error('  （或重开终端 / 用安装脚本 curl -fsSL https://ncc.ai/install.sh | sh）');
+}
+
 const child = spawn(bin, process.argv.slice(2), { stdio: 'inherit' });
 child.on('error', (e) => {
   console.error(`✗ 执行 ncc 失败：${e.message}`);

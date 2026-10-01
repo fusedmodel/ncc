@@ -34,16 +34,44 @@ function markerMatches() {
   }
 }
 
+// ⚠️ 「装好了」和「敲得出来」是两件事。
+//
+// 二进制落在 `~/.ncc/bin/ncc`，那个目录**不在** PATH 上；让你能敲 `ncc` 的是
+// **npm 全局 bin 目录**里的软链。两者不是一个目录，且该目录经常没进 PATH
+// （实测 npm 11 前缀 /usr/local/lib/npm → bin 目录不在默认 PATH 里），
+// 表现就是 `command not found`，而装的人只会以为 ncc 根本没装上。
+// 装的时候顺手说一句，省掉一次排查。
+function globalBinDir() {
+  const prefix = process.env.npm_config_prefix;
+  if (!prefix) return null;
+  return os.platform() === 'win32' ? prefix : path.join(prefix, 'bin');
+}
+
+function pathHint() {
+  if (process.env.npm_config_global !== 'true') return;
+  const bin = globalBinDir();
+  if (!bin) return;
+  const parts = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  if (parts.includes(bin)) return;
+  console.error(`ℹ ncc 已就位，但当前 shell 的 PATH 里没有 npm 全局 bin 目录：${bin}`);
+  console.error('  加进 PATH 后 `ncc` 才能直接用（在此之前可用 npx @fusedmodel/ncc-cli）：');
+  console.error(`    export PATH="$PATH:${bin}"`);
+}
+
 // 已存在**且是本版装的**才跳过
 try {
   fs.accessSync(dest, fs.constants.X_OK);
-  if (markerMatches()) process.exit(0);
+  if (markerMatches()) {
+    pathHint();
+    process.exit(0);
+  }
 } catch { /* 继续 */ }
 
 // 仓库本地已有 Rust 构建则无需下载
 try {
   const dev = path.join(__dirname, '..', '..', '..', 'cli', 'target', 'release', 'ncc' + EXE);
   fs.accessSync(dev, fs.constants.X_OK);
+  pathHint();
   process.exit(0);
 } catch { /* 继续 */ }
 
@@ -65,4 +93,5 @@ if (r.status !== 0) {
 try { fs.chmodSync(dest, 0o755); } catch { /* ignore */ }
 // 记下这一版 —— 写不上不影响使用，只是下次会重下一遍
 try { fs.writeFileSync(marker, PKG_VERSION); } catch { /* ignore */ }
+pathHint();
 process.exit(0);

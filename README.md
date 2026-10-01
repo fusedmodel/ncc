@@ -59,6 +59,16 @@ curl -fsSL https://<your-registry>/install.sh | sh   # → ~/.ncc/bin/ncc
 
 The script picks the binary for your OS/arch and honours `NCC_RELEASE_BASE` for the download source. This path is implemented but **not usable against a public host yet** — see [Status](#status).
 
+#### `ncc: command not found` right after installing
+
+The script does two things, each with a precondition, and a miss looks like "installed but unrunnable":
+
+1. Appends `~/.ncc/bin` to any rc file that **already exists** (`~/.zshrc` / `~/.bashrc` / `~/.profile`), creating `~/.zshrc` when none does.
+   This only affects **new** terminals — the script runs in a subshell and cannot change your current shell.
+2. If a directory already on PATH is writable (e.g. `~/.local/bin`), it symlinks `ncc` there so the **current** terminal works immediately.
+
+Stopgap: `export PATH="$PATH:$HOME/.ncc/bin"`. The decision to write an rc file is based on the **rc file's contents**, never on the current `$PATH` — an inherited PATH makes "already set up" a lie.
+
 ### npm wrapper (source ready, not yet published)
 
 The wrapper lives in [`packages/ncc-cli`](packages/ncc-cli). Its source is complete and checked in, but the package has not been published to npm yet:
@@ -82,6 +92,8 @@ The wrapper is a thin launcher: it resolves a binary and forwards args, stdio an
 A best-effort `postinstall` does the same download and never blocks installation on failure.
 
 > The unscoped name `ncc` on npm belongs to an unrelated package, so the wrapper is published under the `@fusedmodel` scope as `@fusedmodel/ncc-cli`.
+
+> With a **global** install, whether `ncc` is typable depends on the **npm global bin directory** being on your PATH — the binary goes to `~/.ncc/bin`, the shim goes to the npm bin dir, and those are two different places. When the npm prefix is `/usr/local/lib/npm` (a common default), that bin dir is *not* on PATH and you get `command not found`. Check with `npx @fusedmodel/ncc-cli --version` (PATH-independent), then `export PATH="$PATH:$(npm prefix -g)/bin"`.
 
 ### Verify a prebuilt binary
 

@@ -83,6 +83,8 @@ cd packages/ncc-cli && npm publish --access public
 
 > npm 上无作用域的 `ncc` 属于一个无关的包，因此包装发布在 `@fusedmodel` 作用域下：`@fusedmodel/ncc-cli`。
 
+> **全局**安装时，能不能敲出 `ncc` 取决于 **npm 全局 bin 目录**在不在 PATH 上 —— 二进制装到 `~/.ncc/bin`，软链在 npm 的 bin 目录，这是两个地方。npm 前缀是 `/usr/local/lib/npm`（常见默认值）时该目录**不在** PATH 上，结果就是 `command not found`。先用 `npx @fusedmodel/ncc-cli --version`（不依赖 PATH）确认装好了，再 `export PATH="$PATH:$(npm prefix -g)/bin"`。
+
 ### 校验预编译二进制
 
 预编译二进制及其 SHA-256 已入库，位于 [`release/bin`](release/bin)：

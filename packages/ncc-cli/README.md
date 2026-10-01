@@ -16,6 +16,16 @@ ncc search --kind skill
 
 The installed command is **`ncc`**.
 
+> **`ncc: command not found` after a global install?** The binary lives in `~/.ncc/bin`,
+> but what makes `ncc` typable is the shim in npm's **global bin directory** — and that
+> directory is frequently missing from PATH (whenever the npm prefix is `/usr/local/lib/npm`,
+> for instance). `postinstall` warns about it, and so does the launcher. Confirm the install
+> works with the PATH-independent `npx @fusedmodel/ncc-cli --version`, then:
+>
+> ```bash
+> export PATH="$PATH:$(npm prefix -g)/bin"     # add to ~/.zshrc to make it stick
+> ```
+
 ## What it does
 
 NCC is a registry for capability artifacts (API / Skill / MCP / Harness / Plugin / Scaffold).
