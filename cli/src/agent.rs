@@ -184,6 +184,15 @@ fn with_key(path: &str, key: &str) -> String {
     }
 }
 
+/// 第一个非空串（两边产品同一语义但键名不同时用）。
+fn first_non_empty(vals: &[&str]) -> String {
+    vals.iter()
+        .map(|v| v.trim())
+        .find(|v| !v.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// 作者侧的节点挑选：**不猜**。
 /// 0 台 → 这张名片只有包；唯一一台 agent 节点 → 就用它；多台 → 让他显式 --node（并列出候选）。
 fn pick_agent_node(cfg: &CliConfig, tk: &str) -> Result<Option<(String, String, String)>> {
@@ -456,9 +465,18 @@ fn add(cfg: &CliConfig, a: &AddArgs) -> Result<()> {
                     if n.is_empty() { None } else { Some(n) }
                 })
                 .unwrap_or_else(|| s(&node, "label").to_string());
-            let body = json!({ "ref": r, "label": label, "note": "由 ncc agent add 收下" });
+            // ⚠️ 连接接口的**请求体键名两边不同**：云端读 `ref`，内网节点读 `node`。
+            // 两个都带上：各自读自己认的那个，另一个被忽略 —— 这样同一份客户端两边都能连。
+            // （响应侧同理，回读时 `linkId` 与 `link.id` 都认。）
+            let body = json!({
+                "ref": r, "node": r, "label": label, "note": "由 ncc agent add 收下"
+            });
             match api::post_json(cfg, "/api/nodes/links", Some(&tk), &body) {
-                Ok(d) => link_id = s(&d, "linkId").to_string(),
+                // 两个产品回的键不一样（平台 `linkId` / 内网节点 `link.id`），
+                // 取链接 id 时两个都认 —— 否则同一份客户端在内网节点上会假装"没连上"。
+                Ok(d) => {
+                    link_id = first_non_empty(&[s(&d, "linkId"), s(&d["link"], "id")]);
+                }
                 Err(e) => link_warn = format!("{e}"),
             }
         }
@@ -528,7 +546,12 @@ fn ls(cfg: &CliConfig, json_out: bool) -> Result<()> {
             s(c, "id"),
             if uses > 0 { format!("{}/{}", c["uses"].as_i64().unwrap_or(0), uses) } else { format!("{}", c["uses"].as_i64().unwrap_or(0)) }
         );
-        println!("     链接 {}", s(c, "url"));
+        // 平台把 token 存下来（链接能直接再发一次）；内网节点只存 token 的哈希，
+        // 列表里回不出可点的链接 —— 那就如实说，别编一个打不开的地址。
+        match s(c, "url").trim() {
+            "" => println!("     链接  （本节点只存 token 哈希：链接只在你当初发出去的那一份里）"),
+            u => println!("     链接 {u}"),
+        }
     }
     println!("\n撤销：ncc agent rm <AC-…>（连字节一起删）");
     Ok(())
