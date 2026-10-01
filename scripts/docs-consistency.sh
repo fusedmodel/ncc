@@ -210,6 +210,91 @@ else
   skip "没找到 ncc（先 cargo build，或 CLI_BIN=/path/to/ncc）—— 跳过"
 fi
 
+say "5. 工具数量说法：写「N 个工具」的地方必须与权威一致"
+# 今天抓到过 6 处还写着 38（首页 / CLI 页 / 站内 services / 竞品 PRD）—— 数字是最容易
+# 烂的那类文案：它在 5 个地方各写一遍，改工具面时没人会想起来。这里只认两个数：
+# 43（始终存在的工具）与 46（+ 记录仓浏览三件，只有目标声明 store 才有）。
+COUNT_OUT="$(python3 - "${PLAT}" <<'PY'
+import os, re, sys
+plat = sys.argv[1]
+CORE = 43
+hits = []
+pat = re.compile(r'(\d+)\s*(?:个\s*工具|tools\b)')
+skip = ('node_modules', '/target/', '/.git/', '/dist/', '/build/', '/data/', '/release/')
+roots = ['web/src', 'web/public', 'prd', 'README.md', 'CHANGELOG.md']
+for rel in roots:
+    base = os.path.join(plat, rel)
+    targets = []
+    if os.path.isfile(base):
+        targets = [('', base)]
+    else:
+        for dp, dn, fn in os.walk(base):
+            if any(s in dp + '/' for s in skip):
+                continue
+            for f in fn:
+                if f.endswith(('.md', '.jsx', '.js', '.html', '.txt')):
+                    targets.append((dp, os.path.join(dp, f)))
+    for dp, p in targets:
+        name = os.path.relpath(p, plat)
+        if 'CHANGELOG' in name:      # 更新日志天生会说“以前是 37/38”，不判
+            continue
+        for i, line in enumerate(open(p, encoding='utf-8', errors='replace').read().split('\n'), 1):
+            for m in pat.finditer(line):
+                n = int(m.group(1))
+                if n not in (CORE, CORE + 3):
+                    hits.append(f"{name}:{i} 写着 {n}")
+print(f"BAD={len(hits)}")
+for h in hits[:12]:
+    print('  ' + h)
+PY
+)"
+printf '%s\n' "${COUNT_OUT}" | tail -n +2
+BAD_N="$(printf '%s' "${COUNT_OUT}" | grep -oE 'BAD=[0-9]+' | cut -d= -f2)"
+if [[ "${BAD_N}" == "0" ]]; then
+  good "所有「N 个工具」的说法都是 43 或 46"
+else
+  bad "有 ${BAD_N} 处工具数量写得不对（应为 43，或含记录仓的 46）：见上"
+fi
+
+say "6. JSX 文案里不该有 markdown 强调标记（会原样显示成星号）"
+# 前端把文案当纯文本渲染（不是 markdown），所以 `**重点**` 会连星号一起显示出来。
+# ⚠️ 站点只能直接读文档：**`.md` 里的 `**` 是对的**（react-markdown 渲染），只有 `.jsx`
+# 里的字符串需要自查；注释行（`//` / `{/* … */}`）不算。
+JSX_OUT="$(python3 - "${PLAT}/web/src" <<'PY'
+import os, re, sys
+base = sys.argv[1]
+hits = []
+for dp, dn, fn in os.walk(base):
+    for f in fn:
+        if not f.endswith('.jsx'):
+            continue
+        p = os.path.join(dp, f)
+        in_block = False            # 跨行的 {/* … */} 要一直跳到 */}
+        for i, line in enumerate(open(p, encoding='utf-8', errors='replace').read().split('\n'), 1):
+            s = line.strip()
+            if in_block:
+                in_block = '*/}' not in s and '*/' not in s
+                continue
+            if '{/*' in s and '*/}' not in s:
+                in_block = True
+                continue
+            if s.startswith('//') or s.startswith('/*') or s.startswith('*') or s.startswith('{/*'):
+                continue
+            if '**' in re.sub(r'\{/\*.*?\*/\}', '', line):
+                hits.append(f"{os.path.relpath(p, base)}:{i}")
+print(f"BAD={len(hits)}")
+for h in hits[:12]:
+    print('  ' + h)
+PY
+)"
+printf '%s\n' "${JSX_OUT}" | tail -n +2
+JSX_BAD="$(printf '%s' "${JSX_OUT}" | grep -oE 'BAD=[0-9]+' | cut -d= -f2)"
+if [[ "${JSX_BAD}" == "0" ]]; then
+  good "JSX 文案里没有字面星号"
+else
+  bad "有 ${JSX_BAD} 处 JSX 文案带 markdown 强调标记（会显示成星号）：见上"
+fi
+
 say "结果"
 printf '  通过 %s · 失败 %s · 跳过 %s\n' "${PASS}" "${FAIL}" "${SKIP}"
 [[ "${FAIL}" -eq 0 ]]
