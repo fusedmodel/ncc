@@ -59,6 +59,10 @@ ncc_list_services      浏览服务目录
 ncc_get_service        单条服务的完整接入信息（参数 ref）
 ncc_service_categories 业务分类目录
 
+# 索引与匹配（云端声明，**只有读**：登记 / 撤回留在 CLI）
+ncc_match_index         按一句需求在**索引**里找人（want=need 反过来找需求）：命中理由 + 怎么接过去，**不给分数**
+ncc_list_index_channels 索引里的频道（检索空间）与各多少条
+
 # 名片与人（云端声明）
 ncc_list_roles       工作角色目录
 ncc_find_people      按角色 / 技能找定位匹配的人
@@ -70,6 +74,10 @@ ncc_discover_nodes   发现可连接的节点
 ncc_region_profile   区域覆盖
 ncc_recommend_nodes  按区域要推荐
 ncc_list_grants      我给出与收到的授权
+
+# 对外授权（目标声明 auth 才有，**只有读**）
+ncc_list_credentials 我登记过的**持有证明凭据**（CR-…）：指纹 / 用途 / 来源机器 —— 凭据回答「是不是这份在说话」，不是权限
+ncc_list_consents    我授给第三方平台的应用与实际同意的 scope（登录 / 绑凭据 / 撤销留在 CLI）
 
 # 跨网直连（P2P，判断面：只做探测，不搬运业务字节）
 ncc_p2p_probe        本机打洞条件预检（纯本地，不需登录/对端）
