@@ -395,6 +395,40 @@ pub struct HurPackage {
     /// 网关的 accept 路由必须由它**背书**（配置只能比声明更窄）—— 见 `egress_covers`。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub egress: Option<Egress>,
+    /// **授权包声明**（`auth{}`）：只有 `profile=auth` 才有，也只允许它有。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth: Option<AuthDecl>,
+}
+
+/// 授权包声明（`auth{}`，`profile=auth`）。
+///
+/// 一份授权包 = **一段可以被 ncc 开锁的密文** + 一眼可见的元数据。设计上只做两件事：
+///
+///  1. **包里只允许元数据明文**：项目名、条目名、过期时间、密钥包法、迭代次数。
+///     值一律在 `auth/vault.enc` 里（AEAD 密文）。
+///  2. **密文被清单钉住**：`vault_sha256` 写进 `hur.json`，而签名覆盖 `hur.json` ——
+///     于是「换掉密文」必须连清单一起改，签名就挂不住了。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AuthDecl {
+    /// 这份包里有哪几个项目（每个项目一份密钥文件 + 一段独立密文）
+    pub projects: Vec<String>,
+    /// 解锁材料的包法：`passphrase` / `identity`（可以同时有）
+    #[serde(default)]
+    pub wrap: Vec<String>,
+    /// 允许打开这份包的身份公钥指纹（`SHA256:…`）；空 = 不限制身份（只认口令）
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// 口令 KDF 的迭代次数（写进包，好让第三方一眼看到强度）
+    #[serde(default)]
+    pub kdf_iters: u64,
+    /// `auth/vault.enc` 的 sha256（把密文钉在清单里）
+    #[serde(default)]
+    pub vault_sha256: String,
+    #[serde(default)]
+    pub created_at_unix: u64,
+    /// 给谁用的 / 干什么的（人读）
+    #[serde(default)]
+    pub note: String,
 }
 
 /// 出口声明（`egress{}`）：本包声明自己可以充当哪几条「出网通道」。
@@ -1557,7 +1591,193 @@ pub fn validate_profile(pkg: &HurPackage, dir: &Path) -> Vec<Issue> {
         }
     }
 
+    // 授权包（`auth`）：本仓装的东西里最敏感的一类 —— 它装的是凭据。
+    // 判定只认三件事：① 声明齐（`auth{}`）；② 包里只允许元数据明文；
+    // ③ **密文被清单钉住**（`auth.vault_sha256` 与 `auth/vault.enc` 对得上）——
+    //    签名覆盖 `hur.json`，于是「把密文换掉」必须连清单一起改，签名就挂不住了。
+    if prof == "auth" {
+        validate_auth(pkg, dir, &mut out);
+    }
+
     out
+}
+
+/// 授权包的落点（写死在规范里：改路径等于改格式）。
+pub const AUTH_DIR: &str = "auth/";
+/// 明文元数据（**不含任何值**）：项目 / 条目名 / 过期 / 密钥包法 / 迭代次数。
+pub const AUTH_INDEX: &str = "auth/index.json";
+/// 密文（AEAD）：所有项目的值都在这里。
+pub const AUTH_VAULT: &str = "auth/vault.enc";
+
+/// 项目密钥文件的路径（`auth/keys/<项目>.enc`）——一份一个文件，可单独轮换。
+pub fn auth_key_file(project: &str) -> String {
+    format!("{AUTH_DIR}keys/{}.enc", project.trim())
+}
+
+/// 项目名的合法字符（它要当文件名，所以窄一点）。
+pub fn auth_project_ok(name: &str) -> bool {
+    let n = name.trim();
+    !n.is_empty()
+        && n.len() <= 64
+        && n.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
+}
+
+/// R12 · 授权包（别在别处再写一遍这些规则。客户端与服务端两边都读这一段判定）。
+fn validate_auth(pkg: &HurPackage, dir: &Path, out: &mut Vec<Issue>) {
+    // ① 职责单一：不跑代码、不出网、不是数据快照
+    if !pkg.entry.trim().is_empty() {
+        out.push(Issue::err(
+            "R12",
+            format!("profile=auth 不允许 entry（现在是「{}」）—— 授权包不跑代码，它只被 ncc 打开", pkg.entry),
+        ));
+    }
+    if !pkg.permissions.network.is_empty() {
+        out.push(Issue::err("R12", "profile=auth 不允许 permissions.network —— 授权包不该自己出网"));
+    }
+    if pkg.egress.as_ref().map(|e| !e.is_empty()).unwrap_or(false) {
+        out.push(Issue::err("R12", "profile=auth 不该声明 egress{}（那是出网通道）"));
+    }
+    if pkg.agent.as_ref().map(|a| !a.is_empty()).unwrap_or(false) {
+        out.push(Issue::err("R12", "profile=auth 不该带 agent{} 声明"));
+    }
+    if pkg.data.is_some() {
+        out.push(Issue::err("R12", "profile=auth 要用 auth{} 声明，不是 data{}（授权包不是数据快照）"));
+    }
+    if pkg.state.as_ref().map(|s| !s.stores.is_empty()).unwrap_or(false) {
+        out.push(Issue::err("R12", "profile=auth 不该声明 state.stores[]（那是往节点上写集合）"));
+    }
+
+    // ② 声明齐
+    let Some(a) = pkg.auth.as_ref() else {
+        out.push(Issue::err(
+            "R12",
+            "profile=auth 必须带 auth{} 声明（projects / wrap / vault_sha256）—— 不然包里就是一堆没人知道怎么开、开着什么的字节",
+        ));
+        return;
+    };
+    if a.projects.is_empty() {
+        out.push(Issue::err("R12", "auth.projects 是空的 —— 一份授权包至少要有一个项目"));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for p in &a.projects {
+        let n = p.trim();
+        if !auth_project_ok(n) {
+            out.push(Issue::err(
+                "R12",
+                format!("auth.projects 的「{n}」不合法（只允许小写字母 / 数字 / - _，且要当文件名用）"),
+            ));
+            continue;
+        }
+        if !seen.insert(n.to_string()) {
+            out.push(Issue::warn("R12", format!("auth.projects 里「{n}」写了两遍")));
+        }
+        if !dir.join(auth_key_file(n)).is_file() {
+            out.push(Issue::err(
+                "R12",
+                format!("auth.projects 里的「{n}」没有对应的项目密钥文件 {}（轮换过的旧文件不该留在包里）", auth_key_file(n)),
+            ));
+        }
+    }
+    if a.wrap.is_empty() {
+        out.push(Issue::err(
+            "R12",
+            "auth.wrap 是空的 —— 至少写一种解锁方式（passphrase / identity），不然这份包谁也打不开",
+        ));
+    }
+    for w in &a.wrap {
+        let v = w.trim();
+        if v != "passphrase" && v != "identity" {
+            out.push(Issue::err("R12", format!("auth.wrap 里的「{v}」不认识（可选：passphrase / identity）")));
+        }
+    }
+    if a.wrap.iter().any(|w| w.trim() == "identity") && a.allow.is_empty() {
+        out.push(Issue::warn(
+            "R12",
+            "auth.wrap 里有 identity 但 auth.allow 是空的 —— 那台机器上任何身份都能开；要限定就把允许的公钥指纹写进 auth.allow",
+        ));
+    }
+    for f in &a.allow {
+        if !f.trim().starts_with("SHA256:") {
+            out.push(Issue::err("R12", format!("auth.allow 里的「{f}」不是公钥指纹（应当形如 SHA256:abcd…）")));
+        }
+    }
+    if a.kdf_iters == 0 {
+        out.push(Issue::warn("R12", "auth.kdf_iters 没写 —— 第三方没法核对口令强度"));
+    } else if a.kdf_iters < 100_000 {
+        out.push(Issue::warn("R12", format!("auth.kdf_iters={} 偏低（建议 ≥ 210000）", a.kdf_iters)));
+    }
+
+    // ③ 文件真的在，且密文与清单钉得住
+    let vault = dir.join(AUTH_VAULT);
+    if !vault.is_file() {
+        out.push(Issue::err("R12", format!("{AUTH_VAULT} 不在包里 —— 授权包的本体就是它")));
+    } else {
+        if a.vault_sha256.trim().is_empty() {
+            out.push(Issue::err(
+                "R12",
+                "auth.vault_sha256 是空的 —— 密文必须被清单钉住（否则换掉密文不用改签名）",
+            ));
+        } else {
+            match std::fs::read(&vault).map(|b| sha256_hex(&b)) {
+                Ok(got) if got == a.vault_sha256.trim() => {}
+                Ok(got) => out.push(Issue::err(
+                    "R12",
+                    format!("{AUTH_VAULT} 与 auth.vault_sha256 对不上（清单 {}，实际 {got}）", a.vault_sha256.trim()),
+                )),
+                Err(e) => out.push(Issue::err("R12", format!("读不了 {AUTH_VAULT}：{e}"))),
+            }
+        }
+    }
+    let index = dir.join(AUTH_INDEX);
+    if !index.is_file() {
+        out.push(Issue::err(
+            "R12",
+            format!("{AUTH_INDEX} 不在包里 —— 没有它，别人看不出这份包里有哪几个项目、要拿什么开"),
+        ));
+        return;
+    }
+    match std::fs::read_to_string(&index).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) {
+        None => out.push(Issue::err("R12", format!("{AUTH_INDEX} 不是合法 JSON"))),
+        // 元数据文件里出现「值」是最典型的一种手滑 —— 直接拦（这里只扫键名，不看内容）
+        Some(v) => {
+            if let Some(p) = find_value_like(&v, "") {
+                out.push(Issue::err(
+                    "R12",
+                    format!("{AUTH_INDEX} 的 {p} 看起来带着**值** —— 包里只允许元数据明文，值要进 {AUTH_VAULT}"),
+                ));
+            }
+        }
+    }
+}
+
+/// 在 JSON 里找形如「值」的字段（`value` / `secret` / `password` / `token` 且非空）。
+/// 返回第一个命中的路径，便于把话说清楚。
+fn find_value_like(v: &serde_json::Value, path: &str) -> Option<String> {
+    match v {
+        serde_json::Value::Object(m) => {
+            for (k, val) in m {
+                let here = if path.is_empty() { k.clone() } else { format!("{path}.{k}") };
+                let kl = k.to_ascii_lowercase();
+                let is_secret_name = matches!(kl.as_str(), "value" | "secret" | "password" | "passphrase" | "token" | "apikey" | "api_key");
+                if is_secret_name && !val.is_null() && val.as_str().map(|s| !s.trim().is_empty()).unwrap_or(true) {
+                    return Some(format!("「{here}」字段"));
+                }
+                if let Some(p) = find_value_like(val, &here) {
+                    return Some(p);
+                }
+            }
+            None
+        }
+        serde_json::Value::Array(arr) => {
+            for (i, item) in arr.iter().enumerate() {
+                if let Some(p) = find_value_like(item, &format!("{path}[{i}]")) {
+                    return Some(p);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// R10：校验包的出口声明（`egress{}`）。
@@ -1677,9 +1897,127 @@ mod tests {
             publish: PublishInfo::default(),
             agent: None,
             security: None,
+            auth: None,
         }
     }
-    
+
+    /* ---------------- R12：授权包（profile=auth） ---------------- */
+
+    /// 造一份「像模像样」的授权包：清单 + index + vault + 项目密钥文件。
+    fn auth_pkg(name: &str, with_files: bool) -> (PathBuf, HurPackage) {
+        let dir = temp_pkg(name);
+        std::fs::create_dir_all(dir.join("auth/keys")).unwrap();
+        let vault = b"NCCAUTH1-fake-ciphertext".to_vec();
+        if with_files {
+            std::fs::write(dir.join(AUTH_VAULT), &vault).unwrap();
+            std::fs::write(
+                dir.join(AUTH_INDEX),
+                r#"{"v":1,"projects":[{"name":"web","entries":[{"name":"DB_URL","kind":"secret"}]}]}"#,
+            )
+            .unwrap();
+            std::fs::write(dir.join("auth/keys/web.enc"), b"wrapped").unwrap();
+        }
+        let mut pkg = base("harness", "H-auth-demo-abc123");
+        pkg.profile = Some("auth".into());
+        pkg.entry = String::new();
+        pkg.auth = Some(AuthDecl {
+            projects: vec!["web".into()],
+            wrap: vec!["passphrase".into()],
+            allow: vec![],
+            kdf_iters: 210_000,
+            vault_sha256: if with_files { sha256_hex(&vault) } else { String::new() },
+            created_at_unix: 0,
+            note: "给发版用的".into(),
+        });
+        (dir, pkg)
+    }
+
+    fn auth_msgs(pkg: &HurPackage, dir: &Path) -> Vec<String> {
+        validate(pkg, dir, None, false)
+            .into_iter()
+            .filter(|i| i.rule == "R12")
+            .map(|i| format!("{:?}:{}", i.level, i.msg))
+            .collect()
+    }
+
+    #[test]
+    fn r12_auth_happy_path_is_quiet() {
+        let (dir, pkg) = auth_pkg("auth-ok", true);
+        let msgs = auth_msgs(&pkg, &dir);
+        assert!(msgs.iter().all(|m| !m.starts_with("Error")), "{msgs:?}");
+    }
+
+    #[test]
+    fn r12_auth_requires_the_declaration() {
+        let (dir, mut pkg) = auth_pkg("auth-nodecl", true);
+        pkg.auth = None;
+        let msgs = auth_msgs(&pkg, &dir);
+        assert!(msgs.iter().any(|m| m.contains("必须带 auth{}")), "{msgs:?}");
+    }
+
+    #[test]
+    fn r12_auth_pins_the_ciphertext_to_the_manifest() {
+        let (dir, pkg) = auth_pkg("auth-pin", true);
+        // 只改密文一个字节：清单里的摘要就与它对不上了（这就是“签名搭得住密文”的那一步）
+        std::fs::write(dir.join(AUTH_VAULT), b"NCCAUTH1-fake-ciphertext!").unwrap();
+        let msgs = auth_msgs(&pkg, &dir);
+        assert!(msgs.iter().any(|m| m.contains("vault_sha256 对不上")), "{msgs:?}");
+        // 摘要字段空着也不行：那等于换掉密文不用改签名
+        let (dir2, mut pkg2) = auth_pkg("auth-pin2", true);
+        if let Some(a) = pkg2.auth.as_mut() {
+            a.vault_sha256 = String::new();
+        }
+        let msgs2 = auth_msgs(&pkg2, &dir2);
+        assert!(msgs2.iter().any(|m| m.contains("vault_sha256 是空的")), "{msgs2:?}");
+    }
+
+    #[test]
+    fn r12_auth_index_must_not_carry_values() {
+        let (dir, pkg) = auth_pkg("auth-leak", true);
+        std::fs::write(
+            dir.join(AUTH_INDEX),
+            r#"{"v":1,"projects":[{"name":"web","entries":[{"name":"DB_URL","value":"hunter2"}]}]}"#,
+        )
+        .unwrap();
+        let msgs = auth_msgs(&pkg, &dir);
+        assert!(msgs.iter().any(|m| m.contains("带着**值**")), "{msgs:?}");
+    }
+
+    #[test]
+    fn r12_auth_forbids_entry_network_and_data() {
+        let (dir, mut pkg) = auth_pkg("auth-forbid", true);
+        pkg.entry = "src/agent.ts".into();
+        pkg.permissions.network = vec!["api.example.com".into()];
+        pkg.data = Some(DataDecl::default());
+        let msgs = auth_msgs(&pkg, &dir);
+        assert!(msgs.iter().any(|m| m.contains("不允许 entry")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("不允许 permissions.network")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("要用 auth{} 声明，不是 data{}")), "{msgs:?}");
+    }
+
+    #[test]
+    fn r12_auth_needs_a_key_file_per_project() {
+        let (dir, pkg) = auth_pkg("auth-nokey", true);
+        std::fs::remove_file(dir.join("auth/keys/web.enc")).unwrap();
+        let msgs = auth_msgs(&pkg, &dir);
+        assert!(msgs.iter().any(|m| m.contains("没有对应的项目密钥文件")), "{msgs:?}");
+    }
+
+    #[test]
+    fn r12_auth_wrap_must_be_a_known_mode() {
+        let (dir, mut pkg) = auth_pkg("auth-wrap", true);
+        if let Some(a) = pkg.auth.as_mut() {
+            a.wrap = vec!["telepathy".into()];
+        }
+        let msgs = auth_msgs(&pkg, &dir);
+        assert!(msgs.iter().any(|m| m.contains("不认识")), "{msgs:?}");
+        if let Some(a) = pkg.auth.as_mut() {
+            a.wrap = vec![];
+        }
+        let msgs2 = auth_msgs(&pkg, &dir);
+        assert!(msgs2.iter().any(|m| m.contains("auth.wrap 是空的")), "{msgs2:?}");
+    }
+
 
     #[test]
     fn semver_parse_and_cmp() {

@@ -127,6 +127,8 @@ pub fn write(dir: &Path, input: &SeedInput, docs: Vec<(DataDoc, Vec<u8>)>) -> Re
         state: None,
         security: None,
         egress: None,
+        // 数据快照不是授权包（`auth{}` 只属于 profile=auth）
+        auth: None,
     };
 
     // 先按规范自己过一遍：不合规就不留下半成品（fail-closed）。

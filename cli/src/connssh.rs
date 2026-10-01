@@ -497,15 +497,27 @@ fn whoami() -> String {
     std::env::var("USER").or_else(|_| std::env::var("LOGNAME")).unwrap_or_else(|_| "nobody".into())
 }
 
-fn hostname() -> String {
-    std::env::var("HOSTNAME").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| {
-        Command::new("hostname")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "localhost".into())
-    })
+/// 本机名。**别只靠 `Command::new("hostname")`**：macOS 上 `hostname` 不在某些 PATH 里，
+/// spawn 失败就会静静退回 "localhost"，而"本机名"是拿来判锁/记账本用的 —— 退化成
+/// localhost 会让跨机判重失效（这里踩过：锁里的 host 与本机对不上，死锁回收被跳过）。
+pub fn hostname() -> String {
+    for k in ["HOSTNAME", "COMPUTERNAME"] {
+        if let Ok(v) = std::env::var(k) {
+            let v = v.trim().to_string();
+            if !v.is_empty() {
+                return v;
+            }
+        }
+    }
+    for (bin, args) in [("/bin/hostname", &[][..]), ("/usr/bin/hostname", &[][..]), ("hostname", &[][..]), ("/usr/bin/uname", &["-n"][..])] {
+        if let Ok(o) = Command::new(bin).args(args).output() {
+            let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    "unknown".into()
 }
 
 fn whoami_host() -> String {

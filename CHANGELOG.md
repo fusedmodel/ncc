@@ -14,6 +14,34 @@
 
 ## [未发布]
 
+### 新增 · `ncc auth pkg`：授权包（`profile=auth`）—— 加密的凭据库，开锁只在一瞬间
+
+用户问：「是否增加一种 Auth 的 hur 包，使用时 ncc 检查调用权限，只有 ncc 调用时通过设定的密钥
+读取里面的授权数据，调用结束后锁包；加密包里的授权文件与不同项目的密钥文件的更新要有锁机制保护。」
+
+就是这一套。一份授权包 = **一段只有 ncc 打得开的密文 + 一眼可见的元数据**。
+
+- 包形状：`hur.json`（`profile=auth` + `auth{projects,wrap,allow,kdf_iters,vault_sha256}`）、
+  `auth/index.json`（**明文元数据**：项目 / 条目名 / 过期 / gen）、`auth/vault.enc`（密文）、
+  `auth/keys/<项目>.enc`（**项目密钥文件**，可单独轮换）。
+- 密码学不创新：PBKDF2-HMAC-SHA256（口令）/ HKDF（本机身份私钥）→ KEK 包主密钥；
+  ChaCha20-Poly1305 加密；AAD 绑定「包@版本」与「项目:gen」防密文张冠李戴。
+- **密文被清单钉住**：`auth.vault_sha256` 写进 `hur.json`，而签名覆盖清单 ——
+  换掉密文必须连清单一起改，签名就挂不住了。
+- **命令**：`init` / `show` / `set` / `get`（默认打码）/ `rm` / `rotate`（项目密钥或主密钥）/ `run` /
+  `lock` / `status`。值只从 `--value-stdin` / `--value-file` 来（**不提供 `--value`**：argv 在 ps 里看得见）。
+- **调用权限**：`auth.allow` 限定的身份、项目声明、条目过期、密文摘要 —— 四道都过了才开锁。
+- **调用 = 开锁 → 注入 → 执行 → 抹掉 → 上锁**：值进 `NCC_AUTH_<条目>` 与 `NCC_AUTH_BUNDLE`
+  （0600）；子进程一退出（含失败）就抹掉 session 目录；退出码跟随子进程。**审计只记条目名，不记值**。
+- **锁机制**：`~/.harnessuse/auth/<包>/lock`（O_EXCL + 持有者信息 + `--lock-timeout`），
+  死锁（进程没了/超时）会被回收并在输出里说一声；写入一律 tmp → fsync → rename。
+- `ncc auth key new --offline`：只在本机生成身份密钥（授权包用得上，离线机器也要能用）。
+  `ncc auth pkg` **全部本地动作，不门禁任何服务端能力**。
+- R12：`auth` profile 的必填/禁令（不许 `entry` / `permissions.network` / `egress` / `agent` / `data{}`），
+  且 `auth/index.json` 里出现 `value` 一类键直接判不合规。
+- 冒烟：`scripts/auth-pkg-smoke.sh`（**70 项**：明文泄漏面 / 权限 / 并发与死锁 / 过期 / 轮换 /
+  篡改 / 签名 / 本地状态）；`hur-core` 单测 114（含 7 条 auth 的 R12）。
+
 ### 新增 · `ncc conn`：到 Cloud instance 的连接通道（通信基础设施）
 
 `ncc sandbox run` 是「把一条命令送过去跑」；`ncc conn` 是「**在那台机器上开一条会话**」——

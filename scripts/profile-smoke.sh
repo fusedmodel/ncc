@@ -94,11 +94,13 @@ say "3. profile 规范本身"
 OUT="$("${CLI}" hur profile --list)"
 contains "列得出规范里的 profile" "kb-seed" "${OUT}"
 contains "标出了哪些是不可执行的数据快照" "数据快照（不可执行）" "${OUT}"
-for p in agent harness plugin mcp app scaffold skill kb-seed mem-seed ckpt-set trace-set; do
+for p in agent harness plugin mcp app scaffold skill kb-seed mem-seed ckpt-set trace-set auth; do
   contains "规范里有 $p" "$p" "${OUT}"
 done
 OUT="$("${CLI}" hur profile --list --json)"
-check "profile 表能出 JSON（给别的工具读）" "11" "$(printf '%s' "${OUT}" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['profiles']))")"
+check "profile 表能出 JSON（给别的工具读）" "12" "$(printf '%s' "${OUT}" | python3 -c "import json,sys;print(len(json.load(sys.stdin)['profiles']))")"
+contains "auth 标注成不可执行（它只被 ncc 打开）" "auth" "$(printf '%s' "${OUT}" | python3 -c "import json,sys;ps=json.load(sys.stdin)['profiles'];a=[p for p in ps if p['profile']=='auth'][0];print('auth' if not a['executable'] else 'x')")"
+contains "auth 不是 data 类（免得被 hur data import 当成快照）" "auth" "$(printf '%s' "${OUT}" | python3 -c "import json,sys;ps=json.load(sys.stdin)['profiles'];a=[p for p in ps if p['profile']=='auth'][0];print('auth' if not a['data'] else 'x')")"
 
 say "4. 知识库快照包（kb-seed）"
 "${CLI}" kb bundle --namespace @seed --as-package "${WORK}/kbseed" --privacy internal --license CC-BY-4.0 >"${TMP}/kbout" 2>&1

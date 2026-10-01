@@ -910,6 +910,7 @@ mod tests {
     fn pkg_with_agent() -> HurPackage {
         HurPackage {
             egress: None,
+            auth: None,
             state: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),

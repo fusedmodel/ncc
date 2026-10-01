@@ -43,7 +43,7 @@ pub struct Profile {
 }
 
 /// 规范里的一等 profile。加一个就要同步 `spec::validate` 的 R12 与 `profile smokes`。
-pub const PROFILES: [Profile; 11] = [
+pub const PROFILES: [Profile; 12] = [
     Profile {
         name: "agent",
         summary: "声明式 Agent：system prompt + 工具面 + 技能，装进宿主或本机沙箱",
@@ -165,6 +165,28 @@ pub const PROFILES: [Profile; 11] = [
         forbids: &["entry", "permissions.network", "payload=full 却把 privacy 写成 public"],
         match_by: "kind · tags · data.source",
     },
+    Profile {
+        // 与数据快照刻意不同：它**不是**快照（不是某时某地的一份只读副本），
+        // 而是一份可更新、要开锁才能读的凭据库 —— 所以不归 `is_data`，别让它被
+        // `hur data import` 那套当成快照处理。约束在 R12 里单独写。
+        name: "auth",
+        summary: "加密的授权包：里面的凭据只在 ncc 打开它的那一小段时间里是明文",
+        executable: false,
+        data: false,
+        registry_kinds: &["hur"],
+        hosts: &[],
+        requires: &[
+            "auth{} 声明（projects / wrap / kdf）",
+            "auth/index.json（元数据）与 auth/vault.enc（密文）",
+            "每个声明过的项目都要有 auth/keys/<项目>.enc（项目密钥文件）",
+        ],
+        forbids: &[
+            "entry（授权包不跑代码）",
+            "permissions.network 与 egress{}（它不该自己出网）",
+            "把明文凭据写进包里（包里只允许元数据明文）",
+        ],
+        match_by: "tags · auth.projects",
+    },
 ];
 
 /// 按名字取 profile。
@@ -281,6 +303,9 @@ mod tests {
         assert_eq!(of(Some("trace-set"), "agent"), "trace-set");
         assert_eq!(of(Some("bogus"), "agent"), "harness");
         assert!(is_data("kb-seed") && !is_data("agent"));
+        // auth 刻意**不算**数据快照（它可更新、要开锁才读，不是某时某地的只读副本）
+        assert!(!is_data("auth"), "auth 不该归进 is_data（那会被 hur data import 当成快照）");
+        assert!(!is_executable("auth"), "auth 包不跑代码");
         assert!(is_executable("plugin") && !is_executable("skill"));
         assert_eq!(registry_kinds("plugin"), ["plugin"]);
         assert_eq!(registry_kinds("ckpt-set"), ["hur"]);

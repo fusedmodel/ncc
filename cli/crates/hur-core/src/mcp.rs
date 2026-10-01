@@ -641,6 +641,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("src")).unwrap();
         let pkg = HurPackage {
             egress: None,
+            auth: None,
             state: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),

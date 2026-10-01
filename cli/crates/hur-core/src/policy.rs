@@ -1279,6 +1279,7 @@ mod tests {
     fn pkg(sec: Option<SecurityReq>) -> HurPackage {
         HurPackage {
             egress: None,
+            auth: None,
             state: None,
             spec: PKG_SPEC.into(),
             kind: "agent".into(),

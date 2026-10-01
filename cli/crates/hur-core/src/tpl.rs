@@ -99,6 +99,9 @@ pub fn build_package(input: &InitInput) -> HurPackage {
     HurPackage {
         egress: None,
         state: None,
+        // 授权包（profile=auth）不该由通用模板生出来：它要先定密钥与项目，
+        // 得走 `ncc auth pkg init`（那里会把 kdf / vault 一起建好）。
+        auth: None,
         spec: PKG_SPEC.to_string(),
         kind: input.kind.clone(),
         // 写了就写进清单；没写就不写（老包不带这个字段，照样能被校验）

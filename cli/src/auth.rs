@@ -30,8 +30,8 @@ fn key_path(purpose: &str) -> PathBuf {
     cred_dir().join(format!("{purpose}.key"))
 }
 
-fn b64url(raw: &[u8]) -> String {
-    // 与 Rust 生态一致：无填充的 URL-safe base64。
+/// 无填充的 URL-safe base64（与 Rust 生态一致；授权包也用它打包 nonce / 密文）。
+pub(crate) fn b64url(raw: &[u8]) -> String {
     const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::new();
     for chunk in raw.chunks(3) {
@@ -49,7 +49,7 @@ fn b64url(raw: &[u8]) -> String {
     out
 }
 
-fn b64_decode(s: &str) -> Vec<u8> {
+pub(crate) fn b64_decode(s: &str) -> Vec<u8> {
     let clean: String = s.chars().filter(|c| *c != '=' && !c.is_whitespace()).collect();
     let mut acc: u32 = 0;
     let mut bits = 0u32;
@@ -77,7 +77,7 @@ fn b64_decode(s: &str) -> Vec<u8> {
 ///
 /// 生成的是 PKCS#8（ring 的标准产物），落盘 0600 —— 私钥不出本机，
 /// 服务端永远只见到公钥。
-fn load_or_create_key(purpose: &str) -> Result<(Ed25519KeyPair, Vec<u8>, PathBuf)> {
+fn load_or_create_key(purpose: &str, quiet: bool) -> Result<(Ed25519KeyPair, Vec<u8>, PathBuf)> {
     let path = key_path(purpose);
     if let Ok(raw) = fs::read_to_string(&path) {
         let der = b64_decode(raw.trim());
@@ -98,7 +98,10 @@ fn load_or_create_key(purpose: &str) -> Result<(Ed25519KeyPair, Vec<u8>, PathBuf
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     }
-    println!("  已生成身份持有密钥 {}", path.display());
+    // `--json` 时**不能**混进人读的行：脚本要直接 parse 这份输出
+    if !quiet {
+        println!("  已生成身份持有密钥 {}", path.display());
+    }
     let pubkey = public_key_of_pkcs8(der.as_ref())?;
     let kp = Ed25519KeyPair::from_pkcs8(der.as_ref()).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok((kp, pubkey, path))
@@ -151,6 +154,27 @@ fn public_key_of_pkcs8(der: &[u8]) -> Result<Vec<u8>> {
         bail!("私钥结构不完整（{} 字节）", der.len());
     }
     Ok(der[der.len() - 32..].to_vec())
+}
+
+/// 本机身份私钥的 DER 字节 + 公钥指纹。**授权包用它做“这一台有没有权开”的判定。**
+///
+/// 只读不生成：没有就返回 None，由调用方决定是“报错让你先 `ncc auth key new`”还是
+/// “换个解锁方式”。
+pub(crate) fn identity_der() -> Result<Option<(Vec<u8>, String)>> {
+    let p = key_path("identity");
+    let Ok(raw) = fs::read_to_string(&p) else { return Ok(None) };
+    let der = b64_decode(raw.trim());
+    if der.is_empty() {
+        return Ok(None);
+    }
+    let pubkey = public_key_of_pkcs8(&der)?;
+    let fpr = fingerprint(&pubkey);
+    Ok(Some((der, fpr)))
+}
+
+/// 只要公钥与指纹（列表 / 展示用）。
+pub(crate) fn identity_public() -> Result<Option<(Vec<u8>, String)>> {
+    Ok(identity_der()?.map(|(der, fpr)| (public_key_of_pkcs8(&der).unwrap_or_default(), fpr)))
 }
 
 /// 公钥指纹（本地算，与服务端同一套：sha256 前 8 字节 hex）。
@@ -209,6 +233,14 @@ pub enum AuthCmd {
     Revoke { id: String },
     /// 这台机器上有什么凭据（本地密钥 + 服务端登记）
     Status,
+    /// **授权包**（`profile=auth`）：一份能被 ncc 开锁的凭据库
+    ///
+    /// 包里只有元数据是明文（项目 / 条目名 / 过期）；值在 `auth/vault.enc` 里，
+    /// 只在 `run` 那一段时间里解密到内存与一个 0700 的 session 目录（退出即抹）。
+    Pkg {
+        #[command(subcommand)]
+        action: crate::authpkg::PkgAction,
+    },
 }
 
 #[derive(clap::Subcommand)]
@@ -219,6 +251,12 @@ pub enum KeyCmd {
         purpose: String,
         #[arg(long)]
         label: Option<String>,
+        /// 只在本地生成，不登记到服务端
+        ///
+        /// 授权包（`ncc auth pkg --identity`）只需要本机有这把密钥；离线机器上也要能用，
+        /// 所以不必为了它先联网登记一份凭据。（凭据是给「向平台证明这台机器」用的，两件事。）
+        #[arg(long)]
+        offline: bool,
         #[arg(long)]
         json: bool,
     },
@@ -235,6 +273,8 @@ pub enum KeyCmd {
 
 pub fn run(cfg: &CliConfig, action: &AuthCmd) -> Result<()> {
     match action {
+        // 授权包完全在本地：不碰服务端，也就不需要 cfg
+        AuthCmd::Pkg { action } => crate::authpkg::cmd(action),
         AuthCmd::Key { action } => key(cfg, action),
         AuthCmd::Login(a) => login(cfg, a),
         AuthCmd::Consents(a) => consents(cfg, a),
@@ -244,10 +284,32 @@ pub fn run(cfg: &CliConfig, action: &AuthCmd) -> Result<()> {
 }
 
 fn key(cfg: &CliConfig, action: &KeyCmd) -> Result<()> {
-    let token = require_token(cfg)?;
+    // 离线生成不需要凭据（也就不会因为目标不可达而挂住）
+    let token = match action {
+        KeyCmd::New { offline: true, .. } => String::new(),
+        _ => require_token(cfg)?,
+    };
     match action {
-        KeyCmd::New { purpose, label, json } => {
-            let (kp, pubkey, path) = load_or_create_key(purpose)?;
+        KeyCmd::New { purpose, label, offline, json } => {
+            let (kp, pubkey, path) = load_or_create_key(purpose, *json)?;
+            let fpr = fingerprint(&pubkey);
+            if *offline {
+                let out = json!({
+                    "path": path.to_string_lossy(),
+                    "publicKey": b64url(&pubkey),
+                    "fingerprint": fpr,
+                    "registered": false,
+                    "note": "只在本地生成（没登记到服务端）—— 授权包用这一把就够；要拿来向平台证明自己，再跑一次不带 --offline 的",
+                });
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                } else {
+                    println!("✅ 身份持有密钥（只在本地）{}", path.display());
+                    println!("   公钥指纹 {fpr}");
+                    println!("   授权包用它解锁：`ncc auth pkg init <目录> --identity --allow {fpr} …`");
+                }
+                return Ok(());
+            }
             let body = json!({
                 "publicKey": b64url(&pubkey),
                 "purpose": purpose,

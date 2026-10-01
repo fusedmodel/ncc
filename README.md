@@ -151,6 +151,9 @@ ncc conn open --ssh deploy@10.0.0.7:2222 --name web        # SSH works too: the 
 ncc conn run deploy --file ./app.tar.gz --script ./deploy.sh --reason "release: v0.3.0"
 ncc conn exec deploy "tar -xzf app.tar.gz && ./app --check" --reason "verify"
 ncc conn pull deploy logs/app.log --to ./app.log            # pull artifacts; close --purge to hang up
+ncc auth pkg init ./team-auth --id @me/team-auth --project web --passphrase-file ./pass.txt
+ncc auth pkg run ./team-auth --project web --reason "release" --passphrase-file ./pass.txt -- ./deploy.sh
+# ↑ auth package: only metadata is plaintext; unlock lasts exactly one command, then it re-locks and wipes
 ncc terminal
 ```
 
@@ -253,6 +256,11 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc auth key new` / `ls` / `rm` | Bind a **proof-of-possession credential** (`CR-…`): Ed25519 key under `~/.ncc/cred/` (0600), only the public key is registered. Deliberately **separate** from the publishing key in `~/.harnessuse/keys`. Binding a credential ≠ being allowed to use anything |
 | `ncc auth login --client <id>` | **Device flow** (RFC 8628, like `gh auth login`): the terminal prints `verification_uri` + `user_code`, you approve in a browser, the CLI polls. The token is stored per target and stays on the data plane (account commands still use `ncc login`) |
 | `ncc auth consents` / `revoke` / `status` | What I granted to which platform (scopes + bound credential) / revoke **per platform** (immediate, and it never touches other platforms) |
+| `ncc auth pkg init <dir> --id @ns/slug --project web --passphrase-file <0600 file> [--identity] [--allow <fpr>…]` | **Auth package** (`profile=auth`): seal a set of credentials into a signable HUR package. **Only metadata is plaintext**; values live in `auth/vault.enc` (ChaCha20-Poly1305) and the ciphertext is pinned by the manifest |
+| `ncc auth pkg show <dir>` / `get <dir> --project p --entry N [--reveal]` / `set … --value-stdin --reason "…"` / `rm …` | Read metadata (**no passphrase**, no values) / read one entry (masked by default) / write one / delete one. Values only come from `--value-stdin` / `--value-file` (argv is visible in ps) |
+| `ncc auth pkg run <dir> --project p --reason "…" -- <cmd>` | **Unlock → inject → run → wipe → lock**: values arrive as `NCC_AUTH_<entry>` and `NCC_AUTH_BUNDLE` (0600), wiped on exit; the exit code follows the child |
+| `ncc auth pkg rotate <dir> [--project p \| --new-passphrase-file <new>] --reason "…"` | **Rotation**: change a project key (gen+1 and re-encrypt) or the master key. Old material stops working; every update is lock-protected |
+| `ncc auth pkg lock <dir> [--force]` / `status <dir>` | Inspect the lock / clear leftover sessions (`--force` clears the lock too) / local state and the audit tail (**entry names only, never values**) |
 | `ncc --auth <cmd>` | Run that command as an **outward access token** (data plane only); when the token is key-bound the CLI attaches the `NCC-Proof` holder proof automatically |
 | `ncc p2p probe` | Hole-punch preflight — local NAT profile, no server needed |
 | `ncc p2p check <node>` | Real connectivity check against a peer node (both sides run it; ≈ ICE connectivity check) |

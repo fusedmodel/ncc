@@ -139,6 +139,9 @@ ncc conn open --ssh deploy@10.0.0.7:2222 --name web        # 走 SSH 也行：�
 ncc conn run deploy --file ./app.tar.gz --script ./deploy.sh --reason "发版：v0.3.0"
 ncc conn exec deploy "tar -xzf app.tar.gz && ./app --check" --reason "验一版"
 ncc conn pull deploy logs/app.log --to ./app.log            # 产拉回来；close --purge 收线
+ncc auth pkg init ./team-auth --id @me/team-auth --project web --passphrase-file ./pass.txt
+ncc auth pkg run ./team-auth --project web --reason "发版" --passphrase-file ./pass.txt -- ./deploy.sh
+# ↑ 授权包：包里只有元数据是明文；开锁只在这一条命令的那一小段时间，退出即抹、即上锁
 ncc services match "帮我订杭州的酒店"    # 按意图找服务（服务提供方打包的业务）
 ncc terminal
 ```
@@ -249,6 +252,11 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc auth key new` / `ls` / `rm` | 绑定**持有证明凭据**（`CR-…`）：Ed25519 私钥落 `~/.ncc/cred/`（0600），只把公钥登记出去。与 `~/.harnessuse/keys` 的发布者签名密钥**故意分开**；绑定凭据 ≠ 有权用 |
 | `ncc auth login --client <id>` | **设备码登录**（RFC 8628，同 `gh auth login`）：终端给出 `verification_uri` + `user_code`，浏览器里确认，CLI 轮询换令牌。令牌按目标单独存，只走数据面（账号面仍用 `ncc login`） |
 | `ncc auth consents` / `revoke` / `status` | 我授给了哪些平台（scope + 绑定凭据）/ **按平台撤销**（立刻失效，且不影响别的平台） |
+| `ncc auth pkg init <目录> --id @ns/slug --project web --passphrase-file <0600 文件> [--identity] [--allow <指纹>…]` | **授权包**（`profile=auth`）：把一组凭据封成可签名的 HUR 包。**包里只有元数据是明文**，值在 `auth/vault.enc`（ChaCha20-Poly1305），密文被清单钉住 |
+| `ncc auth pkg show <目录>` / `get <目录> --project p --entry N [--reveal]` / `set … --value-stdin --reason "…"` / `rm …` | 看元数据（**不需要口令**，也看不到值）/ 读一条（默认打码）/ 写一条 / 删一条。值只从 `--value-stdin` / `--value-file` 来（argv 在 ps 里看得见） |
+| `ncc auth pkg run <目录> --project p --reason "…" -- <命令>` | **开锁 → 注入 → 执行 → 抹掉 → 上锁**：值进 `NCC_AUTH_<条目>` 与 `NCC_AUTH_BUNDLE`（0600），退出即抹；退出码跟随子进程 |
+| `ncc auth pkg rotate <目录> [--project p \| --new-passphrase-file <新>] --reason "…"` | **轮换**：换项目密钥（gen+1 并重加密）或换主密钥。旧材料随即失效；更新全程有锁保护 |
+| `ncc auth pkg lock <目录> [--force]` / `status <目录>` | 看锁/清残留 session（`--force` 连锁一起清）/ 本地状态与审计尾巴（**只记条目名，不记值**） |
 | `ncc --auth <命令>` | 以**对外令牌**跑这条命令（只走数据面）；令牌绑了凭据时会自动附持有证明 `NCC-Proof` |
 | `ncc registry add` | 用一条内网短链（或 key/secret）把内网 registry 接进来 |
 | `ncc registry login` / `join` | 登入自托管内网节点 / 把本机托管进去（注册 + 心跳） |

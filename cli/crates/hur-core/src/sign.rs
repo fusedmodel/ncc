@@ -651,6 +651,7 @@ mod tests {
     fn pkg() -> HurPackage {
         HurPackage {
             egress: None,
+            auth: None,
             state: None,
             spec: crate::spec::PKG_SPEC.into(),
             kind: "agent".into(),

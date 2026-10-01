@@ -3,6 +3,7 @@ mod agent;
 mod api;
 mod app;
 mod auth;
+mod authpkg;
 mod capability;
 mod config;
 mod configs;
@@ -989,7 +990,16 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Index(_) | Cmd::List(_) | Cmd::Match(_) => Some("index"),
         Cmd::Grant(_) => Some("grants"),
         // 对外授权颁发方（OIDC / device flow）只在目标声明 auth 时才放行。
-        Cmd::Auth { .. } => Some("auth"),
+        //
+        // ⚠️ 例外：**授权包**（`ncc auth pkg`）完全在本地 —— 包是文件、锁是文件、
+        // 加解密在客户端，一个字节都不发给服务端。所以它**不门禁**（在离线机器上
+        // 也必须能用，否则"把凭据封进包里发给同事"这件事就依赖服务端了）。
+        Cmd::Auth { action } => match action {
+            auth::AuthCmd::Pkg { .. } => None,
+            // 离线生成身份密钥同样不碰服务端（授权包用得上，离线机器也要能用）
+            auth::AuthCmd::Key { action: auth::KeyCmd::New { offline: true, .. } } => None,
+            _ => Some("auth"),
+        },
         Cmd::P2p(p) => match p {
             // 预检纯本地（要 STUN，但不要 NCC 服务端）：老服务端/离线环境也应当能用。
             p2p::P2pCmd::Probe(_) => None,
