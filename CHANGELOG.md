@@ -14,6 +14,31 @@
 
 ## [未发布]
 
+### 新增 · `ncc nodes claim` 节点编号（2026-10-02）
+
+节点在平台上的主键是 `LD-…`（只有机器认得）。现在可以在 ncc.ai 申领一个**人念得出来、
+跨机器能核对**的编号：`ncc-<前缀>-<用户名>-<短码>`（`ncc-intra-aya-hz-01`）。
+
+```bash
+ncc nodes prefixes                                        # 前缀目录 + 规则
+ncc nodes claim --prefix ai --code hz-01 --note "机房在杭州"
+ncc nodes claim --prefix ai --code hz-01 --dry-run         # 只看会得到什么编号
+ncc nodes ids [--released]                                 # 我的编号
+ncc nodes id ncc-ai-aya-hz-01                              # 核对归属（公开，不用登录）
+ncc nodes release ncc-ai-aya-hz-01                         # 释放（记录留着，可再捡回）
+```
+
+- **唯一性按人分域**：编号里带用户名 ⇒ 你的 `hz-01` 与别人的 `hz-01` 是两个编号；
+  同一个人同一个短码只能有一个（重复申领报服务端那句 409，不糊一个假的成功）。
+- **归一化在判重之前**：`HZ_01` / `hz.01` / `hz 01` 都会归一成 `hz-01`；
+  `--dry-run` 先打出来给你看，免得「我以为申的是 hz01，拿到的是 hz-01」。
+- **上报时带上它**（只能带**自己的、还活着的**编号；挂别人的等于冒充，服务端会拒）：
+  `ncc living --name my-node --kind service --node-id ncc-ai-aya-hz-01`
+- 边界照旧：**申领编号 ≠ 授权** —— 编号只回答「这台机器叫什么、是谁的」，
+  连不连得上、能不能取数据仍归 `ncc nodes link` 与 `ncc grant` 管。
+- 代码：新增 `cli/src/nodeid.rs`，`ncc nodes` 下多五个子命令；`ncc living` 多 `--node-id`。
+  端到端冒烟在平台仓库：`ncc-platform/scripts/node-id-smoke.sh`（78/0，含 CLI 面）。
+
 ### 新增 · 一个出口挂多家供应商，`ncc gateway switch` 热切换（2026-10-02）
 
 用户口径：「gateway switch 是否可以实现，比如切换 llm 供应商」。能做，而且做法是**声明一组 + 人切一家**

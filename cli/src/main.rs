@@ -20,6 +20,7 @@ mod hur;
 mod hurrun;
 mod index;
 mod mcp;
+mod nodeid;
 mod nodes;
 mod p2p;
 mod profile;
@@ -357,6 +358,19 @@ enum NodesCmd {
     Region,
     /// 按区域推荐可连接的节点（Agent 面，同区域优先）
     Recommend(nodes::RecommendArgs),
+    /// 申请节点编号：ncc-<前缀>-<用户名>-<短码>（在 ncc.ai 申领，全局唯一）
+    ///
+    /// 编号是**稳定身份**：库里主键 LD-… 只能给机器看，编号能被人念出来、能跨机器核对。
+    /// 唯一性按人分域（编号里有用户名），所以你和别人可以各有一个 hz01。
+    Claim(nodeid::ClaimArgs),
+    /// 我的节点编号（--released 连释放过的一起列）
+    Ids(nodeid::IdsArgs),
+    /// 核对一个编号属于谁（公开可查，不需要登录）
+    Id { r: String },
+    /// 释放编号（记录保留；以后可以用同一短码捡回来）
+    Release { r: String },
+    /// 编号前缀目录与规则（取值来源）
+    Prefixes,
 }
 
 #[derive(Subcommand)]
@@ -756,6 +770,11 @@ struct LivingArgs {
     /// 别人按这些能力找你：`ncc nodes discover --can egress:llm`。
     #[arg(long)]
     capabilities: Option<String>,
+    /// 该设备的节点编号（`ncc-ai-用户名-短码`）：先 `ncc nodes claim` 申领，上报时带上
+    ///
+    /// 只能报**自己的、还活着的**编号 —— 挂别人的编号等于冒充，服务端会拒。
+    #[arg(long)]
+    node_id: Option<String>,
 }
 
 /// ncc terminal 动作（缺省进入交互命令台）
@@ -1303,6 +1322,11 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Some(NodesCmd::Unlink { id }) => nodes::unlink(cfg, id),
             Some(NodesCmd::Region) => nodes::region(cfg),
             Some(NodesCmd::Recommend(a)) => nodes::recommend(cfg, a),
+            Some(NodesCmd::Claim(a)) => nodeid::claim(cfg, a),
+            Some(NodesCmd::Ids(a)) => nodeid::ids(cfg, a),
+            Some(NodesCmd::Id { r }) => nodeid::show(cfg, r),
+            Some(NodesCmd::Release { r }) => nodeid::release(cfg, r),
+            Some(NodesCmd::Prefixes) => nodeid::prefixes(cfg),
         },
         Cmd::Grant(g) => match g {
             GrantCmd::List(a) => nodes::grant_list(cfg, a),
@@ -2234,6 +2258,8 @@ fn cmd_living(cfg: &CliConfig, a: &LivingArgs) -> anyhow::Result<()> {
         "version": env!("CARGO_PKG_VERSION"),
         "capabilities": caps,
         "offersVerified": verified,
+        // 编号：先 `ncc nodes claim` 申领。服务端只接受“自己的、还活着的”编号。
+        "nodeId": a.node_id.clone().unwrap_or_default(),
     });
     let report = || -> anyhow::Result<()> {
         let data = api::post_json(cfg, "/api/namespaces/living", Some(&token), &body)?;
