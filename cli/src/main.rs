@@ -19,6 +19,7 @@ mod hur;
 #[cfg(feature = "sandbox")]
 mod hurrun;
 mod index;
+mod indexstate;
 mod mcp;
 mod nodeid;
 mod nodes;
@@ -554,6 +555,16 @@ enum IndexCmd {
     Rm { reference: String },
     /// 把已有索引再推一次到内网节点
     Push(index::PushArgs),
+    /// 看这条现在能不能接、还剩几个名额、谁占着
+    State(indexstate::StateArgs),
+    /// 认领一份名额（= 一次交互的开始）：原子占位，满员就报错，不会超卖
+    Hold(indexstate::HoldArgs),
+    /// 释放占位（名额立刻回到池子里）
+    Release(indexstate::ReleaseArgs),
+    /// 推进状态：--to done（已成）/ closed（关闭）/ open（重新开放），可带 --expect 做 CAS
+    Advance(indexstate::AdvanceArgs),
+    /// 状态队列：增量拉「谁订完了 / 谁切换了工作状态」（游标 = seq）
+    Queue(indexstate::QueueArgs),
 }
 
 /// `ncc list` 子命令：索引里有什么。
@@ -1357,6 +1368,11 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Some(IndexCmd::Show { reference, json }) => index::show(cfg, reference, *json),
             Some(IndexCmd::Rm { reference }) => index::rm(cfg, reference),
             Some(IndexCmd::Push(a)) => index::push(cfg, a),
+            Some(IndexCmd::State(a)) => indexstate::state(cfg, a),
+            Some(IndexCmd::Hold(a)) => indexstate::hold(cfg, a),
+            Some(IndexCmd::Release(a)) => indexstate::release(cfg, a),
+            Some(IndexCmd::Advance(a)) => indexstate::advance(cfg, a),
+            Some(IndexCmd::Queue(a)) => indexstate::queue(cfg, a),
         },
         Cmd::List(v) => match &v.action {
             // 不带子命令：看索引里的人（大多数人想问的就是这个）

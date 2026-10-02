@@ -68,6 +68,12 @@ pub struct PublishArgs {
     /// 存着但不参与检索（draft）
     #[arg(long)]
     pub draft: bool,
+    /// 可同时接几单（1 = 独占：房间、工位；>1 = 名额制：讲师排期）
+    #[arg(long)]
+    pub slots: Option<u32>,
+    /// 认领时的默认租约（秒）：到点自动把名额放回去（默认 900）
+    #[arg(long)]
+    pub ttl: Option<u32>,
     /// 只写平台，不推内网节点
     #[arg(long)]
     pub no_push: bool,
@@ -161,6 +167,9 @@ pub struct MatchArgs {
     pub want: String,
     #[arg(long, default_value_t = 10)]
     pub limit: i64,
+    /// 连已成 / 已关闭 / 已占满的也一起看（默认只给还能接单的）
+    #[arg(long)]
+    pub all: bool,
     /// 匹配源：目标名（内网节点走 `--from <节点名>`）；缺省用当前目标，
     /// 也可以由环境变量 `NCC_INDEX_SOURCE` 指定（系统设置机制）
     #[arg(long)]
@@ -328,6 +337,14 @@ pub fn publish(cfg: &CliConfig, a: &PublishArgs) -> Result<()> {
         }
         if !a.intents.is_empty() {
             obj.insert("intents".into(), json!(a.intents));
+        }
+        // 名额与租约：一条登记默认「独占、占位 900 秒」。房间用 slots=1，
+        // 讲师排期可以 slots=5 —— 同一个字段表达两种现实。
+        if let Some(n) = a.slots {
+            obj.insert("slots".into(), json!(n));
+        }
+        if let Some(n) = a.ttl {
+            obj.insert("holdTtl".into(), json!(n));
         }
     }
 
@@ -763,6 +780,17 @@ pub fn channels(cfg: &CliConfig, a: &ChannelsArgs) -> Result<()> {
 
 /* ---------------- 匹配 ---------------- */
 
+/// 条目状态的中文（CLI 输出里与 `index state` 同一套说法）。
+fn state_cn_local(st: &str) -> &str {
+    match st {
+        "open" => "可接",
+        "held" => "已占满",
+        "done" => "已成",
+        "closed" => "已关闭",
+        other => other,
+    }
+}
+
 /// `ncc match "…"` —— 我有需求 → 谁能在（或我在找活儿 → 谁要人）。
 pub fn match_intent(cfg: &CliConfig, a: &MatchArgs) -> Result<()> {
     // 匹配源：显式 --from > 环境变量（系统设置机制）> 当前目标
@@ -793,6 +821,9 @@ pub fn match_intent(cfg: &CliConfig, a: &MatchArgs) -> Result<()> {
     }
     if let Some(k) = &a.kind {
         path += &format!("&kind={}", urlencode(k));
+    }
+    if a.all {
+        path += "&include=all";
     }
     let d = api::get(
         use_cfg,
@@ -844,8 +875,21 @@ pub fn match_intent(cfg: &CliConfig, a: &MatchArgs) -> Result<()> {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         println!();
+        // 状态与剩余名额跟着一起说：把一个人送到一扇关着的门上，比少给几条结果差得多。
+        let state = s("state");
+        let st = if state == "open" {
+            let left = e.get("remaining").and_then(|v| v.as_i64()).unwrap_or(0);
+            let slots = e.get("slots").and_then(|v| v.as_i64()).unwrap_or(1);
+            if slots > 1 {
+                format!(" · 可接（还剩 {left} 个名额）")
+            } else {
+                " · 可接".to_string()
+            }
+        } else {
+            format!(" · {}", state_cn_local(state))
+        };
         println!(
-            "{}. {}  [{score} 分] {}{}",
+            "{}. {}  [{score} 分] {}{}{}",
             i + 1,
             s("title"),
             s("kind"),
@@ -853,7 +897,8 @@ pub fn match_intent(cfg: &CliConfig, a: &MatchArgs) -> Result<()> {
                 String::new()
             } else {
                 format!(" · {}", s("channel"))
-            }
+            },
+            st
         );
         let dest = ref_of(&e);
         let tail = if dest.is_empty() { String::new() } else { format!("   {dest}") };
