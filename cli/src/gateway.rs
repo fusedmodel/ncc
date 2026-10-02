@@ -36,7 +36,7 @@ use std::io::{Read, Write};
 use crate::httpsrv::{read_request, write_resp, ReadError, Req, Resp};
 use std::net::{IpAddr, TcpListener};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::config;
@@ -139,6 +139,28 @@ pub struct Route {
     /// 也没法把“这个出口能干什么”发给另一个人。
     #[serde(default)]
     pub hur: String,
+
+    // ---- 多供应商（可选）：同一套 paths/methods 下的多个上游，可切换 ----
+    /// `{ "openai": { "target": …, "inject": {…}, "rewrite": {…} }, … }`
+    /// 非空时不再用扁平的 `target`/`inject`（两份真相）。
+    #[serde(default)]
+    pub providers: BTreeMap<String, ProviderCfg>,
+    /// 当前生效的供应商（`ncc gateway switch` 改它；空 = 取 providers 里的第一个）。
+    #[serde(default)]
+    pub active: String,
+}
+
+/// 一个供应商的本地配置：上游地址 + 要注入的凭据（**值在这里，不在包里**）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProviderCfg {
+    #[serde(default)]
+    pub target: String,
+    /// 注入到上游的请求头（如这家自己的 key）
+    #[serde(default)]
+    pub inject: BTreeMap<String, String>,
+    /// 路径重写：路由内路径 → 这一家的实际路径（只映射路径，不碰 body）
+    #[serde(default)]
+    pub rewrite: BTreeMap<String, String>,
 }
 
 impl Route {
@@ -269,12 +291,15 @@ pub fn prepare(cfg: GatewayConfig) -> Result<Ready> {
                         r.name
                     );
                 }
-                let t = parse_target(&r.target).with_context(|| format!("路由 {} 的 target", r.name))?;
-                if t.scheme == "http" && !is_loopback_host(&t.host) {
-                    bail!(
-                        "路由 {} 的 target 是 http 且主机不是 loopback —— 出站必须 https（本地联调除外）",
-                        r.name
-                    );
+                // 单供应商写法：地址写在扁平 target 里（多供应商时 target 必须留空，见下）
+                if r.providers.is_empty() {
+                    let t = parse_target(&r.target).with_context(|| format!("路由 {} 的 target", r.name))?;
+                    if t.scheme == "http" && !is_loopback_host(&t.host) {
+                        bail!(
+                            "路由 {} 的 target 是 http 且主机不是 loopback —— 出站必须 https（本地联调除外）",
+                            r.name
+                        );
+                    }
                 }
                 if r.paths.is_empty() {
                     bail!("accept 路由 {} 没配 paths —— 空白名单会放行该上游下的一切路径", r.name);
@@ -286,6 +311,48 @@ pub fn prepare(cfg: GatewayConfig) -> Result<Ready> {
                 }
                 if r.methods.is_empty() {
                     bail!("accept 路由 {} 没配 methods（空 = 拒绝一切，等于不可用）", r.name);
+                }
+                // 多供应商：本地配置只能从**包声明的范围里**挑，而且 ``active`` 必须真在本地表里
+                if !r.providers.is_empty() {
+                    if !r.target.trim().is_empty() {
+                        bail!(
+                            "accept 路由 {} 同时写了 target 与 providers —— 两份真相：\n多供应商时把地址写进各 provider，target 留空；单供应商就别写 providers。",
+                            r.name
+                        );
+                    }
+                    for (name, p) in &r.providers {
+                        if !valid_route_name(name) {
+                            bail!("路由 {} 的供应商名 {name:?} 不合法（只允许 [a-z0-9._-]）", r.name);
+                        }
+                        if p.target.trim().is_empty() {
+                            bail!("路由 {} 的供应商 {} 没写 target", r.name, name);
+                        }
+                        let t = parse_target(&p.target)
+                            .with_context(|| format!("路由 {} 供应商 {} 的 target", r.name, name))?;
+                        if t.scheme == "http" && !is_loopback_host(&t.host) {
+                            bail!("路由 {} 供应商 {} 的 target 是 http 且非 loopback —— 出站必须 https", r.name, name);
+                        }
+                        for (k, v) in &p.inject {
+                            if !valid_header_name(k) || v.contains(['\r', '\n']) {
+                                bail!("路由 {} 供应商 {} 的 inject 头 {k:?} 不合法", r.name, name);
+                            }
+                        }
+                        for (from, to) in &p.rewrite {
+                            if normalize_sub_path(from).is_none() || normalize_sub_path(to).is_none() {
+                                bail!("路由 {} 供应商 {} 的 rewrite {from:?} -> {to:?} 不合法", r.name, name);
+                            }
+                        }
+                    }
+                    let eff = effective_provider_name(r);
+                    if !r.providers.contains_key(&eff) {
+                        let names: Vec<&str> = r.providers.keys().map(|s| s.as_str()).collect();
+                        bail!(
+                            "路由 {} 的 active「{}」不在 providers 里（可选：{}）",
+                            r.name,
+                            eff,
+                            names.join(", ")
+                        );
+                    }
                 }
                 // S2b：出口的定义来自包，不来自这份本地 JSON。
                 if r.hur.trim().is_empty() {
@@ -457,6 +524,10 @@ pub struct Backing {
     pub paths: Vec<String>,
     pub methods: Vec<String>,
     pub inject: Vec<String>,
+    /// 包里声明了哪几家（多供应商写法；单供应商时为空）
+    pub providers: Vec<String>,
+    /// 本地当前选的那家
+    pub active: String,
 }
 
 /// 把一条 accept 路由绑到包声明上：**包声明是上限，本地配置只能更窄**。
@@ -526,8 +597,27 @@ fn bind_hur(r: &Route) -> Result<Backing> {
         })?;
 
     // 方向只有一个：配置 ≤ 声明。任何「配置比声明更宽」之处逐条列出。
-    let inject_names: Vec<String> = r.inject.keys().cloned().collect();
-    let problems = hur_core::spec::egress_covers(decl, &r.target, &r.paths, &r.methods, &inject_names);
+    //
+    // 多供应商时**逐家**判定：网关切到 b，就用 providers[b] 去背书 —— 不能拿 a 的声明
+    // 去背书一个 a 从来没用过的目标地址。
+    let mut problems: Vec<String> = Vec::new();
+    if r.providers.is_empty() {
+        let inject_names: Vec<String> = r.inject.keys().cloned().collect();
+        problems = hur_core::spec::egress_covers(decl, &r.target, &r.paths, &r.methods, &inject_names);
+    } else {
+        for (name, p) in &r.providers {
+            let mut inject_names: Vec<String> = r.inject.keys().cloned().collect();
+            inject_names.extend(p.inject.keys().cloned());
+            problems.extend(hur_core::spec::egress_covers_provider(
+                decl,
+                name,
+                &p.target,
+                &r.paths,
+                &r.methods,
+                &inject_names,
+            ));
+        }
+    }
     if !problems.is_empty() {
         bail!(
             "路由 {} 的配置超出了包声明的范围（配置只能比声明更窄）：\n  - {}\n包：{}",
@@ -546,7 +636,19 @@ fn bind_hur(r: &Route) -> Result<Backing> {
         paths: decl.paths.clone(),
         methods: decl.methods.clone(),
         inject: decl.inject.clone(),
+        providers: decl.providers.iter().map(|p| p.name.clone()).collect(),
+        active: if r.providers.is_empty() { String::new() } else { effective_provider_name(r) },
     })
+}
+
+/// 当前生效的供应商名：写了 `active` 用它；没写就取 providers 里**字典序第一个**
+/// （BTreeMap 保证确定性：同一份配置两次启动选出同一家）。
+pub fn effective_provider_name(route: &Route) -> String {
+    let a = route.active.trim();
+    if !a.is_empty() {
+        return a.to_string();
+    }
+    route.providers.keys().next().cloned().unwrap_or_default()
 }
 
 /// 路径白名单：**精确匹配**（不做前缀魔法 —— 少一条隐含规则就少一个口子）。
@@ -629,9 +731,61 @@ struct Shared {
     audit: Audit,
     agent: ureq::Agent,
     counter: Mutex<u64>,
+    /// 路由 → 当前生效的供应商（`ncc gateway switch` 改配置文件后由 watcher 热应用）。
+    /// 缺条目 = 单供应商写法（用 route 的扁平字段）。
+    active: RwLock<BTreeMap<String, ActiveProvider>>,
+}
+
+/// 运行时生效的上游：名字 + 地址 + 凭据 + 路径映射。
+///
+/// 每个请求都从 RwLock 里取一份**克隆**（而不是持锁转发）—— 转发要 100ms 级，
+/// 拿读锁跨转发会把切档卡住。
+#[derive(Debug, Clone, Default)]
+struct ActiveProvider {
+    name: String,
+    target: String,
+    inject: BTreeMap<String, String>,
+    rewrite: BTreeMap<String, String>,
 }
 
 impl Shared {
+    /// 当前该走哪个上游：
+    /// · 配了 providers → 取 active 对应的那份（watcher 会随文件更新）；
+    /// · 没配 → 单供应商写法（扁平 target/inject）。
+    fn active_of(&self, route: &Route) -> ActiveProvider {
+        if route.providers.is_empty() {
+            return ActiveProvider {
+                name: String::new(),
+                target: route.target.clone(),
+                inject: route.inject.clone(),
+                rewrite: BTreeMap::new(),
+            };
+        }
+        let m = self.active.read().unwrap();
+        if let Some(a) = m.get(&route.name) {
+            return a.clone();
+        }
+        drop(m);
+        // 理论上不会发生（prepare 会把初始值填好）；真发生就按 active 现算一次，
+        // 宁可算一次也不默默走错家。
+        let name = effective_provider_name(route);
+        let p = route.providers.get(&name).cloned().unwrap_or_default();
+        ActiveProvider { name, target: p.target, inject: p.inject, rewrite: p.rewrite }
+    }
+
+    /// 把 active 表整体换成新的一份（`prepare` 之后调用）。
+    fn set_active(&self, routes: &[Route]) {
+        let mut m = self.active.write().unwrap();
+        m.clear();
+        for r in routes {
+            if r.providers.is_empty() {
+                continue;
+            }
+            let name = effective_provider_name(r);
+            let p = r.providers.get(&name).cloned().unwrap_or_default();
+            m.insert(r.name.clone(), ActiveProvider { name, target: p.target, inject: p.inject, rewrite: p.rewrite });
+        }
+    }
     fn quota_of(&self, name: &str) -> Arc<Quota> {
         let mut m = self.quota.lock().unwrap();
         m.entry(name.to_string()).or_insert_with(|| Arc::new(Quota::new())).clone()
@@ -661,6 +815,7 @@ impl Shared {
             "reqBytes": rec.req_bytes,
             "respBytes": rec.resp_bytes,
             "ms": rec.ms,
+            "provider": rec.provider,
         });
         self.audit.write(&v);
     }
@@ -681,6 +836,9 @@ struct AuditRec<'a> {
     req_bytes: usize,
     resp_bytes: usize,
     ms: u128,
+    /// 这次走的是哪个供应商（单供应商写法时是空串）。
+    /// **必须记**：切换后要能解释“这几笔请求到底走了哪家”，否则账单没有依据。
+    provider: &'a str,
 }
 
 /// 处理一个请求。所有拒绝都走这里，保证「拒绝也留痕」。
@@ -716,6 +874,7 @@ fn handle(shared: &Shared, req: &Req) -> Resp {
             decision: "deny",
             reason,
             status,
+            provider: "",   // 统一的拒绝路径没有“走哪家”这回事
             req_bytes: req.body.len(),
             resp_bytes: 0,
             ms: t0.elapsed().as_millis(),
@@ -777,7 +936,8 @@ fn handle(shared: &Shared, req: &Req) -> Resp {
     }
 }
 
-/// B 侧：转发到**配置写死**的上游，注入本机凭据。
+/// B 侧：转发到**当前生效的那个上游**（多供应商时由 `ncc gateway switch` 决定），
+/// 并注入本机凭据。
 fn handle_accept(
     shared: &Shared,
     req: &Req,
@@ -787,11 +947,19 @@ fn handle_accept(
     id: &str,
     t0: Instant,
 ) -> Resp {
-    let target = match parse_target(&route.target) {
+    let up = shared.active_of(route);
+    let target = match parse_target(&up.target) {
         Ok(t) => t,
         Err(e) => return Resp::text(500, &format!("配置里的 target 有问题：{e}")),
     };
-    let url = target.join(sub);
+    // 路径：默认按原样拼；供应商声明了 rewrite 就换成这一家的路径。
+    // **只换路径，不碰 body** —— body 形状是厂商语义，猜错了就是静默发错请求。
+    let mapped = up
+        .rewrite
+        .iter()
+        .find(|(from, _)| normalize_sub_path(from).as_deref() == Some(sub))
+        .map(|(_, to)| to.trim().to_string());
+    let url = target.join(mapped.as_deref().unwrap_or(sub));
 
     let mut r = shared.agent.request(method, &url);
     // 只透传这两个头；调用方的 Authorization **绝不**透传 —— 上游凭据由 inject 决定。
@@ -800,10 +968,13 @@ fn handle_accept(
             r = r.set(h, v);
         }
     }
-    for (k, v) in &route.inject {
+    for (k, v) in &up.inject {
         r = r.set(k, v);
     }
     r = r.set("x-ncc-gateway-route", &route.name);
+    if !up.name.is_empty() {
+        r = r.set("x-ncc-gateway-provider", &up.name);
+    }
 
     let out = if req.body.is_empty() { r.call() } else { r.send_bytes(&req.body) };
     let (status, body) = match out {
@@ -828,7 +999,8 @@ fn handle_accept(
                 status: 502,
                 req_bytes: req.body.len(),
                 resp_bytes: 0,
-                ms: t0.elapsed().as_millis(),
+                ms: t0.elapsed().as_millis() as u128,
+                provider: &up.name,
             });
             return Resp::json(
                 502,
@@ -851,15 +1023,15 @@ fn handle_accept(
         status,
         req_bytes: req.body.len(),
         resp_bytes: body.len(),
-        ms: t0.elapsed().as_millis(),
+        ms: t0.elapsed().as_millis() as u128,
+        provider: &up.name,
     });
 
-    Resp {
-        status,
-        content_type: "application/json",
-        body,
-        extra: vec![("x-ncc-gateway-route".into(), route.name.clone())],
+    let mut extra = vec![("x-ncc-gateway-route".into(), route.name.clone())];
+    if !up.name.is_empty() {
+        extra.push(("x-ncc-gateway-provider".into(), up.name.clone()));
     }
+    Resp { status, content_type: "application/json", body, extra }
 }
 
 /// A 侧：把请求转给配对的 peer（B）。
@@ -912,6 +1084,7 @@ fn handle_forward(
                 req_bytes: req.body.len(),
                 resp_bytes: 0,
                 ms: t0.elapsed().as_millis(),
+                provider: "",
             });
             return Resp::json(
                 502,
@@ -935,6 +1108,7 @@ fn handle_forward(
         req_bytes: req.body.len(),
         resp_bytes: body.len(),
         ms: t0.elapsed().as_millis(),
+        provider: "",   // 转发侧不选供应商：哪家由对端决定（最终裁决看 B 侧审计）
     });
 
     Resp {
@@ -1025,6 +1199,14 @@ pub fn check() -> Result<()> {
             // 好让运维一眼核对自己配的范围确实比包声明更窄。
             if let Some(b) = ready.backing.iter().find(|b| b.route == r.name) {
                 println!("             背书包 {} {}（{}）", b.id, b.version, b.dir);
+                if !b.providers.is_empty() {
+                    println!(
+                        "             供应商 {} · 当前 {}（`ncc gateway switch {} <供应商>` 可切）",
+                        b.providers.join(" / "),
+                        b.active,
+                        r.name
+                    );
+                }
                 println!(
                     "             声明范围 {} · 路径 {} · 方法 {} · 注入 {}",
                     b.target,
@@ -1072,11 +1254,26 @@ pub fn run() -> Result<()> {
         audit,
         agent,
         counter: Mutex::new(0),
+        active: RwLock::new(BTreeMap::new()),
     });
+    shared.set_active(&shared.ready.cfg.routes);
 
     let listener = TcpListener::bind(&listen).with_context(|| format!("监听不了 {listen}"))?;
     println!("NCC Gateway 已在 {listen} 上运行");
     println!("   {route_count} 条路由 · 审计 {audit_path}");
+    // 换供应商是运营动作，不该要求重启：看配置文件 mtime，变了就热应用。
+    spawn_config_watcher(shared.clone());
+    let multis: Vec<String> = shared
+        .ready
+        .cfg
+        .routes
+        .iter()
+        .filter(|r| !r.providers.is_empty())
+        .map(|r| format!("{}={}", r.name, effective_provider_name(r)))
+        .collect();
+    if !multis.is_empty() {
+        println!("  多供应商路由：{}（`ncc gateway switch <路由> <供应商>` 热切换）", multis.join(" · "));
+    }
     println!("   健康检查：curl http://{listen}/healthz");
     println!("   Ctrl+C 停止。本进程**不向任何 NCC 服务端上报载荷**。");
 
@@ -1147,6 +1344,109 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// `ncc gateway switch <路由> <供应商>` —— 换一家上游。
+///
+/// 为什么做成"改文件 + 热应用"而不是给运行中的进程发指令：**配置是唯一真相**。
+/// 一份可以被 `switch` 直接改写内存的进程，重启后会倒回旧值 —— 那种"切了就忘"的
+/// 开关最难排查。所以：`switch` 只改 `gateway.json`，运行中的网关看 mtime 自己跟上。
+pub fn switch(route: &str, provider: &str) -> Result<()> {
+    let mut cfg = load_config()?;
+    let r = cfg
+        .routes
+        .iter_mut()
+        .find(|r| r.name == route.trim())
+        .ok_or_else(|| anyhow!("没有这条路由：{}", route.trim()))?;
+    if !r.is_accept() {
+        bail!("路由 {} 是 {} 模式 —— 供应商切换只对 accept（提供出口）有意义", r.name, r.mode);
+    }
+    if r.providers.is_empty() {
+        bail!(
+            "路由 {} 是单供应商写法（没有 providers）。\n要能切，先在包的 egress 声明里写 providers[]，\n再把本地配置的 target/inject 换成 providers 表。",
+            r.name
+        );
+    }
+    let name = provider.trim();
+    if !r.providers.contains_key(name) {
+        let names: Vec<&str> = r.providers.keys().map(|s| s.as_str()).collect();
+        bail!("路由 {} 没声明供应商「{name}」（可选：{}）", r.name, names.join(", "));
+    }
+    let before = effective_provider_name(r);
+    if before == name {
+        println!("路由 {route} 已经在用「{name}」，没变。");
+        return Ok(());
+    }
+    r.active = name.to_string();
+    save_config_pub(&cfg)?;
+    println!("已切换 {}：{} → {}", route.trim(), if before.is_empty() { "（单供应商）" } else { before.as_str() }, name);
+    println!("  配置 {}", config_path().display());
+    println!("  运行中的网关会在 ~1 秒内热应用（不用重启）；`ncc gateway status` 看当前生效的。");
+    Ok(())
+}
+
+/// 配置文件 watcher：`switch` 只改文件，常驻进程靠 mtime 自己跟上。
+///
+/// **只热应用"换供应商"**；监听地址 / 审计目录 / body 上限 / 路由增删与 mode 变了
+/// 都要求重启（那些改动重载一半会让人以为生效了，比不生效更糟）。旧配置继续用，
+/// 并把"要重启"打在屏幕上。
+fn spawn_config_watcher(shared: Arc<Shared>) {
+    std::thread::spawn(move || {
+        let p = config_path();
+        let mtime = || std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+        let mut last = mtime();
+        loop {
+            std::thread::sleep(Duration::from_millis(1000));
+            let cur = mtime();
+            if cur == last {
+                continue;
+            }
+            last = cur;
+            let cfg = match load_config() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("⚠ 配置变了但读不了（继续用旧的）：{e}");
+                    continue;
+                }
+            };
+            let ready = match prepare(cfg) {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("⚠ 新配置没通过校验（继续用旧的）：{e}");
+                    continue;
+                }
+            };
+            let old = &shared.ready.cfg;
+            if ready.listen != old.listen || ready.cfg.max_body_bytes != old.max_body_bytes || ready.audit_dir != old.audit_dir {
+                eprintln!("⚠ 监听 / body 上限 / 审计目录变了 —— 这些要**重启**才生效（其余改动已忽略）");
+                continue;
+            }
+            let same_shape = ready.cfg.routes.len() == old.routes.len()
+                && ready.cfg.routes.iter().all(|n| old.routes.iter().any(|o| o.name == n.name && o.mode == n.mode));
+            if !same_shape {
+                eprintln!("⚠ 路由增删或 mode 变了 —— 要**重启**才生效（其余改动已忽略）");
+                continue;
+            }
+            let mut moves: Vec<String> = Vec::new();
+            for n in &ready.cfg.routes {
+                let Some(o) = old.routes.iter().find(|o| o.name == n.name) else { continue };
+                if n.providers.is_empty() && o.providers.is_empty() {
+                    continue;
+                }
+                let (b, a) = (effective_provider_name(o), effective_provider_name(n));
+                if b != a {
+                    moves.push(format!("{}：{} → {}", n.name, b, a));
+                }
+            }
+            shared.set_active(&ready.cfg.routes);
+            for m in &moves {
+                println!("⟳ 已热切换 {m}");
+            }
+            if moves.is_empty() {
+                println!("⟳ 配置已重载（供应商没变，只更新了名称/凭据等运行时可变的字段）");
+            }
+        }
+    });
+}
+
 /// `ncc gateway status` —— 配置摘要 + 是否在跑（探自己的 /healthz）。
 pub fn status() -> Result<()> {
     let cfg = load_config()?;
@@ -1182,6 +1482,18 @@ pub fn status() -> Result<()> {
         }
     }
     for r in &ready.cfg.routes {
+        if r.is_accept() && !r.providers.is_empty() {
+            let names: Vec<String> = r.providers.keys().cloned().collect();
+            println!(
+                "  [{:<7}] {:<12} {} · 供应商 {} · 当前 {}",
+                r.mode,
+                r.name,
+                if r.target.trim().is_empty() { "（多供应商）" } else { r.target.as_str() },
+                names.join(" / "),
+                effective_provider_name(r)
+            );
+            continue;
+        }
         println!(
             "  [{:<7}] {:<12} {}",
             r.mode,

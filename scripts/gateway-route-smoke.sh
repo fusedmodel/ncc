@@ -23,6 +23,7 @@ mkdir -p "${WORK}"
 
 # 端口：从 $$ 派生，避免和正在跑的东西撞车；可用环境变量覆盖
 UP_PORT="${UP_PORT:-$((19100 + $$ % 200))}"
+UP2_PORT="${UP2_PORT:-$((19200 + $$ % 200))}"   # 第二个上游：切供应商用
 B_PORT="${B_PORT:-$((19300 + $$ % 200))}"
 A_PORT="${A_PORT:-$((19500 + $$ % 200))}"
 
@@ -94,6 +95,7 @@ class H(BaseHTTPRequestHandler):
             'path': self.path,
             'authorization': self.headers.get('Authorization') or '',
             'x_route': self.headers.get('X-Route') or '',
+            'x_provider': self.headers.get('X-Provider') or '',
             'body': body,
         }
         with open(LOG, 'a') as f:
@@ -114,18 +116,24 @@ class H(BaseHTTPRequestHandler):
 ThreadingHTTPServer(('127.0.0.1', PORT), H).serve_forever()
 PY
 : > "${UP_LOG}"
+UP2_LOG="${WORK}/upstream2.jsonl"
+: > "${UP2_LOG}"
 python3 "${WORK}/upstream.py" "${UP_LOG}" "${UP_PORT}" &
-PIDS+=("$!")
-wait_port "${UP_PORT}" || { echo "假上游没起来" >&2; exit 2; }
-good "假上游起来了（127.0.0.1:${UP_PORT}）"
+UP_PID=$!
+python3 "${WORK}/upstream.py" "${UP2_LOG}" "${UP2_PORT}" &
+UP2_PID=$!
+PIDS+=("$UP_PID" "$UP2_PID")
+wait_port "${UP_PORT}" || { echo "假上游 A 没起来" >&2; exit 2; }
+wait_port "${UP2_PORT}" || { echo "假上游 B 没起来" >&2; exit 2; }
+good "两个假上游都起来了（A=${UP_PORT} / B=${UP2_PORT}）"
 
 # ---------------------------------------------------------------- 2. 出口的"出处"：HUR 包
 say '2. 出口必须由一份包声明背书（R10）：生成包 + 写 egress{}'
 EG="${WORK}/egress"
 "${CLI}" hur init --kind harness --name "LLM Egress" --dir "${EG}" >/dev/null 2>&1
-python3 - "${EG}/hur.json" "${UP_PORT}" <<'PY'
+python3 - "${EG}/hur.json" "${UP_PORT}" "${UP2_PORT}" <<'PY'
 import json, sys
-p, port = sys.argv[1], int(sys.argv[2])
+p, port, port2 = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 d = json.load(open(p))
 # 出口要能出去：permissions.network 不能空（R10 直接判错）
 d['permissions']['network'] = ['127.0.0.1']
@@ -137,7 +145,15 @@ d['egress'] = {'provides': [{
     # 包里**只有头名，没有值**（包要能签名/分发/公开检索 → 凭据不进包）；
     # 值写在网关的本地配置里（下面 route 的 inject）。
     'inject': ['Authorization', 'X-Route'],
-}]}
+    },
+    # 多供应商：包里声明「允许在哪几家之间切」，网关本地只能从这几家里挑
+    {'name': 'llm2', 'paths': ['chat/completions'], 'methods': ['POST'], 'inject': ['X-Route'],
+     'providers': [
+        {'name': 'a', 'target': f'http://127.0.0.1:{port}', 'inject': ['Authorization']},
+        {'name': 'b', 'target': f'http://127.0.0.1:{port2}', 'inject': ['Authorization', 'X-Provider'],
+         'rewrite': {'chat/completions': 'v1/messages'}},
+     ]},
+]}
 json.dump(d, open(p, 'w'), ensure_ascii=False, indent=2)
 PY
 ( cd "${EG}" && "${CLI}" hur build . >/dev/null 2>&1 && "${CLI}" hur verify . >/dev/null 2>&1 ) \
@@ -158,6 +174,19 @@ cat > "${TMP}/home-b/.ncc/gateway.json" <<JSON
       "paths": ["chat/completions"],
       "methods": ["POST"],
       "inject": { "Authorization": "Bearer ${B_SECRET}", "X-Route": "b-upstream" },
+      "token": "${B_TOKEN}",
+      "hur": "${EG}"
+    },
+    {
+      "name": "llm2",
+      "mode": "accept",
+      "paths": ["chat/completions"],
+      "methods": ["POST"],
+      "providers": {
+        "a": { "target": "http://127.0.0.1:${UP_PORT}", "inject": { "Authorization": "Bearer ${B_SECRET}", "X-Route": "a-up" } },
+        "b": { "target": "http://127.0.0.1:${UP2_PORT}", "inject": { "Authorization": "Bearer ${B_SECRET}", "X-Provider": "b-up" }, "rewrite": { "chat/completions": "v1/messages" } }
+      },
+      "active": "a",
       "token": "${B_TOKEN}",
       "hur": "${EG}"
     }
@@ -219,9 +248,10 @@ check "还原后又能启动" "0" "${R}"
 # ---------------------------------------------------------------- 4. 起两个网关
 say '4. 起 B（accept）与 A（forward）两个真进程'
 NCC_HOME="${TMP}/home-b" nohup "${CLI}" gateway run > "${WORK}/gw-b.log" 2>&1 &
-PIDS+=("$!")
+GW_B_PID=$!
 NCC_HOME="${TMP}/home-a" nohup "${CLI}" gateway run > "${WORK}/gw-a.log" 2>&1 &
-PIDS+=("$!")
+GW_A_PID=$!
+PIDS+=("$GW_B_PID" "$GW_A_PID")
 wait_port "${B_PORT}" || { echo "B 没起来：$(cat "${WORK}/gw-b.log")" >&2; exit 2; }
 wait_port "${A_PORT}" || { echo "A 没起来：$(cat "${WORK}/gw-a.log")" >&2; exit 2; }
 good "两个网关都在监听（A:${A_PORT} / B:${B_PORT}）"
@@ -276,8 +306,7 @@ check "三种被拒的请求都没到上游" "0" "$(wc -l < "${UP_LOG}" | tr -d 
 
 # ---------------------------------------------------------------- 7. 断 B：不降级
 say '7. 断开 B：A 立即 502，**不降级成什么中转**'
-BPID="${PIDS[1]}"
-kill "${BPID}" 2>/dev/null || true
+kill "${GW_B_PID}" 2>/dev/null || true
 sleep 1
 CODE="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${A_PORT}/v1/llm/chat/completions" \
   -H "Authorization: Bearer ${A_TOKEN}" -H 'Content-Type: application/json' -d '{}' || echo 000)"
@@ -315,6 +344,50 @@ contains "B 侧记成 side=accept" '"side":"accept"' "${AUDIT_B}"
 not_contains "审计里没有载荷" "${MARKER}" "${AUDIT_B}${AUDIT_A}"
 not_contains "审计里没有 B 的密钥" "${B_SECRET}" "${AUDIT_B}${AUDIT_A}"
 not_contains "审计里没有调用方令牌" "${A_TOKEN}" "${AUDIT_B}${AUDIT_A}"
+
+# ---------------------------------------------------------------- 10. 切换上游供应商
+say '10. 切供应商：换一家 LLM，不用重启网关'
+: > "${UP_LOG}"; : > "${UP2_LOG}"
+SW_BODY="{\"marker\":\"${MARKER}-SW\"}"
+CODE="$(curl -sS -D "${WORK}/sw-h1.txt" -o /dev/null -w '%{http_code}' -X POST \
+  "http://127.0.0.1:${B_PORT}/v1/llm2/chat/completions" \
+  -H "Authorization: Bearer ${B_TOKEN}" -H 'Content-Type: application/json' -d "${SW_BODY}" || echo 000)"
+check "切换前：走 provider a → 200" "200" "${CODE}"
+check "响应头告诉调用方走的是哪家" "a" "$(grep -i '^x-ncc-gateway-provider:' "${WORK}/sw-h1.txt" | tr -d '\r' | awk '{print $2}')"
+check "此时 b 的上游一个请求都没收到" "0" "$(wc -l < "${UP2_LOG}" | tr -d ' ')"
+contains "a 的上游收到了 X-Route" '"x_route": "a-up"' "$(cat "${UP_LOG}")"
+
+SW_OUT="$(NCC_HOME="${TMP}/home-b" "${CLI}" gateway switch llm2 b 2>&1)"
+contains "switch 命令认了这个供应商" "已切换" "${SW_OUT}"
+# 热应用是 1s 轮询：等它生效（最多 6s），而不是 sleep 一个魔法数字就断言
+DEADLINE=$((SECONDS + 6))
+while (( SECONDS < DEADLINE )); do
+  [[ "$(wc -l < "${UP2_LOG}" | tr -d ' ')" -gt 0 ]] && break
+  curl -sS -o /dev/null -X POST "http://127.0.0.1:${B_PORT}/v1/llm2/chat/completions" \
+    -H "Authorization: Bearer ${B_TOKEN}" -H 'Content-Type: application/json' -d "${SW_BODY}" 2>/dev/null || true
+  sleep 0.4
+done
+check "切换后：b 的上游收到请求了（没重启进程）" "yes" "$([[ "$(wc -l < "${UP2_LOG}" | tr -d ' ')" -gt 0 ]] && echo yes || echo no)"
+contains "而且是按 b 声明的路径重写过去的（chat/completions → v1/messages）" '"path": "/v1/messages"' "$(cat "${UP2_LOG}")"
+contains "b 的上游看到 b 的注入头" '"x_provider": "b-up"' "$(tr -d '\n' < "${UP2_LOG}")"
+not_contains "b 的上游没见到 a 的注入头" 'a-up' "$(cat "${UP2_LOG}")"
+
+NEXT_HEAD="$(curl -sS -D - -o /dev/null -X POST "http://127.0.0.1:${B_PORT}/v1/llm2/chat/completions" \
+  -H "Authorization: Bearer ${B_TOKEN}" -H 'Content-Type: application/json' -d "${SW_BODY}" 2>/dev/null | grep -i '^x-ncc-gateway-provider:' | tr -d '\r' | awk '{print $2}')"
+check "响应头也跟着变成 b" "b" "${NEXT_HEAD}"
+contains "status 里看得见当前供应商" "当前 b" "$(NCC_HOME="${TMP}/home-b" "${CLI}" gateway status 2>&1)"
+# 审计要能解释“哪几笔走了哪家”（否则账单没有依据）
+AUDIT_B2="$(cat "${WORK}"/audit-b/*.jsonl 2>/dev/null || true)"
+contains "审计记下了走 a 的那一笔" '"provider":"a"' "${AUDIT_B2}"
+contains "审计记下了走 b 的那一笔" '"provider":"b"' "${AUDIT_B2}"
+
+# 越界：切到没声明的供应商 / 在单供应商路由上切
+R=0; NCC_HOME="${TMP}/home-b" "${CLI}" gateway switch llm2 gemini >/dev/null 2>&1 || R=$?
+check "切到没声明的供应商 → 非 0" "1" "${R}"
+contains "并列出可选" "可选：a, b" "$(NCC_HOME="${TMP}/home-b" "${CLI}" gateway switch llm2 gemini 2>&1 || true)"
+R=0; NCC_HOME="${TMP}/home-b" "${CLI}" gateway switch llm openai >/dev/null 2>&1 || R=$?
+check "单供应商路由上切 → 非 0" "1" "${R}"
+contains "并说明要先声明 providers" "providers" "$(NCC_HOME="${TMP}/home-b" "${CLI}" gateway switch llm openai 2>&1 || true)"
 
 printf '\n\033[1m结果：%d 通过 / %d 失败\033[0m\n' "${PASS}" "${FAIL}"
 [[ "${FAIL}" == "0" ]]

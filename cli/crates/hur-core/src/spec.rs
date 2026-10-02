@@ -451,12 +451,18 @@ impl Egress {
 }
 
 /// 一条出口通道声明。
+///
+/// 两种写法：
+///   · **单供应商**（老写法）：直接写 `target` / `inject`；
+///   · **多供应商**：写 `providers[]`，每个 supplier 一个上游与凭据头名，
+///     网关可以在一组**已声明**的供应商之间切换（`ncc gateway switch`）。
+/// 两种写法**不能同时用**（两份真相），R10 会拦。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EgressRoute {
     /// 路由名（出现在网关 URL 里：`/v1/<name>/<路径>`）
     #[serde(default)]
     pub name: String,
-    /// 上游基址。必须 `https://`；`http://` 只允许 loopback（本地联调）
+    /// 上游基址（单供应商写法）。必须 `https://`；`http://` 只允许 loopback（本地联调）
     #[serde(default)]
     pub target: String,
     /// 允许的上游路径（**精确匹配**，不带查询串）
@@ -468,6 +474,32 @@ pub struct EgressRoute {
     /// 运行者需要注入的**请求头名**（只有名字，没有值）
     #[serde(default)]
     pub inject: Vec<String>,
+    /// 多供应商写法：同一套 paths/methods 下的多个上游，网关可在它们之间切换。
+    /// 非空时 `target` 必须为空。
+    #[serde(default)]
+    pub providers: Vec<EgressProvider>,
+}
+
+/// 出口里的**一个供应商**。
+///
+/// 为什么要有它："这条出口用哪家 LLM"是运营决定，不是包的一部分 —— 但**可选范围**必须是
+/// 声明的一部分（否则网关的本地配置又能凭空多出一个没人能核对的上游）。
+/// 于是：包里声明「允许这几家」，网关本地配置只能从这几家里挑一家当 active。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EgressProvider {
+    /// 供应商名（网关 `switch` 用它；出现在 URL 里，所以字符集与路由名一样）
+    #[serde(default)]
+    pub name: String,
+    /// 上游基址
+    #[serde(default)]
+    pub target: String,
+    /// 这一家需要注入的头名（并集在路由级 `inject` 之上；仍然只有名字）
+    #[serde(default)]
+    pub inject: Vec<String>,
+    /// 路径重写：`{"chat/completions": "v1/messages"}` —— 路由内路径 → 这一家的实际路径。
+    /// **只映射路径，不碰 body**：body 形状是厂商语义，猜错了就是静默发错请求。
+    #[serde(default)]
+    pub rewrite: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -805,6 +837,68 @@ pub fn egress_covers(
             out.push(format!(
                 "注入头「{h}」不在声明里（声明里只有：{}）",
                 if decl.inject.is_empty() { "（无）".to_string() } else { decl.inject.join(", ") }
+            ));
+        }
+    }
+    out
+}
+
+/// 多供应商版的 subset 判定：本地配置挑了 `decl.providers` 里的哪一家。
+///
+/// 规矩与单供应商完全一样（target 精确相等、paths/methods/inject 逐项子集），
+/// 只是"声明的范围"换成了**被挑中的那一家**：所以网关切到 `b` 时，配置里写的东西
+/// 必须被 `providers[b]` 背书 —— 不能拿 `providers[a]` 的声明去背书一个别人的目标。
+///
+/// `inject` 取**并集**（路由级 + 该供应商级）：有的头是这条出口共用的（如 `X-Route`），
+/// 有的是某一家特有的（如 `anthropic-version`）。
+pub fn egress_covers_provider(
+    decl: &EgressRoute,
+    provider: &str,
+    target: &str,
+    paths: &[String],
+    methods: &[String],
+    inject: &[String],
+) -> Vec<String> {
+    let Some(declared) = decl.providers.iter().find(|p| p.name.eq_ignore_ascii_case(provider.trim())) else {
+        let names: Vec<&str> = decl.providers.iter().map(|p| p.name.as_str()).collect();
+        return vec![format!(
+            "这条出口没声明供应商「{}」（声明里有：{}）",
+            provider.trim(),
+            if names.is_empty() { "（无 —— 声明里用的是单供应商写法）".to_string() } else { names.join(", ") }
+        )];
+    };
+    let mut out = Vec::new();
+    if declared.target.trim() != target.trim() {
+        out.push(format!(
+            "供应商「{}」的 target 必须与声明一致：「{}」，配置写的是「{}」",
+            declared.name,
+            declared.target.trim(),
+            target.trim()
+        ));
+    }
+    // 路径与方法的上限是**路由级**声明（各家的 paths 子集只能是它的一部分）
+    for p in paths {
+        let Some(n) = normalize_egress_path(p) else {
+            out.push(format!("路径「{p}」不合法"));
+            continue;
+        };
+        if !decl.paths.iter().any(|d| normalize_egress_path(d).as_deref() == Some(n.as_str())) {
+            out.push(format!("路径「{p}」超出声明的范围（声明里只有：{}）", decl.paths.join(", ")));
+        }
+    }
+    for m in methods {
+        if !decl.methods.iter().any(|d| d.eq_ignore_ascii_case(m)) {
+            out.push(format!("方法「{m}」不在声明里（声明里只有：{}）", decl.methods.join(", ")));
+        }
+    }
+    let mut allowed = decl.inject.clone();
+    allowed.extend(declared.inject.iter().cloned());
+    for h in inject {
+        if !allowed.iter().any(|d| d.eq_ignore_ascii_case(h)) {
+            out.push(format!(
+                "注入头「{h}」不在供应商「{}」的声明里（可用：{}）",
+                declared.name,
+                if allowed.is_empty() { "（无）".to_string() } else { allowed.join(", ") }
             ));
         }
     }
@@ -1852,6 +1946,21 @@ fn find_value_like(v: &serde_json::Value, path: &str) -> Option<String> {
 /// 要点不是“声明的对不对”，而是**声明本身要有边界**：target 必须 https（本机除外）、
 /// paths/methods 不能为空（空 = 放行一切）、要出网就得在 `permissions.network` 里出现。
 /// 网关 `accept` 路由拿它当上限（见 `egress_covers`）。
+/// 出网域名是否在权限面里（不在就提醒 —— 声明了出口却没声明域名，与 R5 会不一致）。
+fn check_egress_host(route: &str, host: &str, pkg: &HurPackage, out: &mut Vec<Issue>) {
+    if pkg.permissions.network.is_empty() {
+        out.push(Issue::err(
+            "R10",
+            format!("egress「{route}」要出网，但 permissions.network 是空的 —— 声明出口前先声明权限面"),
+        ));
+    } else if !host_allowed(host, &pkg.permissions.network) {
+        out.push(Issue::warn(
+            "R10",
+            format!("egress「{route}」的域名「{host}」不在 permissions.network 里（建议补齐，否则与 R5 不一致）"),
+        ));
+    }
+}
+
 pub fn validate_egress(pkg: &HurPackage) -> Vec<Issue> {
     let mut out = Vec::new();
     match pkg.egress.as_ref() {
@@ -1870,10 +1979,15 @@ pub fn validate_egress(pkg: &HurPackage) -> Vec<Issue> {
                 }
 
                 match parse_http_target(&r.target) {
-                    None => out.push(Issue::err(
-                        "R10",
-                        format!("egress「{}」的 target「{}」不合法（要 https://主机[:端口][/基路径]）", r.name, r.target),
-                    )),
+                    None => {
+                        // 多供应商写法下 target 本来就该为空 —— 只有"两种都没写"才是错
+                        if r.providers.is_empty() {
+                            out.push(Issue::err(
+                                "R10",
+                                format!("egress「{}」的 target「{}」不合法（要 https://主机[:端口][/基路径]）", r.name, r.target),
+                            ));
+                        }
+                    }
                     Some(t) => {
                         if t.scheme == "http" && !is_loopback_host(&t.host) {
                             out.push(Issue::err(
@@ -1881,16 +1995,77 @@ pub fn validate_egress(pkg: &HurPackage) -> Vec<Issue> {
                                 format!("egress「{}」的 target 是明文 http 且非本机 —— 出站必须 https", r.name),
                             ));
                         }
-                        if pkg.permissions.network.is_empty() {
-                            out.push(Issue::err(
+                        if r.providers.is_empty() {
+                            check_egress_host(&r.name, &t.host, pkg, &mut out);
+                        }
+                    }
+                }
+
+                // 多供应商：声明的是"允许在哪几家之间切"
+                if !r.providers.is_empty() {
+                    if !r.target.trim().is_empty() {
+                        out.push(Issue::err(
+                            "R10",
+                            format!(
+                                "egress「{}」同时写了 target 与 providers —— 两份真相：多供应商时 target 必须为空（每一家的地址写在各 provider 里）",
+                                r.name
+                            ),
+                        ));
+                    }
+                    let mut pseen: Vec<String> = Vec::new();
+                    for p in &r.providers {
+                        if !valid_egress_name(&p.name) {
+                            out.push(Issue::err("R10", format!("egress「{}」的供应商名「{}」不合法（只允许 [a-z0-9._-]，≤64）", r.name, p.name)));
+                        } else if pseen.contains(&p.name) {
+                            out.push(Issue::err("R10", format!("egress「{}」的供应商名「{}」重复", r.name, p.name)));
+                        } else {
+                            pseen.push(p.name.clone());
+                        }
+                        match parse_http_target(&p.target) {
+                            None => out.push(Issue::err(
                                 "R10",
-                                format!("egress「{}」要出网，但 permissions.network 是空的 —— 声明出口前先声明权限面", r.name),
-                            ));
-                        } else if !host_allowed(&t.host, &pkg.permissions.network) {
-                            out.push(Issue::warn(
-                                "R10",
-                                format!("egress「{}」的域名「{}」不在 permissions.network 里（建议补齐，否则与 R5 不一致）", r.name, t.host),
-                            ));
+                                format!("egress「{}」供应商「{}」的 target「{}」不合法", r.name, p.name, p.target),
+                            )),
+                            Some(t) => {
+                                if t.scheme == "http" && !is_loopback_host(&t.host) {
+                                    out.push(Issue::err(
+                                        "R10",
+                                        format!("egress「{}」供应商「{}」的 target 是明文 http 且非本机 —— 出站必须 https", r.name, p.name),
+                                    ));
+                                }
+                                check_egress_host(&r.name, &t.host, pkg, &mut out);
+                            }
+                        }
+                        for h in &p.inject {
+                            if !valid_header_name(h) {
+                                out.push(Issue::err("R10", format!("egress「{}」供应商「{}」的 inject 头名「{h}」不合法", r.name, p.name)));
+                            }
+                        }
+                        // 重写的**键**必须是这条路由已经声明过的路径：否则等于凭空多出一条
+                        // 谁也走不到的映射（路由白名单里没有它）。
+                        for (from, to) in &p.rewrite {
+                            let ok_from = r
+                                .paths
+                                .iter()
+                                .any(|d| normalize_egress_path(d).as_deref() == normalize_egress_path(from).as_deref());
+                            if !ok_from {
+                                out.push(Issue::err(
+                                    "R10",
+                                    format!(
+                                        "egress「{}」供应商「{}」的 rewrite 键「{}」不在路由 paths 里（声明里只有：{}）—— 映射一个走不到的路径没有意义",
+                                        r.name,
+                                        p.name,
+                                        from,
+                                        r.paths.join(", ")
+                                    ),
+                                ));
+                            }
+                            if normalize_egress_path(to).is_none() {
+                                out.push(Issue::err(
+                                    "R10",
+                                    format!("egress「{}」供应商「{}」的 rewrite 目标「{}」不合法", r.name, p.name, to),
+                                ));
+                            }
                         }
                     }
                 }
@@ -2675,7 +2850,121 @@ mod tests {
             paths: paths.iter().map(|s| s.to_string()).collect(),
             methods: methods.iter().map(|s| s.to_string()).collect(),
             inject: inject.iter().map(|s| s.to_string()).collect(),
+            providers: Vec::new(),
         }
+    }
+
+    /// 多供应商写法：同一套 paths/methods，多家上游（每家有地址、头名、可选路径重写）。
+    fn eg_multi(name: &str, paths: &[&str], methods: &[&str], inject: &[&str]) -> EgressRoute {
+        EgressRoute {
+            name: name.into(),
+            target: String::new(),
+            paths: paths.iter().map(|s| s.to_string()).collect(),
+            methods: methods.iter().map(|s| s.to_string()).collect(),
+            inject: inject.iter().map(|s| s.to_string()).collect(),
+            providers: vec![
+                EgressProvider {
+                    name: "openai".into(),
+                    target: "https://api.openai.example/v1".into(),
+                    inject: vec!["Authorization".into()],
+                    rewrite: BTreeMap::new(),
+                },
+                EgressProvider {
+                    name: "anthropic".into(),
+                    target: "https://api.anthropic.example/v1".into(),
+                    inject: vec!["x-api-key".into(), "anthropic-version".into()],
+                    rewrite: [("chat/completions".to_string(), "messages".to_string())].into_iter().collect(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn r10_multi_provider_declaration_is_well_formed() {
+        let dir = temp_pkg("r10-multi");
+        let mut pkg = base("harness", "A-r10-multi-000001");
+        // 多家的域名都要在权限面里（不在只会提醒，但这里仍写全，免得测试靠提醒过日子）
+        pkg.permissions.network = vec!["api.openai.example".into(), "api.anthropic.example".into()];
+        pkg.egress = Some(Egress { provides: vec![eg_multi("llm", &["chat/completions"], &["POST"], &["X-Route"])] });
+        let out = r10(&pkg, &dir);
+        assert!(
+            !out.iter().any(|i| i.level == Level::Error),
+            "多供应商声明本身该是合法的：{out:?}"
+        );
+
+        // target 与 providers 同时写 = 两份真相
+        let mut both = eg_multi("llm", &["chat/completions"], &["POST"], &[]);
+        both.target = "https://api.openai.example/v1".into();
+        pkg.egress = Some(Egress { provides: vec![both] });
+        assert!(r10(&pkg, &dir).iter().any(|i| i.msg.contains("两份真相")), "target 与 providers 不能同时写");
+
+        // 重写一个没声明的路径 = 永远走不到的映射
+        let mut bad_rw = eg_multi("llm", &["chat/completions"], &["POST"], &[]);
+        bad_rw.providers[1].rewrite = [("models".to_string(), "models".to_string())].into_iter().collect();
+        pkg.egress = Some(Egress { provides: vec![bad_rw] });
+        assert!(
+            r10(&pkg, &dir).iter().any(|i| i.msg.contains("rewrite 键")),
+            "rewrite 的键必须在路由 paths 里"
+        );
+
+        // 供应商名重复
+        let mut dup = eg_multi("llm", &["chat/completions"], &["POST"], &[]);
+        dup.providers[1].name = "openai".into();
+        pkg.egress = Some(Egress { provides: vec![dup] });
+        assert!(r10(&pkg, &dir).iter().any(|i| i.msg.contains("重复")), "供应商名不能重复");
+    }
+
+    #[test]
+    fn provider_covers_is_per_provider_not_per_route() {
+        let decl = eg_multi("llm", &["chat/completions"], &["POST"], &["X-Route"]);
+        // 挑 anthropic：地址、头名都要跟**它**对得上
+        let ok = egress_covers_provider(
+            &decl,
+            "anthropic",
+            "https://api.anthropic.example/v1",
+            &["chat/completions".to_string()],
+            &["POST".to_string()],
+            &["x-api-key".to_string(), "anthropic-version".to_string(), "X-Route".to_string()],
+        );
+        assert!(ok.is_empty(), "合规的供应商配置不该有问题：{ok:?}");
+
+        // 拿 openai 的地址去配 anthropic —— 必须被指出来
+        let wrong_target = egress_covers_provider(
+            &decl,
+            "anthropic",
+            "https://api.openai.example/v1",
+            &["chat/completions".to_string()],
+            &["POST".to_string()],
+            &["x-api-key".to_string()],
+        );
+        assert!(wrong_target.iter().any(|m| m.contains("target 必须与声明一致")), "{wrong_target:?}");
+
+        // 头名不在这一家（也不在路由级）的并集里
+        let wrong_head = egress_covers_provider(
+            &decl,
+            "anthropic",
+            "https://api.anthropic.example/v1",
+            &["chat/completions".to_string()],
+            &["POST".to_string()],
+            &["Authorization".to_string()],
+        );
+        assert!(wrong_head.iter().any(|m| m.contains("不在供应商")), "{wrong_head:?}");
+
+        // 没声明过的供应商
+        let unknown = egress_covers_provider(
+            &decl,
+            "gemini",
+            "https://api.gemini.example/v1",
+            &["chat/completions".to_string()],
+            &["POST".to_string()],
+            &[],
+        );
+        assert!(unknown.iter().any(|m| m.contains("没声明供应商")), "{unknown:?}");
+
+        // 单供应商声明下要求切供应商 —— 说清楚"声明里用的是单供应商写法"
+        let single = eg_route("llm", "https://api.openai.example/v1", &["chat/completions"], &["POST"], &[]);
+        let none = egress_covers_provider(&single, "anthropic", "https://api.openai.example/v1", &[], &["POST".to_string()], &[]);
+        assert!(none.iter().any(|m| m.contains("单供应商写法")), "{none:?}");
     }
 
     /// 跑一遍 R1~R10，只要 R10 的结论。

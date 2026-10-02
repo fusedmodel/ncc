@@ -427,6 +427,13 @@ enum GatewayCmd {
     Run,
     /// 看配置摘要 + 是否在跑
     Status,
+    /// 换一家上游供应商（只对多供应商的 accept 路由）：改配置，运行中的网关会热应用
+    Switch {
+        /// 路由名（出现在 URL 里的那个，如 llm）
+        route: String,
+        /// 供应商名（写在该路由 providers 里的键）
+        provider: String,
+    },
     /// 看审计（只读；本地只记元数据不含载荷，--remote 看控制面留存的**摘要**）
     Audit {
         #[arg(long, default_value_t = 20)]
@@ -1200,6 +1207,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             GatewayCmd::Check => gateway::check(),
             GatewayCmd::Run => gateway::run(),
             GatewayCmd::Status => gateway::status(),
+            GatewayCmd::Switch { route, provider } => gateway::switch(route, provider),
             GatewayCmd::Audit {
                 tail,
                 json,

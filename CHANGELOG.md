@@ -14,6 +14,32 @@
 
 ## [未发布]
 
+### 新增 · 一个出口挂多家供应商，`ncc gateway switch` 热切换（2026-10-02）
+
+用户口径：「gateway switch 是否可以实现，比如切换 llm 供应商」。能做，而且做法是**声明一组 + 人切一家**
+（不是自动故障转移 —— 那会越过「人配置过的转发」那条红线）。
+
+**包侧**（`hur-core::spec`）：`egress.provides[].providers[]`（`name` / `target` / `inject`（**只有头名**）/ `rewrite`）。
+写了 `providers` 就不能再写扁平 `target`（两份真相 → R10 判错）；供应商名唯一且 `[a-z0-9._-]`；
+每一家的 target 遵守同样的 https 规矩；`rewrite` 的**键**必须在路由 `paths` 里（否则是一条永远走不到的映射）。
+新增 `egress_covers_provider()`：切到 b 就用 `providers[b]` 背书 —— 不能拿 a 的声明背书一个 a 从没用过的地址。
+
+**网关侧**（`cli/src/gateway.rs`）：`routes[].providers` + `active`；启动闸逐家 subset 校验（target 精确相等、
+paths/methods ⊆ 路由级声明、inject ⊆「路由级 ∪ 该家」）；`handle_accept` 按当前生效的供应商转发；
+`rewrite` 只换路径**不碰 body**（body 是厂商语义，猜错了就是静默发错请求）；响应头与审计都多一个 `provider`。
+
+**切换**：`ncc gateway switch <路由> <供应商>` 只改 `gateway.json`；常驻进程看 mtime（1s）重新 `prepare` 后
+**只换 active 表**，不用重启。监听地址 / 审计目录 / 路由增删这些改动仍要求重启 —— 会打一行「要重启才生效」
+并继续用旧配置（重载一半比不重载更坑）。`ncc gateway check/status` 会打出「供应商 … · 当前 …」。
+
+验证：`gateway-route-smoke.sh` 第 10 节（**54 项全绿**）—— 两个假上游 + 一条多供应商路由，切前只走 a、
+切后不重启就落到 b 且路径被重写成 `/v1/messages`、响应头与审计的 provider 先后是 a/b、
+切到未声明的供应商被拒并列可选、单供应商路由上切提示先声明 providers。
+
+顺带修两个测试自己的毛病：`gateway-route-smoke.sh` 里新增第二个上游后 `PIDS[1]` 不再是网关 B（杀错进程），
+已改成显式 PID 变量；`ncc-platform/scripts/gateway-audit-smoke.sh` 的 MCP 工具数还写着 38（实际 46，
+工具面早长了）—— 这个断言早就红了，一并修掉。
+
 ### 新增 · Gateway 数据面端到端冒烟：accept / forward 真的转发了没？
 
 用户的问法是「gateway router/switch 是否可用」。查完的结论是：**能用，但没人能证明** ——
