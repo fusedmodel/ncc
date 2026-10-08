@@ -1,4 +1,4 @@
-# NCC Connector
+# NCC Connector CLI
 
 > [中文说明](README.zh-CN.md) · [Registry](https://ncc.ai) · [Issues](https://github.com/fusedmodel/ncc/issues) · [Changelog](CHANGELOG.md)
 
