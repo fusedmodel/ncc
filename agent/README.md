@@ -159,7 +159,7 @@ ncc publish --kind harness --name "NCC for Agents" --slug ncc-for-agents \
 
 ```bash
 # Skill 形态
-ncc publish --kind skill --name "NCC Registry 使用技能" --slug ncc-registry \
+ncc publish --kind skill --name "NCC Connector 使用技能" --slug ncc-registry \
             --file ./SKILL.md --tags ncc,registry,agent
 
 # Harness 形态

@@ -1,4 +1,4 @@
-# NCC Registry
+# NCC Connector
 
 > [中文说明](README.zh-CN.md) · [Registry](https://ncc.ai) · [Issues](https://github.com/fusedmodel/ncc/issues) · [Changelog](CHANGELOG.md)
 
@@ -6,7 +6,7 @@
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Rust](https://img.shields.io/badge/rust-1.98%2B-orange)
 
-The official command-line client for **NCC Registry** — a neutral, cross-protocol registry for *capability artifacts*: APIs, Skills (`SKILL.md`), MCP servers, Harnesses (incl. HUR), Plugins, Scaffolds, Docker images, benchmarks and live nodes.
+The official command-line client for **NCC Connector** — a neutral, cross-protocol registry for *capability artifacts*: APIs, Skills (`SKILL.md`), MCP servers, Harnesses (incl. HUR), Plugins, Scaffolds, Docker images, benchmarks and live nodes.
 
 `ncc` is a single Rust binary. No Node or Python runtime, no system OpenSSL. It covers the whole artifact lifecycle — register, publish, search, install, download — plus API keys for CI, device presence reporting, and the NCC Terminal console.
 

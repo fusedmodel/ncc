@@ -1,4 +1,4 @@
-// NCC Registry 接入与集群写：`ncc registry add / ticket / replicate / rm`
+// NCC Connector 接入与集群写：`ncc registry add / ticket / replicate / rm`
 //
 // 两条接入路径，同一张票据（服务端 /api/access/*）：
 //

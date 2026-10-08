@@ -1,4 +1,4 @@
-// NCC Registry 节点（内网托管节点）—— `ncc registry …`
+// NCC Connector 节点（内网托管节点）—— `ncc registry …`
 //
 // 这一组命令把 CLI 当成「Agent 插件」接进一个内网 ncc-registry：
 //
@@ -336,7 +336,7 @@ pub fn status(cfg: &CliConfig, a: &StatusArgs) -> Result<()> {
 
     let n = &meta["node"];
     let role = if s(n, "role") == "master" { "master（权威节点）" } else { "worker（边缘托管点）" };
-    println!("NCC Registry 节点  {}", s(&meta, "console"));
+    println!("NCC Connector 节点  {}", s(&meta, "console"));
     println!("  角色   {role}");
     println!("  节点   {}  {}  区域 {}", s(n, "name"), s(n, "id"), {
         let r = s(n, "region");

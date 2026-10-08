@@ -161,7 +161,7 @@ pub enum HurCmd {
     },
     /// 互操作导出：渲染成 Claude / Cursor / Cline / Codex / MCP 能直接用的产物（默认只预览）
     Interop(HurInteropArgs),
-    /// 发布到 NCC Registry（kind=hur；先本地 verify → pack → 可选 sign）
+    /// 发布到 NCC Connector（kind=hur；先本地 verify → pack → 可选 sign）
     Publish(HurPublishArgs),
     /// 把本机签名附着到**已发布**条目上（不重发新版本；产物字节必须没变）
     Attach(HurAttachArgs),

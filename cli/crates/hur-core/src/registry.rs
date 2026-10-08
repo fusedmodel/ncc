@@ -1,6 +1,6 @@
 //! registry 客户端（ureq）：探活 / 登录 / 上传 / 发布 / 详情 / 下载。
 //!
-//! 协议与 NCC Registry 对齐：`POST /api/registry/uploads`（raw body + X-Filename）
+//! 协议与 NCC Connector 对齐：`POST /api/registry/uploads`（raw body + X-Filename）
 //! → `POST /api/registry`（元数据 + storage）→ `GET /api/registry/:ns/:slug[/download]`。
 //! 认证：`Authorization: Bearer <jwt 或 ncc_ API-Key>`。
 

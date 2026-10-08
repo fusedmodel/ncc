@@ -1,4 +1,4 @@
-// NCC MCP：把 NCC Registry 作为 MCP server 暴露给任意 Agent（Claude Desktop / Cursor /
+// NCC MCP：把 NCC Connector 作为 MCP server 暴露给任意 Agent（Claude Desktop / Cursor /
 // VS Code / 自研 Agent 等），让 Agent 能 agentic 地检索、取回、发布能力制品。
 //
 // 传输：stdio，逐行 JSON-RPC 2.0（MCP 的 stdio 约定：一行一条消息，不能有内嵌换行）。
@@ -21,7 +21,7 @@ const MAX_TEXT: usize = 24000;
 
 /// initialize 时下发给模型的用法说明（MCP 会把它放进系统上下文）。
 const INSTRUCTIONS: &str = "\
-NCC Registry 是中立、跨协议的能力制品目录（api / skill / mcp / harness / plugin / scaffold / docker-image / benchmark / living）。
+NCC Connector 是中立、跨协议的能力制品目录（api / skill / mcp / harness / plugin / scaffold / docker-image / benchmark / living）。
 把它当成「能力的 npm」来用：
 
 1. 先查后造：用 ncc_list_kinds 看目录里有什么类型，用 ncc_search_catalog 检索是否已有可复用的能力。

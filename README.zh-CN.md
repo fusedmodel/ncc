@@ -1,4 +1,4 @@
-# NCC Registry
+# NCC Connector
 
 [English](README.md) · [注册中心](https://ncc.ai) · [问题反馈](https://github.com/fusedmodel/ncc/issues) · [更新日志](CHANGELOG.md)
 
@@ -6,7 +6,7 @@
 ![Status: alpha](https://img.shields.io/badge/status-alpha-orange)
 ![Rust](https://img.shields.io/badge/rust-1.98%2B-orange)
 
-**NCC Registry** 的官方命令行客户端。NCC Registry 是一个中立、跨协议的**能力制品（capability artifact）**注册中心，收录 API、Skill（`SKILL.md`）、MCP Server、Harness（含 HUR）、Plugin、Scaffold、Docker 镜像、Benchmark 与活体节点。
+**NCC Connector** 的官方命令行客户端。NCC Connector 是一个中立、跨协议的**能力制品（capability artifact）**注册中心，收录 API、Skill（`SKILL.md`）、MCP Server、Harness（含 HUR）、Plugin、Scaffold、Docker 镜像、Benchmark 与活体节点。
 
 `ncc` 是一个单一的 Rust 二进制：不需要 Node / Python 运行时，也不依赖系统 OpenSSL。它覆盖制品的完整生命周期 —— 注册、发布、检索、安装、下载，另含面向 CI 的 API-Key、设备状态上报与 NCC Terminal 能力命令台。
 

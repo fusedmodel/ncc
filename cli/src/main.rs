@@ -292,7 +292,7 @@ enum Cmd {
     /// 是**声明**出来的，服务端一行不用改。三条边界：动态≠无模式、不可变就是不可变、CRUD≠授权。
     #[command(subcommand)]
     Store(store::StoreCmd),
-    /// NCC Registry 节点（内网托管节点）：登录 / 入网 / 目录 / 路由 / 配置 / 分享 / 管理
+    /// NCC Connector 节点（内网托管节点）：登录 / 入网 / 目录 / 路由 / 配置 / 分享 / 管理
     ///
     /// 只在内网节点目标上跑（kind=registry）；云端命令见 `ncc hub …`。
     #[command(subcommand)]
