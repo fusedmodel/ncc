@@ -604,7 +604,7 @@ ncc match "…" --from office                      # 用内网节点上的索引
 
 ### `ncc registry`
 
-面向自托管内网节点 [`ncc-registry`](ncc-registry/) 的命令组。它只在 **kind=registry 的目标**
+面向自托管内网节点 [`ncc-connector`](ncc-connector/) 的命令组。它只在 **kind=registry 的目标**
 上跑（云端命令直接写成 `ncc hub …`，或先 `ncc target use hub`；在错误的目标上会直接告诉你该切到哪个）：
 它把「制品托管 + 节点托管 + 多节点集群」当成一个内网服务来用：
 
@@ -985,22 +985,22 @@ ncc me
 
 ### 内网形态：`ncc-registry`
 
-[`ncc-registry`](https://github.com/fusedmodel/ncc-registry) 是一个自包含的内网节点：单个 Rust 二进制，
+[`ncc-connector`](https://github.com/fusedmodel/ncc-connector) 是一个自包含的内网节点：单个 Rust 二进制，
 同时**托管制品**、**托管节点**（你的 Agent 与服务），并让它们**互相发现、连起来**。
 它可以按「一个 `master` + 任意多个 `worker` 边缘节点」铺开。
 
-它有自己的仓库，在这里以 **git submodule**（`ncc-registry/`）的形式引入 —— 所以直接 clone 的话
+它有自己的仓库（`ncc-connector`，原名 `ncc-registry`），在这里以 **git submodule**（`ncc-connector/`）的形式引入 —— 所以直接 clone 的话
 那个目录是空的：用 `git clone --recurse-submodules`，或在已有检出里跑 `git submodule update --init`：
 
 ```bash
-( cd ncc-registry/rust && cargo build --release )   # → ncc-registry/rust/target/release/ncc-registry
+( cd ncc-connector/rust && cargo build --release )   # → ncc-connector/rust/target/release/ncc-registry
 
 # master（权威：账号 / 制品 / 节点目录 / 集群视图）
-NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./ncc-registry/rust/target/release/ncc-registry
+NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./ncc-connector/rust/target/release/ncc-registry
 
 # worker（自己也托管制品与节点，并把本地目录上报给 master）
 NCCR_ROLE=worker NCCR_PORT=8283 NCCR_NODE_NAME=office-worker-a \
-  NCCR_MASTER_URL=http://office-master:8282 ./ncc-registry/rust/target/release/ncc-registry
+  NCCR_MASTER_URL=http://office-master:8282 ./ncc-connector/rust/target/release/ncc-registry
 ```
 
 然后把 CLI 接上去：
@@ -1042,7 +1042,7 @@ ncc registry rm @alice/hotel-skill --yes     # master 下架并回收全部副�
 而连接仍然不等于授权：要看/取别人的私有制品或接入非公开服务，仍需要显式授权
 （`ncc grant set --user @bob --kind artifact|service`）。
 
-完整 API、配置表与部署说明见 [`ncc-registry/README.md`](ncc-registry/README.md)。
+完整 API、配置表与部署说明见 [`ncc-connector/README.md`](ncc-connector/README.md)。
 
 ## 脚本与 CI
 
@@ -1120,7 +1120,8 @@ bash scripts/build-release.sh --all    # 交叉编译全部目标（需 `rustup 
 cli/                 Rust crate（bin: ncc）
 packages/ncc-cli/    npm 包装（@fusedmodel/ncc-cli）—— 启动器 + 二进制下载
 examples/            能跑的真包示例（每个子目录一个完整 HUR 工程，见 examples/README.md）
-ncc-registry/        内网自托管节点 —— git submodule → github.com/fusedmodel/ncc-registry
+ncc-connector/        内网自托管节点 —— git submodule → github.com/fusedmodel/ncc-connector
+                     （仓库已改名 ncc-connector；目录名 / 二进制名 / `NCCR_` 前缀保持不变）
                      （Go：单二进制 + 可 import 的库）：制品托管 + 节点托管 + master/worker 多节点
 agent/               Agent 接入包（MCP 配置、SKILL.md、harness 契约）
 release/bin/         入库的预编译二进制 + checksums.txt

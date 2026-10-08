@@ -21,7 +21,7 @@ PLAT="http://127.0.0.1:${PLAT_PORT}"
 export NCC_HOME="${TMP}/home"
 
 REPO="$(cd "${ROOT}/.." && pwd)"          # ncc-ai/
-REG_SRC="${REPO}/ncc-registry"
+REG_SRC="${REPO}/ncc-connector"
 PLAT_SRC="${REPO}/ncc-platform/server"
 
 find_cli() {
@@ -33,7 +33,7 @@ find_cli() {
 }
 CLI="$(find_cli)"
 [[ -n "${CLI}" ]] || { echo "找不到 ncc：先在 ncc-cli/cli 里 cargo build，或用 CLI_BIN=/path/to/ncc" >&2; exit 1; }
-[[ -d "${REG_SRC}" ]] || { echo "找不到 ncc-registry（${REG_SRC}）" >&2; exit 1; }
+[[ -d "${REG_SRC}" ]] || { echo "找不到 ncc-connector（${REG_SRC}）" >&2; exit 1; }
 [[ -d "${PLAT_SRC}" ]] || { echo "找不到 ncc-platform/server（${PLAT_SRC}）" >&2; exit 1; }
 
 PASS=0

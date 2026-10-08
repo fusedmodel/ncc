@@ -4,9 +4,9 @@
 + npm 包装（`packages/ncc-cli/`，`@fusedmodel/ncc-cli`）。
 
 > **`ncc-registry` 已独立**（2026-09-24）：内网托管节点搬到了
-> [`fusedmodel/ncc-registry`](https://github.com/fusedmodel/ncc-registry)，
+> [`fusedmodel/ncc-connector`](https://github.com/fusedmodel/ncc-connector)（原名 `ncc-registry`），
 > 并**从那边的 `v0.1.0` 起走自己的版本线** —— 它的变更历史看那个仓库的 CHANGELOG。
-> 这里以 git submodule（`ncc-registry/`）引入；**下面 `[未发布]` 及更早版本里**
+> 这里以 git submodule（`ncc-connector/`）引入；**下面 `[未发布]` 及更早版本里**
 > **属于 `ncc-registry` 的条目保留原样**，只作历史记录，不再更新。
 
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。

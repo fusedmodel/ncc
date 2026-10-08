@@ -999,24 +999,25 @@ To distribute your own builds through either path, set `NCC_RELEASE_BASE` to the
 
 ### Inside a private network: `ncc-registry`
 
-[`ncc-registry`](https://github.com/fusedmodel/ncc-registry) is a self-contained intranet node — a single
+[`ncc-connector`](https://github.com/fusedmodel/ncc-connector) is a self-contained intranet node — a single
 Rust binary that hosts **artifacts**, hosts **nodes** (your agents and services), and lets them
 **discover and connect to each other**. It scales out as one `master` plus any number of `worker`
 edge nodes.
 
-It lives in its own repository and is vendored here as a **git submodule** (`ncc-registry/`), so a plain
+It lives in its own repository (`ncc-connector`, renamed from `ncc-registry`) and is vendored here as a
+**git submodule** (`ncc-connector/`), so a plain
 clone leaves that directory empty — use `git clone --recurse-submodules`, or `git submodule update --init`
 in an existing checkout:
 
 ```bash
-( cd ncc-registry/rust && cargo build --release )   # → ncc-registry/rust/target/release/ncc-registry
+( cd ncc-connector/rust && cargo build --release )   # → ncc-connector/rust/target/release/ncc-registry
 
 # master (authoritative: accounts, artifacts, node directory, cluster view)
-NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./ncc-registry/rust/target/release/ncc-registry
+NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./ncc-connector/rust/target/release/ncc-registry
 
 # worker (also hosts artifacts/nodes, reports its catalogue to the master)
 NCCR_ROLE=worker NCCR_PORT=8283 NCCR_NODE_NAME=office-worker-a \
-  NCCR_MASTER_URL=http://office-master:8282 ./ncc-registry/rust/target/release/ncc-registry
+  NCCR_MASTER_URL=http://office-master:8282 ./ncc-connector/rust/target/release/ncc-registry
 ```
 
 Then point the CLI at it:
@@ -1059,7 +1060,7 @@ ncc registry rm @alice/hotel-skill --yes     # master deletes it and reclaims ev
 And connections still are not authorization: reading someone's private artifact or private node needs
 an explicit grant (`ncc grant set --user @bob --kind artifact|service`).
 
-See [`ncc-registry/README.md`](ncc-registry/README.md) for the full API, config table and deployment notes.
+See [`ncc-connector/README.md`](ncc-connector/README.md) for the full API, config table and deployment notes.
 
 ## Scripting and CI
 
@@ -1136,7 +1137,8 @@ Prebuilt targets: `darwin` (x86_64, arm64), `linux` (x86_64, arm64), `windows` (
 cli/                 Rust crate (bin: ncc)
 packages/ncc-cli/    npm wrapper (@fusedmodel/ncc-cli) — launcher + binary downloader
 examples/            Runnable package examples (one full HUR project per subdirectory; see examples/README.md)
-ncc-registry/        Self-hosted intranet node — git submodule → github.com/fusedmodel/ncc-registry
+ncc-connector/        Self-hosted intranet node — git submodule → github.com/fusedmodel/ncc-connector
+                     (repo renamed ncc-connector; the directory, binary and `NCCR_` prefix stay as-is)
                      (Go: single binary + importable library): artifacts + nodes + master/worker cluster
 agent/               Agent integration pack (MCP config, SKILL.md, harness manifest)
 release/bin/         Checked-in prebuilt binaries + checksums.txt
