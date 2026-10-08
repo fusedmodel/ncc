@@ -60,8 +60,8 @@ alive() {  # 等一个 HTTP 面起来
 
 say "0. 构建两个服务端（节点 + 平台）"
 mkdir -p "${WORK}/bin"
-( cd "${REG_SRC}" && go build -o "${WORK}/bin/ncc-registry" ./cmd/ncc-registry )
-( cd "${PLAT_SRC}" && go build -o "${WORK}/bin/ncc-server" ./cmd/server )
+( cd "${REG_SRC}/rust" && cargo build --release -q --bin ncc-registry && cp target/release/ncc-registry "${WORK}/bin/ncc-registry" )
+( cd "${PLAT_SRC}" && cargo build --release -q --bin ncc-server && cp target/release/ncc-server "${WORK}/bin/ncc-server" )
 good "ncc-registry 与 ncc-platform 都已构建"
 
 say "1. 起内网节点（内容这一侧，:${NODE_PORT}）"

@@ -66,7 +66,7 @@ except Exception: print('')
 
 say "0. 起一个节点（状态与反馈都住它上面）"
 mkdir -p "${WORK}"
-( cd "${REG_SRC}" && go build -o "${TMP}/ncc-registry" ./cmd/ncc-registry )
+( cd "${REG_SRC}/rust" && cargo build --release -q --bin ncc-registry && cp target/release/ncc-registry "${TMP}/ncc-registry" )
 NCCR_PORT="${NODE_PORT}" NCCR_DATA_DIR="${TMP}/node-data" NCCR_JWT_SECRET=smoke-learn \
   NCCR_NODE_NAME="learn-node" "${TMP}/ncc-registry" >"${TMP}/node.log" 2>&1 &
 PID=$!

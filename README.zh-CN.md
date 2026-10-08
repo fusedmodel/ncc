@@ -985,22 +985,22 @@ ncc me
 
 ### 内网形态：`ncc-registry`
 
-[`ncc-registry`](https://github.com/fusedmodel/ncc-registry) 是一个自包含的内网节点：单个 Go 二进制
-（同时也是一个可 `go get` 的 Go 库），同时**托管制品**、**托管节点**（你的 Agent 与服务），
-并让它们**互相发现、连起来**。它可以按「一个 `master` + 任意多个 `worker` 边缘节点」铺开。
+[`ncc-registry`](https://github.com/fusedmodel/ncc-registry) 是一个自包含的内网节点：单个 Rust 二进制，
+同时**托管制品**、**托管节点**（你的 Agent 与服务），并让它们**互相发现、连起来**。
+它可以按「一个 `master` + 任意多个 `worker` 边缘节点」铺开。
 
 它有自己的仓库，在这里以 **git submodule**（`ncc-registry/`）的形式引入 —— 所以直接 clone 的话
 那个目录是空的：用 `git clone --recurse-submodules`，或在已有检出里跑 `git submodule update --init`：
 
 ```bash
-cd ncc-registry && go build -o dist/ncc-registry ./cmd/ncc-registry
+( cd ncc-registry/rust && cargo build --release )   # → ncc-registry/rust/target/release/ncc-registry
 
 # master（权威：账号 / 制品 / 节点目录 / 集群视图）
-NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./dist/ncc-registry
+NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./ncc-registry/rust/target/release/ncc-registry
 
 # worker（自己也托管制品与节点，并把本地目录上报给 master）
 NCCR_ROLE=worker NCCR_PORT=8283 NCCR_NODE_NAME=office-worker-a \
-  NCCR_MASTER_URL=http://office-master:8282 ./dist/ncc-registry
+  NCCR_MASTER_URL=http://office-master:8282 ./ncc-registry/rust/target/release/ncc-registry
 ```
 
 然后把 CLI 接上去：

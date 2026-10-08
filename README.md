@@ -1000,23 +1000,23 @@ To distribute your own builds through either path, set `NCC_RELEASE_BASE` to the
 ### Inside a private network: `ncc-registry`
 
 [`ncc-registry`](https://github.com/fusedmodel/ncc-registry) is a self-contained intranet node — a single
-Go binary (also an importable Go library) that hosts **artifacts**, hosts **nodes** (your agents and
-services), and lets them **discover and connect to each other**. It scales out as one `master` plus any
-number of `worker` edge nodes.
+Rust binary that hosts **artifacts**, hosts **nodes** (your agents and services), and lets them
+**discover and connect to each other**. It scales out as one `master` plus any number of `worker`
+edge nodes.
 
 It lives in its own repository and is vendored here as a **git submodule** (`ncc-registry/`), so a plain
 clone leaves that directory empty — use `git clone --recurse-submodules`, or `git submodule update --init`
 in an existing checkout:
 
 ```bash
-cd ncc-registry && go build -o dist/ncc-registry ./cmd/ncc-registry
+( cd ncc-registry/rust && cargo build --release )   # → ncc-registry/rust/target/release/ncc-registry
 
 # master (authoritative: accounts, artifacts, node directory, cluster view)
-NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./dist/ncc-registry
+NCCR_PORT=8282 NCCR_NODE_NAME=office-master ./ncc-registry/rust/target/release/ncc-registry
 
 # worker (also hosts artifacts/nodes, reports its catalogue to the master)
 NCCR_ROLE=worker NCCR_PORT=8283 NCCR_NODE_NAME=office-worker-a \
-  NCCR_MASTER_URL=http://office-master:8282 ./dist/ncc-registry
+  NCCR_MASTER_URL=http://office-master:8282 ./ncc-registry/rust/target/release/ncc-registry
 ```
 
 Then point the CLI at it:

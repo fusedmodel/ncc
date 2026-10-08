@@ -67,7 +67,7 @@ contains "也说清了上限" "256KB" "${OUT}"
 
 say "1. 构建并起节点（:${PORT}，隔离数据目录）"
 mkdir -p "${WORK}/bin"
-( cd "${REG_SRC}" && go build -o "${WORK}/bin/ncc-registry" ./cmd/ncc-registry )
+( cd "${REG_SRC}/rust" && cargo build --release -q --bin ncc-registry && cp target/release/ncc-registry "${WORK}/bin/ncc-registry" )
 good "ncc-registry 已构建"
 NCCR_PORT="${PORT}" NCCR_DATA_DIR="${TMP}/node-data" NCCR_JWT_SECRET=smoke-store \
   NCCR_PUBLIC_URL="${NODE}" "${WORK}/bin/ncc-registry" >"${TMP}/node.log" 2>&1 &

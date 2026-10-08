@@ -61,7 +61,7 @@ jget() { python3 -c "import json,sys;d=json.load(sys.stdin);print(eval('d'+sys.a
 
 say "0. 构建内网节点（三样状态住在节点上）"
 mkdir -p "${WORK}/bin"
-( cd "${REG_SRC}" && go build -o "${WORK}/bin/ncc-registry" ./cmd/ncc-registry )
+( cd "${REG_SRC}/rust" && cargo build --release -q --bin ncc-registry && cp target/release/ncc-registry "${WORK}/bin/ncc-registry" )
 good "ncc-registry 已构建"
 
 say "1. 起节点（:${PORT}，隔离数据目录）"

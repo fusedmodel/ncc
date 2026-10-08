@@ -60,7 +60,7 @@ json_sig() { python3 -c "import json,sys;print(json.dumps(json.load(open(sys.arg
 
 say "0. 构建平台服务端"
 mkdir -p "${WORK}/bin"
-( cd "${PLAT_SRC}" && go build -o "${WORK}/bin/ncc-server" ./cmd/server )
+( cd "${PLAT_SRC}" && cargo build --release -q --bin ncc-server && cp target/release/ncc-server "${WORK}/bin/ncc-server" )
 good "ncc-platform 已构建"
 
 say "1. 起平台（:${PORT}，隔离数据目录）"
