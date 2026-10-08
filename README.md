@@ -342,6 +342,7 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc hur profile <path \| @ns/slug>` | Read what a package **is**: what it wants, what it gives, **how to hook it up** — plus a graded check (`structure / self-consistent / signature` reported separately, never smeared into one ✅). `--list` prints the whole profile table |
 | `ncc hur match --profile kb-seed` | Read-only search: find packages by profile / integration host / capability |
 | `ncc hur data import --package <dir>` | Pour a **data snapshot package** into the node (kb-seed / mem-seed / ckpt-set / trace-set). Prints a plan by default; `--apply` actually writes |
+| `ncc huf <init\|build\|pack\|verify\|inspect\|ls\|unpack\|sign\|spec>` | **Resource packages** (`.huf`): docs / prompts / templates / assets — the sibling of `.hur`, **without** an entry (it never runs). Same container, same deterministic bytes and sidecar signature |
 | `ncc kb bundle --as-package <dir>` | Export a knowledge base as an immutable **snapshot package** (source / snapshotAt / privacy / license), signable & publishable |
 | `ncc mem export --as-package <dir>` | Memory snapshot (private by default — a memory that can be handed out is no longer a memory) |
 | `ncc ckpt export --as-package <dir>` | Checkpoint set: bytes + lineage, digest verified before it enters the package |
@@ -360,7 +361,7 @@ Global flags:
 
 | Option | Description |
 |---|---|
-| `--kind <KIND>` | **Required.** `api`, `harness`, `hur`, `skill`, `mcp`, `plugin`, `scaffold`, `docker-image`, `benchmark`, `living` |
+| `--kind <KIND>` | **Required.** `api`, `harness`, `hur`, `huf`, `skill`, `mcp`, `plugin`, `scaffold`, `docker-image`, `benchmark`, `living` |
 | `--name <NAME>` | **Required.** Human-readable display name |
 | `--file <PATH>` | Upload bytes from a local file |
 | `--url <URL>` | Bring your own storage: publish a direct link instead of uploading |
@@ -711,6 +712,37 @@ ncc registry admin audit --limit 20                      # who did what to whom,
 
 Two rules the server enforces: **you cannot disable your own account**, and
 **you cannot disable the last usable admin**.
+
+### `ncc huf` — user-facing resource packages (`.huf`)
+
+**`.hur` holds things that run; `.huf` holds things people read.** Docs, prompts, templates, static
+assets, skill text, knowledge-base snippets. Same container, two identities: `harness-use-package/v1`
+(`hur.json`, `src/` is where code goes) vs `harness-use-files/v1` (`huf.json`, **no `src/`**,
+and `entry`/`runtime`/`permissions`… are **refused**) — so "can this file run?" is answered by the
+extension, not by unpacking it.
+
+```bash
+ncc huf init . --id docs/onboarding --name "Onboarding" --short "read this first"
+ncc huf build            # huf.lock: per-file sha256 (the signature covers it)
+ncc huf verify           # H1~H9, fully offline — a failing package is never packed
+ncc huf pack             # dist/<id>-<version>.huf.gz + .sha256 (deterministic bytes)
+ncc huf sign             # minisign/ed25519 sidecar; the private key never leaves the machine
+ncc huf inspect / ls / unpack / spec
+ncc publish --kind huf --name "Onboarding" --file dist/<artifact>.huf.gz   # no new command needed
+```
+
+| Rule | What it checks |
+|---|---|
+| H1/H2 | `spec` is `harness-use-files/v1`, `kind` is `files` |
+| H3 | no `entry`/`runtime`/`capabilities`/`agent`/… — those mean "this package runs"; use `ncc hur` |
+| H4/H5/H6 | id charset; `name` + semver `version`; `audience ∈ user\|operator\|developer\|agent` |
+| H7 | at least one content file, and `huf.lock` matches the bytes on disk |
+| H8 | signature (`--require-signature` demands one that verifies against a trusted key) |
+| H9 | artifact sha256 matches the `.sha256` sidecar |
+
+Enforced both ways: `ncc hur verify` will not accept a `.huf`, and `ncc huf verify` will not accept a
+`hur.json`. Content directories: `docs / assets / skills / kb / data`. End-to-end smoke:
+`bash scripts/huf-smoke.sh` (local toolchain + publish to a real node). Design: `ncc-platform/prd/ncc-huf.md`.
 
 ### `ncc hur profile` and data snapshot packages
 

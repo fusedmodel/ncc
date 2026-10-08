@@ -14,6 +14,31 @@
 
 ## [未发布]
 
+### 新增 · `ncc huf` —— 资源包工具链（`.huf`）（2026-10-09）
+
+用户提问（原话）：「是否可以增加 huf 文件，这个文件格式是一些资源文件类型打包，hur 是 exe 等
+runtime 的文件，huf 是面向用户的文件？」—— 结论：可行，且**不该另造一个格式**。
+
+两个扩展名的分工是"**`.hur` 装能跑的东西，`.huf` 装给人看的东西**"：文档 / 提示词 / 模板 /
+静态资产 / 技能文本 / 知识库片段。二者**同一个容器**（`gzip(zip(清单, 锁, 内容…))` + 确定性字节 +
+防穿越解包 + Minisign 侧车签名），差别只有三处：清单名（`hur.json` → `huf.json`）、规范号
+（`harness-use-package/v1` → `harness-use-files/v1`）、内容目录（**没有 `src/`**，那是代码的落点）。
+
+```bash
+ncc huf init / build / pack / verify / inspect / ls / unpack / sign / spec
+ncc publish --kind huf --file dist/<产物>.huf.gz      # 发布不需要新命令
+```
+
+- **规则分开编号**：`.huf` 用 `H1~H9`（`.hur` 是 `R1~R12`）—— 两套规则碰巧都得看清单，
+  但判据不同，用同一串编号会让人以为可以互相对照。
+- **硬边界（H3）**：资源包里出现 `entry`/`runtime`/`capabilities`/`agent`/`permissions`… 即报错并
+  指向 `ncc hur`；反过来 `ncc hur verify` 也不认 `.huf`（清单名不同）。两个方向都拦。
+- **没有 `run` / `exec`**：资源包不执行 —— 这不是"暂未实现"，是格式的定义。
+- `hur-core` 里只有**一处格式分叉**（`spec::Format`：清单名 / 锁名 / 规范号 / 内容目录 / 扩展名），
+  容器与签名的实现仍只有一份。
+- 新增端到端冒烟 `scripts/huf-smoke.sh`（本地工具链 H3/H7/H8/H9 + 真发一份到节点再下回来比对字节）。
+
+
 ### 新增 · `ncc index state|hold|release|advance|queue`（2026-10-02）
 
 匹配找到人只是开始：真正的交互是一个**事务**（房间不能被卖两遍），

@@ -14,6 +14,7 @@
 pub mod cfg;
 pub mod datapack;
 pub mod dep;
+pub mod huf;
 pub mod install;
 pub mod interop;
 pub mod mcp;

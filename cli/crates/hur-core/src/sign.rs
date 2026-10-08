@@ -306,7 +306,7 @@ impl Store {
         let sig = find_sig(&artifact);
         // 产物在就直接核它（下发给别人的也是这一份）；不在就重算规范字节到临时文件核
         if artifact.is_file() {
-            return self.report(&artifact, sig, required, pub_override, "产物");
+            return self.report(&artifact, sig, required, pub_override, "产物", "R9");
         }
         if sig.is_some() {
             let (bytes, name) = match crate::pack::archive_bytes(dir, false) {
@@ -317,62 +317,90 @@ impl Store {
             if let Err(e) = std::fs::write(&tmp, &bytes) {
                 return SigReport { required, ..SigReport::issue(required, Issue::err("R9", format!("写临时文件失败：{e}"))) };
             }
-            let r = self.report(&tmp, sig, required, pub_override, "工程目录（重算的规范字节）");
+            let r = self.report(&tmp, sig, required, pub_override, "工程目录（重算的规范字节）", "R9");
             let _ = std::fs::remove_file(&tmp);
             return r;
         }
         // 没有签名文件：只有"策略要求"才出声，平时别制造噪音
-        self.report(&artifact, None, required, pub_override, "工程目录")
+        self.report(&artifact, None, required, pub_override, "工程目录", "R9")
     }
 
     /// 核一个 `.hur` / `.hur.gz` 产物文件
     pub fn check_archive(&self, archive: &Path, required: bool, pub_override: Option<&Path>) -> SigReport {
         let sig = find_sig(archive);
-        self.report(archive, sig, required, pub_override, "产物")
+        self.report(archive, sig, required, pub_override, "产物", "R9")
+    }
+
+    /// 核「手里这份字节 + 指定签名文件」，规则编号由调用方给。
+    ///
+    /// 两个用处：① `.huf` 用 **H8** 报签名问题（`.hur` 的 R9 是另一套编号，混用会让人以为
+    /// 可以互相对照）；② 产物没落盘、只能重算规范字节时，签名文件在**产物**旁边而不是临时
+    /// 文件旁边 —— 得把路径显式传进来。
+    pub fn check_with_sig(
+        &self,
+        artifact: &Path,
+        sig: Option<&Path>,
+        required: bool,
+        pub_override: Option<&Path>,
+        what: &str,
+        rule: &str,
+    ) -> SigReport {
+        self.report(artifact, sig.map(|p| p.to_path_buf()), required, pub_override, what, rule)
     }
 
     /// 把 `inspect` 的结论折成「人读摘要 + R9 检查项」
-    fn report(&self, artifact: &Path, sig: Option<PathBuf>, required: bool, pub_override: Option<&Path>, what: &str) -> SigReport {
+    fn report(
+        &self,
+        artifact: &Path,
+        sig: Option<PathBuf>,
+        required: bool,
+        pub_override: Option<&Path>,
+        what: &str,
+        rule: &str,
+    ) -> SigReport {
+        // 签名问题的提示里要出现**用户该敲的那条命令**：`.huf`（H8）与 `.hur`（R9）是两条
+        // 命令线，提示写错会把人带到另一个格式上。密钥圈是共用的（`ncc hur key`）。
+        let cli = if rule == "H8" { "ncc huf sign" } else { "ncc hur sign" };
         let outcome = match self.inspect(artifact, sig.as_deref(), pub_override) {
             Ok(o) => o,
-            Err(e) => return SigReport { required, ..SigReport::issue(required, Issue::err("R9", format!("{e:#}"))) },
+            Err(e) => return SigReport { required, ..SigReport::issue(required, Issue::err(rule, format!("{e:#}"))) },
         };
         let mut issues = Vec::new();
         let (verified, info, summary) = match outcome {
             SigOutcome::Verified(info) => {
                 if let Some(claim) = &info.claim_sha256 {
                     if *claim != info.sha256 {
-                        issues.push(Issue::err("R9", format!("签名声明 sha256={claim}，但产物实际是 {}（签名者自己的声明对不上）", info.sha256)));
+                        issues.push(Issue::err(rule, format!("签名声明 sha256={claim}，但产物实际是 {}（签名者自己的声明对不上）", info.sha256)));
                     }
                 }
                 let s = format!("✔ 签名有效 · 签名者 {} · keynum {} · {}", info.signer, info.keynum, if info.prehashed { "预哈希格式" } else { "内联格式" });
                 // 留一条"已核对通过"的证据：计划器的 fail-closed 判据就是"有没有 R9 条目"
-                issues.push(Issue::info("R9", format!("签名有效 · 签发者 {} · keynum {}", info.signer, info.keynum)));
+                issues.push(Issue::info(rule, format!("签名有效 · 签发者 {} · keynum {}", info.signer, info.keynum)));
                 (true, Some(info), s)
             }
             SigOutcome::UnknownKey { keynum, claim, .. } => {
                 let msg = match claim.sha256.as_deref().map(|s| s.to_string()) {
-                    Some(s) => format!("有签名（keynum {keynum}，声明 sha256={s}），但公钥不在本机受信列表：`hur key trust <公钥>` 之后才算可核对"),
-                    None => format!("有签名（keynum {keynum}），但公钥不在本机受信列表：`hur key trust <公钥>` 之后才算可核对"),
+                    Some(s) => format!("有签名（keynum {keynum}，声明 sha256={s}），但公钥不在本机受信列表：`ncc hur key trust <公钥>` 之后才算可核对"),
+                    None => format!("有签名（keynum {keynum}），但公钥不在本机受信列表：`ncc hur key trust <公钥>` 之后才算可核对"),
                 };
-                issues.push(if required { Issue::err("R9", msg.clone()) } else { Issue::warn("R9", msg.clone()) });
+                issues.push(if required { Issue::err(rule, msg.clone()) } else { Issue::warn(rule, msg.clone()) });
                 (false, None, msg)
             }
             SigOutcome::Bad { keynum, msg, .. } => {
                 let m = format!("签名校验失败（keynum {keynum}）：{msg} —— 内容被改过，或签名与这份字节不是一对");
-                issues.push(Issue::err("R9", m.clone()));
+                issues.push(Issue::err(rule, m.clone()));
                 (false, None, m)
             }
             SigOutcome::Unsigned { .. } => {
                 if required {
                     let m = format!(
-                        "策略要求签名（verify.require_signature），但 {what} 找不到签名文件（{}）：先 `hur sign` 签一次",
+                        "策略要求签名（verify.require_signature），但 {what} 找不到签名文件（{}）：先 `{cli}` 签一次",
                         sig_path_for(artifact).display()
                     );
-                    issues.push(Issue::err("R9", m.clone()));
+                    issues.push(Issue::err(rule, m.clone()));
                     (false, None, m)
                 } else {
-                    (false, None, "未签名（策略没要求签名；签名后别人才能独立核对" .to_string() + &format!("：`hur sign {}`）", artifact.display()))
+                    (false, None, "未签名（没要求签名；签名后别人才能独立核对" .to_string() + &format!("：`{cli} {}`）", artifact.display()))
                 }
             }
         };
@@ -449,6 +477,12 @@ impl Claim {
         let mut it = comment.split_whitespace();
         match it.next() {
             Some("hur") => {
+                c.package = it.next().unwrap_or_default().to_string();
+                c.version = it.next().unwrap_or_default().to_string();
+            }
+            // `.huf` 的资源包声明：同一套语法，kind 记下来（人读摘要里能看出是哪一种包）
+            Some("huf") => {
+                c.kind = Some("huf".to_string());
                 c.package = it.next().unwrap_or_default().to_string();
                 c.version = it.next().unwrap_or_default().to_string();
             }
@@ -537,7 +571,8 @@ impl Default for SigReport {
 }
 
 impl SigReport {
-    fn issue(required: bool, i: Issue) -> SigReport {
+    /// 造一份只带一条结论的报告（给"连规范字节都算不出来"这类前置失败用）
+    pub fn issue(required: bool, i: Issue) -> SigReport {
         SigReport { required, summary: i.msg.clone(), issues: vec![i], ..Default::default() }
     }
     pub fn has_error(&self) -> bool {
@@ -570,6 +605,14 @@ pub fn find_sig(artifact: &Path) -> Option<PathBuf> {
 /// 签名里放的声明：包身份 + 规范字节的 sha256（trusted comment 被签名保护）
 pub fn comment_for(pkg: &HurPackage, sha256: &str) -> String {
     format!("hur {} {} sha256={}", pkg.id, pkg.version, sha256)
+}
+
+/// `.huf`（资源包）的签名声明：`huf <id> <version> sha256=<hex>`。
+///
+/// 与 `.hur` 的 `hur <id> <version> sha256=…` 并列 —— 两种包都由同一条解析
+/// （[`Claim::parse`]）认出来，所以核对时既知道"这是某个包"，也知道它属于哪一种。
+pub fn comment_for_huf(id: &str, version: &str, sha256: &str) -> String {
+    format!("huf {id} {version} sha256={sha256}")
 }
 
 /// **非包制品**的签名声明：`ncc <kind> <引用> <版本> sha256=<hex>`。

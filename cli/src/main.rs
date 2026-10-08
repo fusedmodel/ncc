@@ -13,6 +13,7 @@ mod feedback;
 mod gateway;
 mod gwreport;
 mod httpsrv;
+mod huf;
 mod hur;
 // 本机执行（`ncc hur run --exec`）。只在带 sandbox feature 时编译进来
 // （默认开；`--no-default-features` 得到不含 wasmtime 的瘦身构建）。
@@ -178,6 +179,14 @@ enum Cmd {
     /// 执行：默认只出可审计划；`--exec` 在本机 wasm 沙箱里真跑（限额来自策略）
     #[command(subcommand)]
     Hur(hur::HurCmd),
+    /// 资源包工具链（**面向用户的文件**）：ncc huf init | build | pack | verify | sign
+    ///
+    /// `.hur` 装能跑的东西（有 entry，进沙箱），`.huf` 装给人看的东西（文档 / 提示词 / 模板 /
+    /// 资产 / 技能文本）—— **容器是同一个**（gzip + zip + 确定性字节 + 侧车签名），只有清单名
+    /// （huf.json）、规范号（harness-use-files/v1）与内容目录（没有 src/）不同。
+    /// 全程离线；发布走 `ncc publish --kind huf --file dist/….huf.gz`。
+    #[command(subcommand)]
+    Huf(huf::HufCmd),
     /// 制品加签：签的是**发布出去的那份字节**（不限 kind —— Skill / MCP / 任意文件）
     ///
     /// 包（HUR 目录 / .hur）会转交给 `ncc hur sign`（那里签的是规范打包字节，
@@ -1013,6 +1022,8 @@ fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::R
 fn required_capability(cmd: &Cmd) -> Option<&'static str> {
     match cmd {
         Cmd::Hur(h) => h.capability(),
+        // 资源包全程本地（init/build/pack/verify/sign），发布走 `ncc publish` 那条线
+        Cmd::Huf(_) => None,
         Cmd::Publish(_)
         | Cmd::Search(_)
         | Cmd::Info { .. }
@@ -1155,6 +1166,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         },
         Cmd::Upgrade(a) => upgrade::run(a),
         Cmd::Hur(h) => hur::run(cfg, h),
+        Cmd::Huf(h) => huf::run(h),
         Cmd::Sign(s) => signcmd::sign(cfg, s),
         Cmd::Verify(v) => signcmd::verify(cfg, v),
         Cmd::Key(k) => cmd_key(cfg, k),

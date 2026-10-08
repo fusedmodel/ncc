@@ -33,20 +33,28 @@ pub const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 const GZIP_LEVEL: u32 = 6;
 
 use crate::spec::{
-    content_files, read_pkg, rel, sha256_file, sha256_hex, HurLock, LockedDep, DIST, LOCK,
-    LOCK_SPEC, MANIFEST,
+    content_files, content_files_in, read_pkg, rel, sha256_file, sha256_hex, Format, HurLock,
+    LockedDep, DIST, LOCK, LOCK_SPEC,
 };
 
 /// 从任意子目录向上找包根（含 hur.json 的目录）
 pub fn find_root(start: &Path) -> Result<PathBuf> {
+    find_root_of(start, Format::Hur)
+}
+
+/// 从任意子目录向上找包根（清单名按格式）。
+///
+/// `.huf` 工程里**没有** `hur.json`，所以判据必须跟着格式走 —— 否则 `ncc huf pack` 会
+/// 一路向上找到父目录里那份毫不相干的 `hur.json` 上去。
+pub fn find_root_of(start: &Path, fmt: Format) -> Result<PathBuf> {
     let mut cur = start.to_path_buf();
     loop {
-        if cur.join(MANIFEST).exists() {
+        if cur.join(fmt.manifest()).exists() {
             return Ok(cur);
         }
         match cur.parent() {
             Some(p) => cur = p.to_path_buf(),
-            None => bail!("向上找不到 {MANIFEST}（当前不在 hur 包内）"),
+            None => bail!("向上找不到 {}（当前不在 {} 工程里）", fmt.manifest(), fmt.label()),
         }
     }
 }
@@ -149,15 +157,15 @@ pub struct PackOutcome {
 ///
 /// 调用方必须先确保 `hur.lock` 已存在（`archive_bytes` 负责那件事）—— 锁是包身份的一半。
 /// **故意不对外暴露**：单独拿它写盘会产出一个"现行 unpack 认、但已经不是规范容器"的 `.hur`。
-fn zip_bytes(dir: &Path) -> Result<Vec<u8>> {
-    let lock_text = std::fs::read_to_string(dir.join(LOCK))
-        .with_context(|| format!("读 {} 失败（先 `hur build`）", dir.join(LOCK).display()))?;
+fn zip_bytes_for(dir: &Path, fmt: Format) -> Result<Vec<u8>> {
+    let lock_text = std::fs::read_to_string(dir.join(fmt.lock()))
+        .with_context(|| format!("读 {} 失败（先 build 一次定下锁）", dir.join(fmt.lock()).display()))?;
 
     let mut entries: Vec<(String, Vec<u8>)> = vec![
-        (MANIFEST.to_string(), std::fs::read(dir.join(MANIFEST))?),
-        (LOCK.to_string(), lock_text.into_bytes()),
+        (fmt.manifest().to_string(), std::fs::read(dir.join(fmt.manifest()))?),
+        (fmt.lock().to_string(), lock_text.into_bytes()),
     ];
-    for f in content_files(dir) {
+    for f in content_files_in(dir, fmt.content_dirs()) {
         entries.push((rel(dir, &f), std::fs::read(&f)?));
     }
     entries.sort_by(|a, b| a.0.cmp(&b.0));
@@ -226,21 +234,48 @@ fn gunzip_to(src: &Path, out: &Path) -> Result<()> {
 /// `allow_build_lock = false` 时缺 `hur.lock` 直接报错 —— **签名覆盖 lock**，
 /// 锁没定下来就不该签，也不该核。
 pub fn archive_bytes(dir: &Path, allow_build_lock: bool) -> Result<(Vec<u8>, String)> {
-    let pkg = read_pkg(dir)?;
-    if !dir.join(LOCK).exists() {
+    archive_bytes_for(dir, Format::Hur, allow_build_lock)
+}
+
+/// 同 [`archive_bytes`]，但容器按 `fmt` 走（`.hur` / `.huf` 共用全部字节规则）。
+pub fn archive_bytes_for(dir: &Path, fmt: Format, allow_build_lock: bool) -> Result<(Vec<u8>, String)> {
+    if !dir.join(fmt.lock()).exists() {
         if !allow_build_lock {
-            bail!("目录里没有 hur.lock：先 `hur build`（签名覆盖 hur.lock，锁没定下来就不能签/核）");
+            bail!(
+                "目录里没有 {}：先 `ncc {} build`（签名覆盖锁文件，锁没定下来就不能签/核）",
+                fmt.lock(),
+                if fmt == Format::Huf { "huf" } else { "hur" }
+            );
         }
-        build_lock(dir)?;
+        match fmt {
+            Format::Hur => {
+                build_lock(dir)?;
+            }
+            Format::Huf => {
+                crate::huf::build_lock(dir)?;
+            }
+        }
     }
-    // 文件名带 profile 段（`<id>-<version>.<profile>.hur`）：一眼看得出这是能跑的包
-    // 还是一份数据快照。`.hur` 仍是最后的扩展名 → 侧车与解包机制全不受影响。
-    Ok((gzip(&zip_bytes(dir)?)?, crate::spec::artifact_name(&pkg)))
+    let name = match fmt {
+        Format::Hur => crate::spec::artifact_name(&read_pkg(dir)?),
+        // 文件名带 profile 段（`<id>-<version>.<profile>.hur`）：一眼看得出这是能跑的包
+        // 还是一份数据快照。`.hur` 仍是最后的扩展名 → 侧车与解包机制全不受影响。
+        Format::Huf => {
+            let m = crate::huf::read(dir)?;
+            crate::spec::huf_artifact_name(&m.id, &m.version)
+        }
+    };
+    Ok((gzip(&zip_bytes_for(dir, fmt)?)?, name))
 }
 
 /// 产包：`dist/<id>-<version>.<profile>.hur` + `.sha256`
 pub fn pack(dir: &Path) -> Result<PackOutcome> {
-    let (bytes, name) = archive_bytes(dir, true)?;
+    pack_for(dir, Format::Hur)
+}
+
+/// 产包（按格式）：`.hur` 与 `.huf` 只有清单名/产物名不同，其余全同源。
+pub fn pack_for(dir: &Path, fmt: Format) -> Result<PackOutcome> {
+    let (bytes, name) = archive_bytes_for(dir, fmt, true)?;
     let dist = dir.join(DIST);
     std::fs::create_dir_all(&dist)?;
     let out = dist.join(&name);
@@ -252,7 +287,7 @@ pub fn pack(dir: &Path) -> Result<PackOutcome> {
         format!("{sha}  {name}\n"),
     )?;
 
-    let (_, entries) = archive_entries(dir)?;
+    let (_, entries) = archive_entries_for(dir, fmt)?;
     Ok(PackOutcome {
         file: out,
         sha256: sha,
@@ -263,8 +298,12 @@ pub fn pack(dir: &Path) -> Result<PackOutcome> {
 
 /// 打包含哪些条目（人读用；与 `archive_bytes` 同源）
 pub fn archive_entries(dir: &Path) -> Result<(usize, Vec<String>)> {
-    let mut names: Vec<String> = vec![MANIFEST.to_string(), LOCK.to_string()];
-    names.extend(content_files(dir).iter().map(|f| rel(dir, f)));
+    archive_entries_for(dir, Format::Hur)
+}
+
+pub fn archive_entries_for(dir: &Path, fmt: Format) -> Result<(usize, Vec<String>)> {
+    let mut names: Vec<String> = vec![fmt.manifest().to_string(), fmt.lock().to_string()];
+    names.extend(content_files_in(dir, fmt.content_dirs()).iter().map(|f| rel(dir, f)));
     names.sort();
     let n = names.len();
     Ok((n, names))
@@ -274,36 +313,52 @@ pub fn archive_entries(dir: &Path) -> Result<(usize, Vec<String>)> {
 /// 老包是裸 zip（直接开）—— **老包永远要能装**，格式升级不该让已发出去的字节变废纸。
 ///
 /// 返回 `(zip, 解压出来的临时文件)`：临时文件由调用方删（见 `unpack`）。
-fn open_zip(hur: &Path, dest: &Path, tmp: &mut Option<PathBuf>) -> Result<zip::ZipArchive<std::fs::File>> {
+fn open_zip_for(
+    archive: &Path,
+    dest: &Path,
+    tmp: &mut Option<PathBuf>,
+    fmt: Format,
+) -> Result<zip::ZipArchive<std::fs::File>> {
     let mut head = [0u8; 2];
     {
         // 只读两个字节判容器：读不满就当作"不是 gzip"，后面那条路会给出可读的拒绝理由
-        let mut f = std::fs::File::open(hur).with_context(|| format!("打开 {} 失败", hur.display()))?;
+        let mut f = std::fs::File::open(archive).with_context(|| format!("打开 {} 失败", archive.display()))?;
         let _ = f.read(&mut head).unwrap_or(0);
     }
     if is_gzip(&head) {
         let inner = dest.join(format!(".hur-unzipped-{}", std::process::id()));
-        gunzip_to(hur, &inner)?;
+        gunzip_to(archive, &inner)?;
         *tmp = Some(inner.clone());
-        let za = zip::ZipArchive::new(std::fs::File::open(&inner)?)
-            .with_context(|| format!("{} 的 gzip 层后面不是 zip —— 这不是一个 hur 包", hur.display()))?;
+        let za = zip::ZipArchive::new(std::fs::File::open(&inner)?).with_context(|| {
+            format!("{} 的 gzip 层后面不是 zip —— 这不是一个 {}", archive.display(), fmt.label())
+        })?;
         return Ok(za);
     }
-    let f = std::fs::File::open(hur).with_context(|| format!("打开 {} 失败", hur.display()))?;
+    let f = std::fs::File::open(archive).with_context(|| format!("打开 {} 失败", archive.display()))?;
     zip::ZipArchive::new(f).with_context(|| {
         format!(
-            "{} 既不是 gzip（`1f 8b`）也不是 zip（`PK`）—— 不是合法的 .hur（损坏，或根本不是包）",
-            hur.display()
+            "{} 既不是 gzip（`1f 8b`）也不是 zip（`PK`）—— 不是合法的 .{}（损坏，或根本不是包）",
+            archive.display(),
+            fmt.spec_ext()
         )
     })
 }
 
 /// 解开 `.hur`（拒绝越界路径），返回写入的文件列表
 pub fn unpack(hur: &Path, dest: &Path) -> Result<(Vec<String>, String, String)> {
+    unpack_for(hur, dest, Format::Hur)
+}
+
+/// 解开包（按格式）：`.hur` 与 `.huf` 的**解包规则完全一样**（防穿越、条目名、清单里取
+/// id/version），只有"缺哪个清单才算非法包"不同。
+///
+/// `fmt` 一般由 [`crate::spec::format_of_archive`] 从文件名认出来：拿一个 `.hur` 改名成
+/// `.huf`，解包时会去找 `huf.json` —— 找不到就当场拒绝，这正是我们要的。
+pub fn unpack_for(archive: &Path, dest: &Path, fmt: Format) -> Result<(Vec<String>, String, String)> {
     std::fs::create_dir_all(dest)?;
     let mut tmp: Option<PathBuf> = None;
     let out = (|| -> Result<(Vec<String>, String, String)> {
-        let mut zip = open_zip(hur, dest, &mut tmp)?;
+        let mut zip = open_zip_for(archive, dest, &mut tmp, fmt)?;
         let mut written = Vec::new();
         let mut id = String::new();
         let mut version = String::new();
@@ -323,7 +378,7 @@ pub fn unpack(hur: &Path, dest: &Path) -> Result<(Vec<String>, String, String)> 
             }
             let mut body = Vec::new();
             e.read_to_end(&mut body)?;
-            if name == MANIFEST {
+            if name == fmt.manifest() {
                 if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
                     id = v.get("id").and_then(|s| s.as_str()).unwrap_or_default().to_string();
                     version = v.get("version").and_then(|s| s.as_str()).unwrap_or_default().to_string();
@@ -334,7 +389,7 @@ pub fn unpack(hur: &Path, dest: &Path) -> Result<(Vec<String>, String, String)> 
         }
         written.sort();
         if id.is_empty() {
-            bail!("包内缺少合法的 {MANIFEST}（没有 id）");
+            bail!("包内缺少合法的 {}（没有 id）", fmt.manifest());
         }
         Ok((written, id, version))
     })();
@@ -371,7 +426,8 @@ mod tests {
             registry: String::new(),
             namespace: String::new(),
         });
-        std::fs::write(dir.join(MANIFEST), serde_json::to_string_pretty(&pkg).unwrap()).unwrap();
+        std::fs::write(dir.join(crate::spec::MANIFEST), serde_json::to_string_pretty(&pkg).unwrap())
+            .unwrap();
         for (rel, body) in files_for(&pkg) {
             let p = dir.join(&rel);
             std::fs::create_dir_all(p.parent().unwrap()).unwrap();
@@ -448,7 +504,7 @@ mod tests {
         let dir = make_project("legacy");
         build_lock(&dir).unwrap();
         let legacy = dir.join("legacy.hur");
-        std::fs::write(&legacy, zip_bytes(&dir).unwrap()).unwrap();
+        std::fs::write(&legacy, zip_bytes_for(&dir, Format::Hur).unwrap()).unwrap();
         assert!(!is_gzip(&std::fs::read(&legacy).unwrap()), "这份老包不该带 gzip 头");
 
         let dest = std::env::temp_dir().join(format!("hur-legacy-{}", std::process::id()));

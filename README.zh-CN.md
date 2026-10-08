@@ -335,6 +335,7 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc hur profile <包 \| @命名空间/slug>` | 读一份包**是什么**：要什么 / 给什么 / **怎么接**，外加**分级体检**（结构 · 自洽 · 签名分开报，不合成一个 ✅）；`--list` 列规范里的全部 profile |
 | `ncc hur match --profile kb-seed` | 按 profile / 集成宿主 / 能力在目录里找包（**只读**） |
 | `ncc hur data import --package <目录>` | 把**数据快照包**灌进节点（kb-seed / mem-seed / ckpt-set / trace-set）；默认只出计划，`--apply` 才真写 |
+| `ncc huf <init\|build\|pack\|verify\|inspect\|ls\|unpack\|sign\|spec>` | **资源包**（`.huf`）：文档 / 提示词 / 模板 / 资产 —— `.hur` 的兄弟，**没有入口**（它不执行）。同容器、同确定性字节与侧车签名 |
 | `ncc kb bundle --as-package <目录>` | 把知识库导出成**快照包**（来源 / 快照时刻 / 隐私级别 / 许可），可签名可发布 |
 | `ncc mem export --as-package <目录>` | 记忆快照（**默认 private** —— 能分发出去的记忆就不再是记忆了） |
 | `ncc ckpt export --as-package <目录>` | 检查点集合：字节 + 血缘，进包前逐个核摘要 |
@@ -352,7 +353,7 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 
 | 参数 | 说明 |
 |---|---|
-| `--kind <KIND>` | **必填。** `api`、`harness`、`hur`、`skill`、`mcp`、`plugin`、`scaffold`、`docker-image`、`benchmark`、`living` |
+| `--kind <KIND>` | **必填。** `api`、`harness`、`hur`、`huf`、`skill`、`mcp`、`plugin`、`scaffold`、`docker-image`、`benchmark`、`living` |
 | `--name <NAME>` | **必填。** 展示名称 |
 | `--file <PATH>` | 上传本地文件字节 |
 | `--url <URL>` | 自带存储：发布直链而不上传 |
@@ -715,6 +716,36 @@ ncc registry admin audit --limit 20                      # 谁在什么时候把
 ```
 
 两条服务端强制的规则：**不能禁用自己的账号**，**不能禁用最后一个可用管理员**。
+
+### `ncc huf` —— 面向用户的资源包（`.huf`）
+
+**`.hur` 装能跑的东西，`.huf` 装给人看的东西**：文档 / 提示词 / 模板 / 静态资产 / 技能文本 /
+知识库片段。同一个容器，两个身份 —— `harness-use-package/v1`（`hur.json`，`src/` 是代码的落点）
+与 `harness-use-files/v1`（`huf.json`，**没有 `src/`**，且 `entry`/`runtime`/`permissions`…
+一律**拒绝**）—— 于是"这个文件能不能跑"看扩展名就知道，不必解开来看。
+
+```bash
+ncc huf init . --id docs/onboarding --name "上手文档" --short "第一次用它看这份"
+ncc huf build            # 写 huf.lock：逐文件 sha256（签名覆盖它）
+ncc huf verify           # H1~H9，全程离线；不过的包不会被产出去
+ncc huf pack             # dist/<id>-<version>.huf.gz + .sha256（确定性字节）
+ncc huf sign             # minisign/ed25519 侧车；私钥不出本机
+ncc huf inspect / ls / unpack / spec
+ncc publish --kind huf --name "上手文档" --file dist/<产物>.huf.gz   # 不需要新命令
+```
+
+| 规则 | 判据 |
+|---|---|
+| H1/H2 | `spec` 是 `harness-use-files/v1`，`kind` 是 `files` |
+| H3 | 不许出现 `entry`/`runtime`/`capabilities`/`agent`/… —— 它们意味着"这份包能跑"，改用 `ncc hur` |
+| H4/H5/H6 | id 字符集；`name` 与语义化 `version`；`audience ∈ user\|operator\|developer\|agent` |
+| H7 | 至少一个内容文件；`huf.lock` 与磁盘字节一致 |
+| H8 | 签名（`--require-signature` 要求有、且能核到受信公钥） |
+| H9 | 产物 sha256 与 `.sha256` 侧车一致 |
+
+**两个方向都拦**：`ncc hur verify` 不认 `.huf`，`ncc huf verify` 也不认 `hur.json`。
+内容目录：`docs / assets / skills / kb / data`。端到端冒烟：`bash scripts/huf-smoke.sh`
+（本地工具链 + 真发一份到节点）。设计见 `ncc-platform/prd/ncc-huf.md`。
 
 ### `ncc hur profile` 与数据快照包
 

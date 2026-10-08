@@ -19,6 +19,90 @@ pub const HUR_SPEC: &str = PKG_SPEC;
 pub const HUR_MANIFEST: &str = MANIFEST;
 pub const HUR_DIST: &str = DIST;
 
+// —— `.huf`：面向用户的**资源包**（Harness-Use Files）——
+//
+// 与 `.hur` **同容器**（gzip + zip + 确定性字节 + 侧车签名），只有清单名与规范号不同：
+// `.hur` 是**运行时的包**（有 `entry`，能跑）；`.huf` 是**给用户的文件**（文档 / 提示词 /
+// 模板 / 静态资产 / 技能文本），**没有入口、不能执行**。两条边界都是硬拦（见 `crate::huf`）：
+// 资源包里出现 `entry`/`runtime` → 报错"改用 .hur"；反过来 `ncc hur verify` 也不认 `.huf`。
+// 这样"这个文件能不能跑"不用打开看内容，看扩展名就知道。
+pub const HUF_SPEC: &str = "harness-use-files/v1";
+pub const HUF_LOCK_SPEC: &str = "harness-use-files-lock/v1";
+pub const HUF_MANIFEST: &str = "huf.json";
+pub const HUF_LOCK: &str = "huf.lock";
+
+/// 资源包的内容目录：**没有 `src/`** —— 那是代码的落点，属于 `.hur`。
+pub const HUF_CONTENT_DIRS: [&str; 5] = ["docs", "assets", "skills", "kb", "data"];
+
+/// 资源包的 `kind` 只有一个值（与目录里的 registry kind `huf` 对应）
+pub const HUF_KIND: &str = "files";
+
+/// 容器格式：**同一套容器，两个清单**。
+///
+/// 所有与"包长什么样"有关的名字都从这里取（清单名 / 锁名 / 规范号 / 内容目录 / 扩展名），
+/// 免得到处写 `if huf {…} else {…}` 那种两套实现 —— 包字节的确定性、防穿越解包、签名的
+/// 覆盖面这些**不该有两份**。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// `.hur` —— 可执行的运行时包
+    Hur,
+    /// `.huf` —— 面向用户的资源包（不执行）
+    Huf,
+}
+
+impl Format {
+    pub fn manifest(self) -> &'static str {
+        match self {
+            Format::Hur => MANIFEST,
+            Format::Huf => HUF_MANIFEST,
+        }
+    }
+
+    pub fn lock(self) -> &'static str {
+        match self {
+            Format::Hur => LOCK,
+            Format::Huf => HUF_LOCK,
+        }
+    }
+
+    pub fn lock_spec(self) -> &'static str {
+        match self {
+            Format::Hur => LOCK_SPEC,
+            Format::Huf => HUF_LOCK_SPEC,
+        }
+    }
+
+    pub fn pkg_spec(self) -> &'static str {
+        match self {
+            Format::Hur => PKG_SPEC,
+            Format::Huf => HUF_SPEC,
+        }
+    }
+
+    /// 产物名字里的规范段（`.hur` / `.huf`）
+    pub fn spec_ext(self) -> &'static str {
+        match self {
+            Format::Hur => ARTIFACT_SPEC_EXT,
+            Format::Huf => ARTIFACT_HUF_EXT,
+        }
+    }
+
+    pub fn content_dirs(self) -> &'static [&'static str] {
+        match self {
+            Format::Hur => &CONTENT_DIRS,
+            Format::Huf => &HUF_CONTENT_DIRS,
+        }
+    }
+
+    /// 人读的名字（报错文案用）
+    pub fn label(self) -> &'static str {
+        match self {
+            Format::Hur => "hur 包",
+            Format::Huf => "huf 资源包",
+        }
+    }
+}
+
 /// 包内容目录（打包时按此顺序收集，保证可复现）
 ///
 /// `data/` 是**数据快照**的落点（`profile=kb-seed|mem-seed|ckpt-set|trace-set`）；
@@ -148,6 +232,9 @@ pub const ARTIFACT_CONTAINER_EXT: &str = "gz";
 /// 产物名字里的规范段（`.hur`）：这是"HUR 规范产物"的标记，容器段跟在它后面。
 pub const ARTIFACT_SPEC_EXT: &str = "hur";
 
+/// 资源包的规范段（`.huf`）：与 `.hur` 同一个容器，只是清单与内容约束不同。
+pub const ARTIFACT_HUF_EXT: &str = "huf";
+
 pub fn artifact_name(pkg: &HurPackage) -> String {
     format!(
         "{}-{}.{}.{}.{}",
@@ -159,7 +246,21 @@ pub fn artifact_name(pkg: &HurPackage) -> String {
     )
 }
 
-/// 这个路径像不像**打包产物**（而不是工程目录）：`….hur` / `….hur.gz`。
+/// 资源包的产物名：`<id>-<version>.huf.gz`。
+///
+/// 不写 profile 段：`.huf` 只有一种身份（资源包），再叠一层名字只会让人以为还有别的。
+/// id 里的 `/` 换成 `_` —— 它同时是文件名，不能让 `@org/docs/x` 变成一个子目录。
+pub fn huf_artifact_name(id: &str, version: &str) -> String {
+    format!(
+        "{}-{}.{}.{}",
+        id.replace('/', "_"),
+        version,
+        ARTIFACT_HUF_EXT,
+        ARTIFACT_CONTAINER_EXT
+    )
+}
+
+/// 这个路径像不像**打包产物**（而不是工程目录）：`….hur` / `….hur.gz` / `….huf` / `….huf.gz`。
 ///
 /// 为什么按名字判而不是"是不是文件"：`ncc hur verify <产物>` 与 `<工程目录>` 是两条路，
 /// 判错的代价是拿一份 `SKILL.md` 去当包解（报一句莫名其妙的 zip 错）。
@@ -170,8 +271,31 @@ pub fn is_archive_path(p: &Path) -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    name.ends_with(&format!(".{ARTIFACT_SPEC_EXT}"))
-        || name.ends_with(&format!(".{ARTIFACT_SPEC_EXT}.{ARTIFACT_CONTAINER_EXT}"))
+    is_archive_name(&name)
+}
+
+/// 产物名判定（`is_archive_path` 与 `format_of_archive` 共用）
+pub fn is_archive_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [ARTIFACT_SPEC_EXT, ARTIFACT_HUF_EXT].iter().any(|e| {
+        name.ends_with(&format!(".{e}")) || name.ends_with(&format!(".{e}.{ARTIFACT_CONTAINER_EXT}"))
+    })
+}
+
+/// 从产物名认出它是哪种包（`x.huf.gz` → `Huf`）。认不出来按 `.hur` 算：
+/// **老包永远要能装**，而 `.hur` 是绝大多数 —— 猜错的代价只是解包时给出的拒绝理由差一句。
+pub fn format_of_archive(p: &Path) -> Format {
+    let raw = p
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let stem = raw.strip_suffix(&format!(".{ARTIFACT_CONTAINER_EXT}")).unwrap_or(&raw);
+    if stem.ends_with(&format!(".{ARTIFACT_HUF_EXT}")) {
+        Format::Huf
+    } else {
+        Format::Hur
+    }
 }
 
 /// 产物的候选文件名：**新名字在前，老名字兜底**。
@@ -639,9 +763,15 @@ fn valid_id(kind: &str, id: &str) -> bool {
 
 /// 收集包内容文件（相对路径，排序）——不含 hur.json/hur.lock（它们单独入包）
 pub fn content_files(dir: &Path) -> Vec<PathBuf> {
+    content_files_in(dir, &CONTENT_DIRS)
+}
+
+/// 同 [`content_files`]，但内容目录由调用方给（`.huf` 用的是 [`HUF_CONTENT_DIRS`]）
+/// —— **同一套收集规则**，只有"哪些目录算内容"不同。
+pub fn content_files_in(dir: &Path, dirs: &[&str]) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack: Vec<PathBuf> = Vec::new();
-    for d in CONTENT_DIRS {
+    for d in dirs {
         let p = dir.join(d);
         if p.is_dir() {
             stack.push(p);

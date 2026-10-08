@@ -21,7 +21,7 @@ const MAX_TEXT: usize = 24000;
 
 /// initialize 时下发给模型的用法说明（MCP 会把它放进系统上下文）。
 const INSTRUCTIONS: &str = "\
-NCC Connector 是中立、跨协议的能力制品目录（api / skill / mcp / harness / plugin / scaffold / docker-image / benchmark / living）。
+NCC Connector 是中立、跨协议的能力制品目录（api / skill / mcp / harness / hur / huf / plugin / scaffold / docker-image / benchmark / living）。
 把它当成「能力的 npm」来用：
 
 1. 先查后造：用 ncc_list_kinds 看目录里有什么类型，用 ncc_search_catalog 检索是否已有可复用的能力。
@@ -315,7 +315,7 @@ fn tools() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string", "description": "关键词（可选，匹配名称/摘要/slug/描述）" },
-                    "kind": { "type": "string", "description": "按类型过滤：api|harness|hur|skill|mcp|plugin|scaffold|docker-image|benchmark|living" },
+                    "kind": { "type": "string", "description": "按类型过滤：api|harness|hur|huf|skill|mcp|plugin|scaffold|docker-image|benchmark|living" },
                     "tag": { "type": "string", "description": "按标签过滤" },
                     "namespace": { "type": "string", "description": "限定命名空间，如 @aya" },
                     "limit": { "type": "integer", "description": "返回条数，默认 20，最大 50" }

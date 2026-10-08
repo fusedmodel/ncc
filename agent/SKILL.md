@@ -11,7 +11,7 @@ NCC 是**中立、跨协议的能力制品目录** —— 可以理解成「能�
 核心模型：
 
 - **制品（artifact）**：一个可版本化的能力单元，`kind` 决定它是什么。
-- **kind**：`api` / `skill` / `mcp` / `harness` / `hur` / `plugin` / `scaffold` / `docker-image` / `benchmark` / `living`。
+- **kind**：`api` / `skill` / `mcp` / `harness` / `hur`（可执行包）/ `huf`（资源包）/ `plugin` / `scaffold` / `docker-image` / `benchmark` / `living`。
 - **引用**：`@命名空间/slug`（例如 `@aya/hotel-skill`），也可用 `R-…` 形式的 id。
 - **命名空间**：个人（`@you`）或组织（`@team`）。组织**免费就能建**（1 个 / 5 名成员，
   创建时要选一档计划：`ncc ns plans` 看目录，`ncc ns create --plan` 指定）；计划里
