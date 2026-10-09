@@ -336,6 +336,7 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc hur match --profile kb-seed` | 按 profile / 集成宿主 / 能力在目录里找包（**只读**） |
 | `ncc hur data import --package <目录>` | 把**数据快照包**灌进节点（kb-seed / mem-seed / ckpt-set / trace-set）；默认只出计划，`--apply` 才真写 |
 | `ncc huf <init\|build\|pack\|verify\|inspect\|ls\|unpack\|sign\|spec>` | **资源包**（`.huf`）：文档 / 提示词 / 模板 / 资产 —— `.hur` 的兄弟，**没有入口**（它不执行）。同容器、同确定性字节与侧车签名 |
+| `ncc profile node <scan\|show\|tasks\|push\|fleet\|fit\|pack>` | **算力画像** —— 这台机器或这个集群到底能跑什么（CPU / 内存 / 磁盘 / GPU / 工具链 / 可达服务面）。本地采集、显式上传、可打成 `.huf` |
 | `ncc kb bundle --as-package <目录>` | 把知识库导出成**快照包**（来源 / 快照时刻 / 隐私级别 / 许可），可签名可发布 |
 | `ncc mem export --as-package <目录>` | 记忆快照（**默认 private** —— 能分发出去的记忆就不再是记忆了） |
 | `ncc ckpt export --as-package <目录>` | 检查点集合：字节 + 血缘，进包前逐个核摘要 |
@@ -716,6 +717,32 @@ ncc registry admin audit --limit 20                      # 谁在什么时候把
 ```
 
 两条服务端强制的规则：**不能禁用自己的账号**，**不能禁用最后一个可用管理员**。
+
+### `ncc profile node` —— 这台机器（或这个集群）到底能跑什么
+
+`ncc profile` 回答同一个问题的两半：**谁**来干（名片）与**哪台机器**干得动（算力画像）。
+画像本地采集、按任务档位评估、可上传平台做全网统计，也能打成 `.huf` 资源包分发。
+
+```bash
+ncc profile node scan                 # 本机探测：CPU / 内存 / 磁盘 / GPU / 工具链 / 可达服务面
+ncc profile node show                 # 「这台机器能不能跑 X」+ 给 Agent 的下一步流程
+ncc profile node show --need "cpu>=8,mem>=32G,tool:docker"
+ncc profile node tasks                # 内置任务档位（build-rust / container / inference-gpu …）
+ncc profile node push                 # 上传（默认 private）；旧目标上降级成一条 feedback 留痕
+ncc profile node fleet                # 集群统计：多少台机器能跑什么
+ncc profile node fit --task build-rust --strict
+ncc profile node pack --out compute.huf.gz   # 打成 `.huf`（可签名 / 可发布 / Agent 可读）
+```
+
+- **采集是本地动作**：`scan` 一个字节都不上传；`push` 是显式动作且默认 `private`
+  （画像里有内网地址与装机清单，属于"客户的机器长什么样"）。
+- **标签是算出来的**：`build-rust` / `gpu` / `mem-32g` 由采集事实推导，谁都能按同一份规则复算。
+- **不在 `PATH` 里就不算装了**：装了但够不着的工具链正是任务跑不动的真原因，
+  所以如实报"缺"，不替用户假设。
+- **服务端 `fit` 只做粗筛**（宁可多给一个候选），判定由 CLI 一侧的评估器给出；
+  `--strict` 把完整画像拉回来在本机复核。
+- **旧目标上如实降级**：目标没声明 `compute` 能力时，画像降级成一条 `feedback` 摘要留痕并说明清楚
+  —— **反馈不进统计池**。
 
 ### `ncc huf` —— 面向用户的资源包（`.huf`）
 

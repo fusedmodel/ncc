@@ -5,6 +5,7 @@ mod app;
 mod auth;
 mod authpkg;
 mod capability;
+mod compute;
 mod config;
 mod configs;
 mod conn;
@@ -670,6 +671,12 @@ enum ProfileCmd {
         /// 省略则看自己收到的
         handle: Option<String>,
     },
+    /// 算力画像：**这台机器/这个集群能跑什么任务**（采集 / 评估 / 上传 / 统计 / 适配）
+    ///
+    /// 名片说"人是谁"，这里说"机器能干什么" —— 挂在 `ncc profile` 下是因为 Agent 判断
+    /// 一个任务接不接，要同时回答这两个问题。采集全程本地；上传与统计才联网。
+    #[command(subcommand)]
+    Node(compute::NodeCmd),
 }
 
 /// `ncc registry` 子命令。
@@ -905,7 +912,11 @@ fn main() {
     #[cfg(feature = "sandbox")]
     hur_core::policy::register_engines(hur_sandbox::ENGINES);
     // 先判定协议模式，再决定提示走哪个流：resolve_target 里的提示也算。
-    if matches!(cli.cmd, Cmd::Mcp(_)) {
+    //
+    // 判定标准只有一个：**这条命令的 stdout 是给机器读的**。`ncc mcp` 是 JSON-RPC，
+    // `--json` 的那些命令同理 —— 混进一句「（--base 命中已有目标 hub…）」就会让
+    // `| jq` / `python -c json.load` 当场炸掉，而用户看不出为什么。
+    if matches!(cli.cmd, Cmd::Mcp(_)) || wants_json_stdout(&cli.cmd) {
         PROTOCOL_STDOUT.store(true, Ordering::Relaxed);
     }
     // `--auth`：这条命令以「被授权的 Agent」身份跑（用对外令牌而不是会话）。
@@ -1016,6 +1027,21 @@ fn resolve_target(cfg: &mut CliConfig, cli: &Cli, hub_prefix: bool) -> anyhow::R
     Ok(())
 }
 
+/// 这条命令的 stdout 是不是**给机器读的**（`--json` 的那些）。
+///
+/// 只列确实要解析 stdout 的：其余命令的 `--json` 是"顺带给你一份 JSON"，
+/// 提示混在里面还能看；而协议端点混进一行就废了。
+fn wants_json_stdout(cmd: &Cmd) -> bool {
+    match cmd {
+        Cmd::Profile(p) => match &p.action {
+            Some(ProfileCmd::Node(n)) => n.json_stdout(),
+            _ => false,
+        },
+        // （`ncc hur … --json` 的提示流是既有的另一套约定，本次不动它）
+        _ => false,
+    }
+}
+
 /// 命令 → 它需要的能力。返回 None 表示不需要服务器（本地命令）。
 ///
 /// 只声明「明确属于某个能力」的命令；账号类（register/login/me/ns/key）两边都有，不管。
@@ -1053,7 +1079,11 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Store(s) => s.capability(),
         // 反馈：词表与本地队列是本地的事（`FeedbackCmd::capability` 自己答）。
         Cmd::Feedback(f) => f.capability(),
-        Cmd::Profile(_) => Some("profile"),
+        Cmd::Profile(p) => match &p.action {
+            // 算力画像的 `profile` 是另一件事（机器能力，不是名片）：它自己声明需要什么
+            Some(ProfileCmd::Node(n)) => n.capability(),
+            _ => Some("profile"),
+        },
         Cmd::Nodes(_) => Some("nodes"),
         Cmd::Services(_) => Some("services"),
         Cmd::Index(_) | Cmd::List(_) | Cmd::Match(_) => Some("index"),
@@ -1326,6 +1356,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Some(ProfileCmd::Rate(a)) => profile::rate(cfg, a),
             Some(ProfileCmd::Unrate { handle }) => profile::unrate(cfg, handle),
             Some(ProfileCmd::Ratings { handle }) => profile::ratings(cfg, handle.as_deref()),
+            Some(ProfileCmd::Node(n)) => compute::run(cfg, n),
         },
         Cmd::Nodes(n) => match &n.action {
             None => nodes::list(

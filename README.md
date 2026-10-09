@@ -343,6 +343,7 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc hur match --profile kb-seed` | Read-only search: find packages by profile / integration host / capability |
 | `ncc hur data import --package <dir>` | Pour a **data snapshot package** into the node (kb-seed / mem-seed / ckpt-set / trace-set). Prints a plan by default; `--apply` actually writes |
 | `ncc huf <init\|build\|pack\|verify\|inspect\|ls\|unpack\|sign\|spec>` | **Resource packages** (`.huf`): docs / prompts / templates / assets — the sibling of `.hur`, **without** an entry (it never runs). Same container, same deterministic bytes and sidecar signature |
+| `ncc profile node <scan\|show\|tasks\|push\|fleet\|fit\|pack>` | **Compute profile** — what this machine or cluster can actually run (CPU / memory / disk / GPU / toolchain / reachable services). Collected locally, uploaded explicitly, packs into a `.huf` |
 | `ncc kb bundle --as-package <dir>` | Export a knowledge base as an immutable **snapshot package** (source / snapshotAt / privacy / license), signable & publishable |
 | `ncc mem export --as-package <dir>` | Memory snapshot (private by default — a memory that can be handed out is no longer a memory) |
 | `ncc ckpt export --as-package <dir>` | Checkpoint set: bytes + lineage, digest verified before it enters the package |
@@ -712,6 +713,35 @@ ncc registry admin audit --limit 20                      # who did what to whom,
 
 Two rules the server enforces: **you cannot disable your own account**, and
 **you cannot disable the last usable admin**.
+
+### `ncc profile node` — what this machine (or cluster) can actually run
+
+`ncc profile` answers two halves of one question: **who** does it (the human card) and **which machine
+can run it** (the compute profile). A profile is collected locally, evaluated against a task catalog,
+can be uploaded to the platform for fleet-wide statistics, and packs into a `.huf` resource package.
+
+```bash
+ncc profile node scan                 # local probe: CPU / memory / disk / GPU / toolchain / reachable services
+ncc profile node show                 # "can this machine run X?" + the flow an agent should follow
+ncc profile node show --need "cpu>=8,mem>=32G,tool:docker"
+ncc profile node tasks                # the built-in task catalogue (build-rust, container, inference-gpu, …)
+ncc profile node push                 # upload (private by default) — falls back to a feedback entry on old targets
+ncc profile node fleet                # fleet statistics: how many machines can run what
+ncc profile node fit --task build-rust --strict
+ncc profile node pack --out compute.huf.gz   # ship it as a `.huf` (signable, publishable, agent-readable)
+```
+
+- **Collected locally**: `scan` never uploads; `push` is an explicit action and defaults to `private`
+  (the profile contains intranet addresses and an inventory — it is "what the customer's machines look like").
+- **Derived, not typed**: capability tags (`build-rust`, `gpu`, `mem-32g`) are computed from the
+  collected facts, so anyone can recompute them from the same profile.
+- **Tool on `PATH` or it doesn't count**: a toolchain that is installed but not reachable is exactly why a
+  job fails, so it is reported as missing rather than assumed.
+- **Server-side `fit` is a coarse filter** (it would rather return one extra candidate); the verdict comes
+  from the CLI's own evaluator. `--strict` pulls full profiles back and re-checks locally.
+- **Old targets degrade honestly**: when the target does not declare the `compute` capability the profile
+  is filed as a `feedback` summary (an audit trail) and the command says so — feedback entries do **not**
+  enter the statistics pool.
 
 ### `ncc huf` — user-facing resource packages (`.huf`)
 

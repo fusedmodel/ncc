@@ -14,6 +14,42 @@
 
 ## [未发布]
 
+### 新增 · `ncc profile node` —— 算力画像（这台机器 / 这个集群能跑什么）（2026-10-09）
+
+用户提问（原话）：「增加一个 ncc 的任务节点的计算任务评估能力的评估，在 `ncc profile` 中体现，
+例如节点可以访问的软件，CPU，存储，Mem 等，或者 profile 一个公共抽象的服务暴露出来的接口访问授权…
+ncc-platform 提供一些任务的执行的评估统计…通过调用 ncc profile 可以有一个执行流程让 Agent 知道
+这个机器或者集群的任务执行能力。」
+
+`ncc profile` 今天讲的是"人是谁"，本次补上另一半："**机器能干什么**" —— 因为 Agent 判断一个任务
+接不接，要同时回答这两个问题，不该在两个顶层命令之间来回对照。
+
+```bash
+ncc profile node scan / show / tasks / push / fleet / fit / pack
+```
+
+- **采集**（`scan`）：CPU / 内存 / 磁盘 / GPU / 28 项工具链（**不在 `PATH` 里不算装了**）/
+  可达服务面（本地登记的目标 + `--service name=url`，各问一次 `/api/meta`）。
+  每个探测带超时，探不到就不写 —— 猜出来的容量比没有更危险。**全程本地，一个字节都不上传**。
+- **评估**（`show`）：内置**任务档位**（`build-rust` / `container` / `inference-gpu` / `heavy-mem` …）
+  给出「能跑 / 缺什么」，并给出**给 Agent 的下一步流程**（`--json` 出去就是同一组命令）。
+  档位与 `--need "cpu>=8,mem>=32G,tool:docker"` 共用**一套需求语法**（写错当场报错，不猜）。
+- **打包**（`pack`）：画像打成 **`.huf` 资源包**（`data/compute-profile.json` + `docs/README.md`）——
+  它是"给人看"的资料，不是能跑的东西；于是白拿确定性字节 + 侧车签名 + 发布链路
+  （`ncc publish --kind huf`）。
+- **上传**（`push`）：`POST /api/compute/profiles`，默认 `private`；目标没声明 `compute` 能力时
+  **如实降级**成一条 `feedback` 摘要留痕，并明说"完整画像还在本地、想进统计池要换个目标"
+  （反馈**不进**统计池）。
+- **统计与适配**（`fleet` / `fit`）：`/api/compute/stats`（合计与分位，不推断）、
+  `/api/compute/fit`（服务端**粗筛**，宁可多给）。`fit --strict` 把候选的完整画像拉回来
+  在本机用同一套判据**复核**，不满足的也列出来（"我的机器差在哪"同样是要回答的问题）。
+- 顺带修了一个 stdout 纯净性问题：`profile node … --json` 这类命令的提示改走 stderr ——
+  否则一句「（--base 命中已有目标 hub，本次已切到它）」就会让 `| jq` 当场炸掉。
+- 新增端到端冒烟 `scripts/compute-smoke.sh`（49 项）。
+
+设计见 `ncc-platform/prd/ncc-compute-profile.md`。
+
+
 ### 新增 · `ncc huf` —— 资源包工具链（`.huf`）（2026-10-09）
 
 用户提问（原话）：「是否可以增加 huf 文件，这个文件格式是一些资源文件类型打包，hur 是 exe 等
