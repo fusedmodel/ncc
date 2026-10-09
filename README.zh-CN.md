@@ -331,7 +331,7 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc feedback relay --about \| --all-mine` / `--flush` | 把一台目标上的**公开**反馈搬到另一台（默认搬到 hub）：**私有的一律不搬**（服务端再拒一次）、**搬运者身份为准**（原作者只作转述写进 originAuthor）、按 `(origin, originId)` 幂等；`--flush` 先把本地队列送出去 |
 | `ncc rsi hook install --host claude\|cursor\|generic` | 装一个 30 行 sh shim，挂到宿主的 `PreToolUse` 钩子上：stdin 给 JSON，退出码 `20`（无人值守下 `NCC_RSI_BLOCK_CODE`，缺省 2）= 拦住；**⚠️ 是 `--host` 不是 `--target`**（顶层 `--target` 是全局目标选择器，会被它先吃掉） |
 | `ncc rsi learn consent` / `plan` / `apply` / `digest` / `export` | **从反馈与状态里学**（RSI 的另一块）：默认**什么都不学**；`consent set --source feedback:mine\|mem:@me\|kb:@ns/doc\|ckpt:@ns/app\|log:ledger` 声明来源（**声明即许可**），`consent on` 才开；`plan` 只出**提案**（pref / guard / lesson，每条带 why + 依据），`apply` 要点名，**策略类永远不自动写**；`export --dir` 出数据集（`manifest.json` + `items.jsonl`，带来源/同意/脱敏清单） |
-| `ncc help <command>` | 查看任意命令的自动生成帮助 |
+| `ncc help <command>` | 查看任意命令的自动生成帮助（**帮助与参数报错都是中文**：clap 的模板在 `src/i18n.rs` 里换过一遍） |
 | `ncc hur profile <包 \| @命名空间/slug>` | 读一份包**是什么**：要什么 / 给什么 / **怎么接**，外加**分级体检**（结构 · 自洽 · 签名分开报，不合成一个 ✅）；`--list` 列规范里的全部 profile |
 | `ncc hur match --profile kb-seed` | 按 profile / 集成宿主 / 能力在目录里找包（**只读**） |
 | `ncc hur data import --package <目录>` | 把**数据快照包**灌进节点（kb-seed / mem-seed / ckpt-set / trace-set）；默认只出计划，`--apply` 才真写 |
@@ -1198,6 +1198,7 @@ NCC_CONFIG=/tmp/ncc-dev.json ./target/release/ncc --base http://localhost:8181 m
 | `src/admin.rs` | 节点治理（admin：用户 / 节点 / 服务 / 审计 / 凭据轮换）与分享链接 |
 | `src/mcp.rs` | MCP server（stdio）：工具 schema 与分发 |
 | `src/terminal.rs` | 能力命令台、POSIX 运行时探测、更新检查 |
+| `src/i18n.rs` | 把 clap 的帮助 / 报错模板换成中文（clap 4 不做本地化，只能在边界上换一次） |
 | `src/tui.rs` | 全屏 ratatui TUI（stdin 为真实 TTY 时启用） |
 
 值得保持的设计约束：依赖列表保持精简；所有操作都走公开 HTTP API，不另造私有协议；客户端永不成为机器之间的数据中转。

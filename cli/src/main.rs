@@ -6,6 +6,7 @@ mod auth;
 mod authpkg;
 mod capability;
 mod compute;
+mod i18n;
 mod scaffold;
 mod config;
 mod configs;
@@ -910,10 +911,10 @@ fn main() {
     }
     let cli = match Cli::try_parse_from(&args) {
         Ok(c) => c,
-        Err(e) => {
-            // 解析失败时按 clap 自己的输出走（含 help / version）
-            e.exit();
-        }
+        // 解析失败时按 clap 自己的输出走（含 help / version）——**但先过一遍中文化**：
+        // clap 的固定文案（Usage: / error: / Print help …）是英文的，它不做本地化。
+        // 直接用 `e.exit()` 就会把英文吐给用户，所以这里自己渲染 + 打印。
+        Err(e) => i18n::exit_with(e),
     };
 
     let mut cfg = config::load();

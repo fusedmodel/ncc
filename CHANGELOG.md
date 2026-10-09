@@ -14,6 +14,36 @@
 
 ## [未发布]
 
+### 改进 · `ncc help` 与参数报错中文化（clap 的英文模板换掉）（2026-10-09）
+
+`ncc help` 一直是"半中半英"：参数说明是中文，但 clap 生成的骨架是英文 ——
+`Usage:` / `Commands:` / `Options:` / `Print this message or the help of the given subcommand(s)`，
+报错同理（`error: unrecognized subcommand 'nope'` / `tip: …` / `For more information, try '--help'.`）。
+本仓库的约定是"用户可见输出用中文"，本次把这一层补上：
+
+```
+错误: 没有这个子命令「nope」
+
+  提示: 你是不是想用这个子命令「nodes」
+
+用法: ncc [OPTIONS] <COMMAND>
+
+更多信息：试 `--help`.
+```
+
+- **clap 4 不做本地化**，模板写死在 `clap_builder` 里（`output/help_template.rs`、`error/format.rs`、
+  `error/kind.rs`）—— 所以只能**在边界上换一次**：新模块 `cli/src/i18n.rs` 拿到 clap 渲染好的文本，
+  按它的模板逐条替换，再自己打印（不再用 `Error::exit()`，它会直接吐英文）。
+- **只换 clap 自己的模板**：参数说明、子命令说明、我们自己的校验消息一个字都不动；
+  认不出来的英文**原样留着**（漏一句看得见，改错了看不见）。
+- 帮助 / 版本仍走 stdout 且退出码 0，报错仍走 stderr 且退出码 2（与 clap 语义一致）；
+  写管道被关掉时静默（与 clap 的 `exit` 一样不当成恐慌）。
+- 新增 `scripts/help-zh-smoke.sh`（42/0）：**全命令树 750 次调用**（每个子命令的 `-h` / `--help`，
+  深挖三层）里不许剩 clap 的英文模板，外加 7 条报错路径与 `help` / `-h` / `--help` 的标题断言。
+- 新增 5 条单测（`i18n`）：帮助全中文、报错全中文且**参数名原样保留**、只换 clap 的模板、
+  短语表不许自遮挡、模板占位符自洽。
+
+
 ### 新增 · spec kit —— `ncc scaffold`（一份 md 就是一件制品）与 `ncc hur spec-kit`（2026-10-09）
 
 用户提问（原话）：「是否可以有 scaffold.md 或者 hur.md，这个 md 用于定义一个 spec kit 协助 agent

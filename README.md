@@ -350,7 +350,7 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc mem export --as-package <dir>` | Memory snapshot (private by default — a memory that can be handed out is no longer a memory) |
 | `ncc ckpt export --as-package <dir>` | Checkpoint set: bytes + lineage, digest verified before it enters the package |
 | `ncc trace export --as-package <dir>` | Trace dataset snapshot; `--payload digest\|preview\|full` must be declared (`full` + `public` is refused) |
-| `ncc help <command>` | Show generated help for any command |
+| `ncc help <command>` | Show generated help for any command (**help and parse errors are in Chinese** — clap's templates are swapped in `src/i18n.rs`) |
 
 Global flags:
 
@@ -1226,6 +1226,7 @@ Source layout:
 | `src/admin.rs` | Node governance (admin: users / nodes / services / audit / credential rotation) and share links |
 | `src/mcp.rs` | MCP server over stdio (tool schemas + dispatch) |
 | `src/terminal.rs` | Command console, POSIX runtime detection, update check |
+| `src/i18n.rs` | Turns clap's help / parse-error templates into Chinese (clap 4 has no localization, so it is swapped once at the boundary) |
 | `src/tui.rs` | Full-screen ratatui TUI (used when stdin is a real TTY) |
 
 Design constraints worth preserving: keep the dependency list small; route every operation through the public HTTP API rather than inventing a private protocol; and never let the client become a data broker between machines.
