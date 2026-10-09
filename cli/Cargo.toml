@@ -6,7 +6,7 @@ members = ["crates/hur-core", "crates/hur-sandbox"]
 
 [package]
 name = "ncc"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Official command-line client for NCC Connector — publish, search, install and download capability artifacts (API / Skill / MCP / Harness / Plugin / Scaffold)."
 license = "Apache-2.0"

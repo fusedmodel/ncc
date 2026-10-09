@@ -12,7 +12,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 「怎么用」看 `README.zh-CN.md` 与各组件 README；**本文件只回答「这一版比上一版多了什么」**。
 
-## [未发布]
+## [0.4.0] — 2026-10-09
 
 ### 改进 · `ncc help` 与参数报错中文化（clap 的英文模板换掉）（2026-10-09）
 
@@ -167,28 +167,6 @@ ncc match "帮我订会议室" --all                 # 含已占满 / 已成（�
 - 只读 key 能看状态与队列，不能认领（403 `index:write`）。
 - 代码：新增 `cli/src/indexstate.rs`；`ncc index` 多五个子命令，`ncc match` 多 `--all`，
   `ncc index publish` 多 `--slots/--ttl`。
-- 端到端冒烟在平台仓库：`ncc-platform/scripts/index-state-smoke.sh`（95/0，含 CLI 面）。
-
-### 新增 · `ncc index state|hold|release|advance|queue`（2026-10-02）
-
-匹配找到人只是开始：真正的交互是一个**事务**（房间不能被卖两遍），
-而且每次状态变化要能被**同步**出去（「房间订完了」「谁切换了工作状态」）。
-
-```bash
-ncc index state @aya/room                     # 现在能不能接、还剩几个名额、谁占着
-ncc index hold @aya/room --order-ref ORD-1024 # 认领一份名额（原子占位，满员就报错）
-ncc index release @aya/room --order-ref ORD-1024
-ncc index advance @aya/room --to done --expect held   # CAS：状态对不上就失败
-ncc index queue --since 0                     # 状态队列（游标 = seq，增量拉）
-ncc index queue --watch                       # 跟着看
-ncc index publish booking/room --need "…" --slots 1 --ttl 900
-ncc match "帮我订会议室" --all                 # 含已占满 / 已成（默认只给还能接的）
-```
-
-- **认领幂等**：同一个 `--order-ref` 重复 `hold` 不会多占名额（重试是安全的），CLI 会说明。
-- **占位是租约**：`--ttl` 到点自动归还；不办了用 `release` 提前还。
-- **推进要 CAS**：`--expect` 对不上就失败 —— 两个人同时点「成交」只能成一个。
-- 只读 key 能看状态与队列，不能认领（403 `index:write`）。
 - 端到端冒烟在平台仓库：`ncc-platform/scripts/index-state-smoke.sh`（95/0，含 CLI 面）。
 
 ### 新增 · `ncc nodes claim` 节点编号（2026-10-02）
@@ -1424,7 +1402,8 @@ stdout —— 而 MCP 的 stdio 约定是 **stdout 只能出 JSON-RPC 帧**，�
 首个可发布版本：**`ncc`** 单二进制客户端（注册 / 登录 / 发布 / 检索 / 下载 / 安装 / API-Key / Terminal…）、
 npm 包装 `@fusedmodel/ncc-cli`、发布工作流与 `publishConfig`。
 
-[未发布]: https://github.com/fusedmodel/ncc/compare/v0.3.0...HEAD
+[未发布]: https://github.com/fusedmodel/ncc/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/fusedmodel/ncc/releases/tag/v0.4.0
 [0.3.0]: https://github.com/fusedmodel/ncc/releases/tag/v0.3.0
 [0.1.3]: https://github.com/fusedmodel/ncc/releases/tag/v0.1.3
 [0.1.2]: https://github.com/fusedmodel/ncc/releases/tag/v0.1.2
