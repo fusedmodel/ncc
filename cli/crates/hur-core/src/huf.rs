@@ -19,7 +19,7 @@
 //!
 //! 一句人话：**`.hur` 装「能跑的东西」，`.huf` 装「给人看的东西」，容器是同一个。**
 //!
-//! 规则编号 **H1~H9**（见 [`validate`] 与 [`check_sidecar`]；`.hur` 那边是 R1~R12）。
+//! 规则编号 **H1~H9**（见 [`validate`] 与 [`check_sidecar`]；`.hur` 那边是 R1~R13）。
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -215,7 +215,7 @@ pub fn unpack(archive: &Path, dest: &Path) -> Result<(Vec<String>, String, Strin
 /// 要么重算规范字节 —— 那条路在 [`check_signature`]（H8），产物摘要侧车在
 /// [`check_sidecar`]（H9）。把它塞进这里会让"校验一个目录"悄悄变成"校验一个产物"。
 ///
-/// 编号与 `.hur` 的 `R1~R12` **分开**：两套规则碰巧都得看清单，但判据不同，
+/// 编号与 `.hur` 的 `R1~R13` **分开**：两套规则碰巧都得看清单，但判据不同，
 /// 用同一串编号会让人以为可以互相对照。
 pub fn validate(m: &HufManifest, dir: &Path, lock: Option<&HurLock>) -> Vec<Issue> {
     let mut out = Vec::new();

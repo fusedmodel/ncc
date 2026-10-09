@@ -6,6 +6,7 @@ mod auth;
 mod authpkg;
 mod capability;
 mod compute;
+mod scaffold;
 mod config;
 mod configs;
 mod conn;
@@ -188,6 +189,16 @@ enum Cmd {
     /// 全程离线；发布走 `ncc publish --kind huf --file dist/….huf.gz`。
     #[command(subcommand)]
     Huf(huf::HufCmd),
+    /// 脚手架规范：`SCAFFOLD.md` —— **一份 md 就是一件制品**（kind=scaffold）
+    ///
+    /// 脚手架的价值不在"我给你几十个文件"，而在"**我知道这类工程该长什么样**"：
+    /// 结构、约定、交付清单、前置算力、以及**怎么算生成成功**（「验收」段里真能跑的命令）。
+    /// 写成 md，Agent 每次贴着你当前的仓库生成 —— 而不是把一个旧模板复制进去再改。
+    ///
+    /// 全程离线（`spec / init / verify`）；只有 `fit --remote` 会问平台一句"谁满足这份需求"，
+    /// 且判定权始终在本机（服务端只粗筛）。
+    #[command(subcommand)]
+    Scaffold(scaffold::ScaffoldCmd),
     /// 制品加签：签的是**发布出去的那份字节**（不限 kind —— Skill / MCP / 任意文件）
     ///
     /// 包（HUR 目录 / .hur）会转交给 `ncc hur sign`（那里签的是规范打包字节，
@@ -1037,6 +1048,7 @@ fn wants_json_stdout(cmd: &Cmd) -> bool {
             Some(ProfileCmd::Node(n)) => n.json_stdout(),
             _ => false,
         },
+        Cmd::Scaffold(s) => s.json_stdout(),
         // （`ncc hur … --json` 的提示流是既有的另一套约定，本次不动它）
         _ => false,
     }
@@ -1050,6 +1062,9 @@ fn required_capability(cmd: &Cmd) -> Option<&'static str> {
         Cmd::Hur(h) => h.capability(),
         // 资源包全程本地（init/build/pack/verify/sign），发布走 `ncc publish` 那条线
         Cmd::Huf(_) => None,
+        // 脚手架规范同样全程本地；`fit --remote` 要的是 compute 能力，由实现里 ensure 一次
+        // —— 那里能给出"这个目标没有 compute 能力，去哪个目标问"的具体下一步。
+        Cmd::Scaffold(s) => s.capability(),
         Cmd::Publish(_)
         | Cmd::Search(_)
         | Cmd::Info { .. }
@@ -1197,6 +1212,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
         Cmd::Upgrade(a) => upgrade::run(a),
         Cmd::Hur(h) => hur::run(cfg, h),
         Cmd::Huf(h) => huf::run(h),
+        Cmd::Scaffold(s) => scaffold::run(cfg, s),
         Cmd::Sign(s) => signcmd::sign(cfg, s),
         Cmd::Verify(v) => signcmd::verify(cfg, v),
         Cmd::Key(k) => cmd_key(cfg, k),

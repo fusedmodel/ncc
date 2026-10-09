@@ -18,6 +18,7 @@ pub mod huf;
 pub mod install;
 pub mod interop;
 pub mod mcp;
+pub mod need;
 pub mod pack;
 pub mod policy;
 pub mod profile;
@@ -26,6 +27,7 @@ pub mod registry;
 pub mod schema;
 pub mod sign;
 pub mod spec;
+pub mod spec_kit;
 pub mod tpl;
 
 /// 规范标识（对外可见）

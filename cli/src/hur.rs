@@ -21,7 +21,7 @@ use clap::{Args, Subcommand};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
-use hur_core::{datapack, dep, install, interop, pack, policy, profile, sign, spec, tpl};
+use hur_core::{datapack, dep, install, interop, pack, policy, profile, sign, spec, spec_kit, tpl};
 
 use crate::api;
 use crate::config::{self, CliConfig};
@@ -35,7 +35,7 @@ pub const INIT_KINDS: [&str; profile::AUTHORABLE_KINDS.len()] = profile::AUTHORA
 
 #[derive(Subcommand)]
 pub enum HurCmd {
-    /// 校验包目录或 `.hur` / `.hur.gz` 产物（R1~R11，全程离线；R9 = 制品签名）
+    /// 校验包目录或 `.hur` / `.hur.gz` 产物（R1~R13，全程离线；R9 = 制品签名）
     Verify(HurVerifyArgs),
     /// 读包：清单 / 依赖 / 权限面 / 安全策略 / 签名状态
     Inspect {
@@ -72,6 +72,8 @@ pub enum HurCmd {
         #[arg(long)]
         json: bool,
     },
+    /// 施工说明 `HUR.md`：**这份包怎么改、怎么证明改对了**（写进包里，随包分发）
+    SpecKit(HurSpecKitArgs),
     /// `hur.json` 的 JSON Schema（编辑器即时校验 / 任何语言的 SDK 都能拿它生成表单与校验器）
     Schema {
         /// 写进工程目录（hur.schema.json + .vscode/settings.json），而不是打到 stdout
@@ -312,7 +314,7 @@ pub struct HurExportArgs {
     /// 要求产物带**可核对**签名（不给则跟随生效策略）
     #[arg(long)]
     pub require_signature: bool,
-    /// 有错也导出（默认不：R1~R11 不过就拒绝）
+    /// 有错也导出（默认不：R1~R13 不过就拒绝）
     #[arg(long)]
     pub allow_issues: bool,
     #[arg(long)]
@@ -356,7 +358,7 @@ pub enum HurPolicyCmd {
         #[arg(long)]
         json: bool,
     },
-    /// 按生效策略跑 R1~R11（= verify 的策略视角）
+    /// 按生效策略跑 R1~R13（= verify 的策略视角）
     Check {
         #[arg(default_value = ".")]
         path: PathBuf,
@@ -548,6 +550,18 @@ pub struct HurMatchArgs {
 }
 
 #[derive(Args, Clone)]
+pub struct HurSpecKitArgs {
+    /// 包目录（默认当前目录）
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+    /// 写进包目录（`HUR.md`），而不是打到 stdout
+    #[arg(long)]
+    pub write: bool,
+    #[arg(long)]
+    pub json: bool,
+}
+
+#[derive(Args, Clone)]
 pub struct HurInitArgs {
     /// 你要做的是什么：agent / harness / repo（脚手架）+ skill / mcp / plugin / app / scaffold。
     /// 想做一个技能就写 `--kind skill` —— 不必先学 kind 与 profile 两套词汇。
@@ -676,7 +690,7 @@ pub struct HurPublishArgs {
     /// slug 已存在时改为**更新**（改版本/产物地址/状态；清单里的签名与权限面不会变，会提醒）
     #[arg(long)]
     pub update: bool,
-    /// 有错也发（默认不：R1~R11 不过就拒绝）
+    /// 有错也发（默认不：R1~R13 不过就拒绝）
     #[arg(long)]
     pub allow_issues: bool,
     #[arg(long)]
@@ -719,6 +733,7 @@ pub fn run(cfg: &CliConfig, a: &HurCmd) -> Result<()> {
         HurCmd::Sign(s) => sign_cmd(s.clone()),
         HurCmd::Init(i) => init(i.clone()),
         HurCmd::Spec { json } => spec_cmd(*json),
+        HurCmd::SpecKit(a) => spec_kit_cmd(a.clone()),
         HurCmd::Schema { write, dir, json } => schema_cmd(*write, dir.clone(), *json),
         HurCmd::Profile(p) => profile_cmd(cfg, p.clone()),
         HurCmd::Match(m) => match_cmd(cfg, m.clone()),
@@ -784,10 +799,9 @@ fn verify(a: HurVerifyArgs) -> Result<()> {
     if is_archive {
         let file = std::fs::canonicalize(&a.path).unwrap_or_else(|_| a.path.clone());
         let sha = spec::sha256_file(&file)?;
-        if let Some(expect) = pack::sidecar_sha(&file) {
-            if expect != sha {
-                issues.push(spec::Issue::err("R6", format!("产物 sha256 与登记值不一致：登记 {expect}，实际 {sha}")));
-            }
+        // R6：侧车摘要（判据在 `pack::check_sidecar`，与 `.huf` 的 H9 是同一条检查的两条线）
+        if let Some(i) = pack::check_sidecar(&file) {
+            issues.push(i);
         }
         let t = std::env::temp_dir().join(format!("ncc-hur-verify-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&t);
@@ -856,7 +870,7 @@ fn verify(a: HurVerifyArgs) -> Result<()> {
         }
     }
     if !ok {
-        bail!("校验未通过（R1~R11）");
+        bail!("校验未通过（R1~R13）");
     }
     Ok(())
 }
@@ -1066,9 +1080,19 @@ fn init(a: HurInitArgs) -> Result<()> {
         }
         std::fs::write(&p, body)?;
     }
+    // 施工说明（HUR.md）：**在 build_lock 之前写**，这样它才进锁、才随包分发（R13）。
+    // profile=scaffold 的包再多一份 `SCAFFOLD.md` —— 那才是它的本体（模板在 assets/ 只是素材）。
+    match spec_kit::write_hur_md(&dir, &pkg) {
+        Ok(_) => {}
+        Err(e) => eprintln!("⚠ 没能写 {}：{e:#}", spec_kit::HUR_MD),
+    }
+    if prof == "scaffold" {
+        write_scaffold_md(&dir, &pkg);
+    }
     // 锁也顺手建好：签名/打包都要求它存在
     pack::build_lock(&dir)?;
     println!("已生成 {}（{} v{} · {} · profile={}）", dir.display(), pkg.id, pkg.version, pkg.kind, pkg.profile_name());
+    println!("  施工说明  {}（随包分发：怎么改、怎么验、有哪些禁令）", spec_kit::HUR_MD);
     // 编辑器接线：schema + `.vscode/settings.json`。**它不进包**（只有 src / skills / kb / data /
     // assets 算包内容），但写清单时字段名与枚举写错，在编辑器里当场就能看见。
     // 失败不影响工程可用（例如用户对 settings.json 有自己的写法），所以只提示、不报错。
@@ -1078,6 +1102,46 @@ fn init(a: HurInitArgs) -> Result<()> {
     }
     println!("  下一步    {}", init_next_step(prof));
     Ok(())
+}
+
+/// `profile=scaffold` 的包顺手写一份 `SCAFFOLD.md`（它的本体，S1~S8）。
+///
+/// 技术栈按**当前目录**认（`ncc hur init --kind scaffold` 通常就在一个现成工程里跑）；
+/// 认不出来就照实写 `generic`，并让「验收」留 TODO —— 规则 S6 会红，
+/// 这正是要的效果：没写清"怎么算生成成功"的脚手架不算完成。
+fn write_scaffold_md(dir: &Path, pkg: &spec::HurPackage) {
+    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut stack = spec_kit::detect_stack(&here);
+    if stack.is_empty() {
+        stack = spec_kit::detect_stack(dir);
+    }
+    if stack.is_empty() {
+        stack = vec!["generic".to_string()];
+    }
+    // `name` 取包名的 slug：包 id 长成 `A-…-随机串`（那是目录里的身份，不是 slug），
+    // 而 S2 要求 name 是 ascii slug —— 直接抄 id 会当场红。
+    let name = tpl::slug(&pkg.name);
+    let desc = if pkg.summary.trim().is_empty() {
+        format!("{name} 工程骨架")
+    } else {
+        pkg.summary.trim().to_string()
+    };
+    let outputs = spec_kit::default_outputs(&name, &stack);
+    let requires = spec_kit::default_requires(&stack);
+    let acc = spec_kit::acceptance_for(&stack);
+    let text = spec_kit::scaffold_template_with(&name, &desc, &stack, &outputs, &requires, &acc);
+    let p = dir.join(spec_kit::SCAFFOLD_MD);
+    if let Err(e) = std::fs::write(&p, text.clone()) {
+        eprintln!("⚠ 没能写 {}：{e}", p.display());
+        return;
+    }
+    println!("  脚手架    {}（栈 {} · 规则 S1~S8，用 ncc scaffold verify 校验）", spec_kit::SCAFFOLD_MD, stack.join("+"));
+    // 顺手校验一次：**别让作者以为生成完就完了**（认不出栈时「验收」还是 TODO，S6 会红）。
+    for i in spec_kit::verify_scaffold(&text) {
+        if i.level != spec::Level::Info {
+            eprintln!("    [{:?} {}] {}", i.level, i.rule, i.msg);
+        }
+    }
 }
 
 /// 生成之后该敲什么 —— **按 profile 不一样**：技能要渲染到宿主、MCP 要先把 server
@@ -1100,7 +1164,7 @@ fn init_next_step(prof: &str) -> &'static str {
 /// `hur-core::profile`，形状在 `spec::HurPackage`）。SDK、编辑器插件、别的语言的工具链
 /// 不该为了这个去啃源码，于是把**规范自己**导出一份：`--json` 给机器，默认给人看。
 ///
-/// ⚠️ 它**不复制规则文案**：R1~R12 的权威实现永远在 `hur_core::spec::validate`，
+/// ⚠️ 它**不复制规则文案**：R1~R13 的权威实现永远在 `hur_core::spec::validate`，
 /// 这里只导形状与那张表（多一份规则描述 = 多一个会漂的地方）。
 fn spec_cmd(json_out: bool) -> Result<()> {
     let schema = hur_core::schema::json_schema();
@@ -1142,6 +1206,38 @@ fn spec_cmd(json_out: bool) -> Result<()> {
     }
     println!("\n完整 profile 表（要什么 / 给什么 / 怎么接，带体检）：ncc hur profile --list");
     println!("机器可读（给 SDK / 编辑器 / 生成器）：ncc hur spec --json · ncc hur schema --write");
+    Ok(())
+}
+
+/// `ncc hur spec-kit`：写出 / 打印这份包的**施工说明**（`HUR.md`，规则 R13）。
+///
+/// 为什么不是"给人看的 README"：README 讲**这个包做什么**，`HUR.md` 讲**怎么改它并证明改对了**
+/// （必填项、禁令、命令面、规则表）。接手的是另一个 Agent 时，后者才是它要读的那份 ——
+/// 所以它**随包分发**（进 `hur.lock`、进产物），而不是躺在某个仓库的 docs/ 里。
+fn spec_kit_cmd(a: HurSpecKitArgs) -> Result<()> {
+    let dir = root_of(&a.path)?;
+    let pkg = spec::read_pkg(&dir)?;
+    let text = spec_kit::hur_md(&pkg);
+    if !a.write {
+        if a.json {
+            println!("{}", serde_json::to_string_pretty(&json!({ "root": dir, "file": spec_kit::HUR_MD, "markdown": text }))?);
+        } else {
+            print!("{text}");
+        }
+        return Ok(());
+    }
+    let p = spec_kit::write_hur_md(&dir, &pkg)?;
+    // 写完顺手自查一次（R13）：内容是从清单推导的，对不上就是代码有 bug，不该让作者踩到。
+    if let Some(i) = spec_kit::read_hur_md(&dir).and_then(|t| spec_kit::hur_md_check(&t, &pkg)) {
+        eprintln!("⚠ 写出的 {} 与清单不一致（{}）：{}", p.display(), i.rule, i.msg);
+    }
+    if a.json {
+        println!("{}", serde_json::to_string_pretty(&json!({ "root": dir, "file": p, "written": true }))?);
+    } else {
+        println!("已写入 {}", p.display());
+        println!("  作用      随包分发的施工说明：怎么改、怎么验、有哪些禁令（规则 R13 会核对它与清单一致）");
+        println!("  下一步    ncc hur build . → ncc hur verify .（改了 id / version 就重新生成一次）");
+    }
     Ok(())
 }
 
@@ -1753,7 +1849,7 @@ fn parse_bool(flag: &str, v: &str) -> Result<bool> {
 ///
 /// 为什么不是只给一个 `.hur`：收件人要能**自己**判断"这份字节是谁做的、有没有被换过"。
 /// 所以公钥、签名、摘要、当时的策略一起给（export.json 就是那张"说明书"，不用回来问你）。
-/// 全程离线；先自己按 R1~R11 验一遍，不过就拒绝导出（`--allow-issues` 可明确覆盖）。
+/// 全程离线；先自己按 R1~R13 验一遍，不过就拒绝导出（`--allow-issues` 可明确覆盖）。
 fn export(a: HurExportArgs) -> Result<()> {
     let dir = root_of(&a.path)?;
     let pkg = spec::read_pkg(&dir)?;
@@ -2184,7 +2280,7 @@ fn policy_cmd(a: HurPolicyArgs) -> Result<()> {
                     v.require_signature.unwrap_or(false)
                 );
                 if issues.is_empty() {
-                    println!("检查项     全部通过（R1~R11）");
+                    println!("检查项     全部通过（R1~R13）");
                 } else {
                     print_issues(&issues);
                 }
@@ -2443,7 +2539,7 @@ const HUR_MCP_INSTRUCTIONS: &str = "\
 `ncc hur mcp` 暴露的是 **hur 制品的治理面**（控制面），不是执行面。
 
 怎么用：
-1. 看清一个包：hur_inspect（清单 / 入口 / 权限面 / 依赖）→ hur_verify（R1~R11，含签名）→ hur_dep（声明↔锁↔实际字节）。
+1. 看清一个包：hur_inspect（清单 / 入口 / 权限面 / 依赖）→ hur_verify（R1~R13，含签名）→ hur_dep（声明↔锁↔实际字节）。
 2. 看清约束：hur_policy（生效策略 + 逐层来源 + 限额）；hur_plan（执行计划：允许不允许、用哪个引擎、什么限额、为什么）。
 3. 看清环境与留痕：hur_sandbox（引擎托管归属 / 已登记沙箱环境 / 留痕数）；hur_tasks（谁在什么限额下跑了什么、留痕详情）；hur_envs（登记的环境与证明）；hur_keys（本机密钥指纹 + 受信公钥）。
 
@@ -2474,7 +2570,7 @@ fn hur_mcp_tools() -> Vec<Value> {
         }),
         json!({
             "name": "hur_verify",
-            "description": "按生效策略跑 R1~R11 校验（全程本地、不联网、不执行）：R9 是制品签名。返回错误/提醒/已核对项与签名状态（谁签的、可不可核对）。",
+            "description": "按生效策略跑 R1~R13 校验（全程本地、不联网、不执行）：R9 是制品签名。返回错误/提醒/已核对项与签名状态（谁签的、可不可核对）。",
             "inputSchema": json!({
                 "type": "object",
                 "properties": {
@@ -2970,7 +3066,7 @@ fn interop_cmd(a: HurInteropArgs) -> Result<()> {
 
 /* ---------------- 联网：发布（用 ncc 的身份与条目模型） ---------------- */
 
-/// `ncc hur publish` = 本地 verify(R1~R11) → pack（确定性）→ 可选 sign → 走 **ncc 的 registry 条目模型**。
+/// `ncc hur publish` = 本地 verify(R1~R13) → pack（确定性）→ 可选 sign → 走 **ncc 的 registry 条目模型**。
 ///
 /// 刻意与 `ncc publish` 共用同一条上传/建档路径（`/api/registry/uploads` + `/api/registry`），
 /// 只是 kind 固定为 `hur`、manifest 里带 hur 包元数据与签名指纹 —— 这样目录侧能显示"谁签的"。
@@ -2980,7 +3076,7 @@ fn publish(cfg: &CliConfig, a: HurPublishArgs) -> Result<()> {
     let r = policy::resolve(&dir, Some(&pkg))?;
     let e = policy::effective(&r.policy);
 
-    // ① 先校验（本地）：R1~R11。不过就不发（除非 --allow-issues，且错误数为 0 也不行）
+    // ① 先校验（本地）：R1~R13。不过就不发（除非 --allow-issues，且错误数为 0 也不行）
     let issues = policy::collect_issues(&dir, &pkg, &r.policy)?;
     let errs = issues.iter().filter(|i| i.level == spec::Level::Error).count();
     let warns = issues.iter().filter(|i| i.level == spec::Level::Warn).count();

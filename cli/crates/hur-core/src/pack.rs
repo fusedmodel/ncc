@@ -34,7 +34,7 @@ const GZIP_LEVEL: u32 = 6;
 
 use crate::spec::{
     content_files, content_files_in, read_pkg, rel, sha256_file, sha256_hex, Format, HurLock,
-    LockedDep, DIST, LOCK, LOCK_SPEC,
+    Issue, LockedDep, DIST, LOCK, LOCK_SPEC,
 };
 
 /// 从任意子目录向上找包根（含 hur.json 的目录）
@@ -397,6 +397,22 @@ pub fn unpack_for(archive: &Path, dest: &Path, fmt: Format) -> Result<(Vec<Strin
         let _ = std::fs::remove_file(t);
     }
     out
+}
+
+/// 产物的 sha256 与侧车（`<产物>.sha256`）登记值对不对得上（规则 **R6**）。
+///
+/// 侧车不进容器、不参与签名，它的用处是"下载完先看一眼有没有被换过"。
+/// `.huf` 那边同一条检查叫 H9（见 `huf::check_sidecar`）——两条线两套编号，但判据一样。
+pub fn check_sidecar(archive: &Path) -> Option<Issue> {
+    let expect = sidecar_sha(archive)?;
+    let actual = sha256_file(archive).ok()?;
+    if expect == actual {
+        return None;
+    }
+    Some(Issue::err(
+        "R6",
+        format!("产物 sha256 与登记值不一致：登记 {expect}，实际 {actual}"),
+    ))
 }
 
 pub fn sidecar_sha(hur: &Path) -> Option<String> {

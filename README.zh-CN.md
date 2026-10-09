@@ -336,6 +336,8 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 | `ncc hur match --profile kb-seed` | 按 profile / 集成宿主 / 能力在目录里找包（**只读**） |
 | `ncc hur data import --package <目录>` | 把**数据快照包**灌进节点（kb-seed / mem-seed / ckpt-set / trace-set）；默认只出计划，`--apply` 才真写 |
 | `ncc huf <init\|build\|pack\|verify\|inspect\|ls\|unpack\|sign\|spec>` | **资源包**（`.huf`）：文档 / 提示词 / 模板 / 资产 —— `.hur` 的兄弟，**没有入口**（它不执行）。同容器、同确定性字节与侧车签名 |
+| `ncc scaffold <spec\|init\|verify\|fit>` | **脚手架规范**（`SCAFFOLD.md`，`kind=scaffold`）：一份 md **就是**制品 —— 结构 / 交付清单 / 前置算力 / 以及决定「生成成功了没有」的验收命令（规则 S1~S8，全程离线） |
+| `ncc hur spec-kit [--write]` | 写这份包的**施工说明**（`HUR.md`）：从清单推导、随包分发、由规则 R13 核对 |
 | `ncc profile node <scan\|show\|tasks\|push\|fleet\|fit\|pack>` | **算力画像** —— 这台机器或这个集群到底能跑什么（CPU / 内存 / 磁盘 / GPU / 工具链 / 可达服务面）。本地采集、显式上传、可打成 `.huf` |
 | `ncc kb bundle --as-package <目录>` | 把知识库导出成**快照包**（来源 / 快照时刻 / 隐私级别 / 许可），可签名可发布 |
 | `ncc mem export --as-package <目录>` | 记忆快照（**默认 private** —— 能分发出去的记忆就不再是记忆了） |
@@ -773,6 +775,53 @@ ncc publish --kind huf --name "上手文档" --file dist/<产物>.huf.gz   # 不
 **两个方向都拦**：`ncc hur verify` 不认 `.huf`，`ncc huf verify` 也不认 `hur.json`。
 内容目录：`docs / assets / skills / kb / data`。端到端冒烟：`bash scripts/huf-smoke.sh`
 （本地工具链 + 真发一份到节点）。设计见 `ncc-platform/prd/ncc-huf.md`。
+
+### `ncc scaffold` —— 脚手架规范（一份 md 就是一件制品）
+
+**脚手架的价值不在"我给你几十个文件"，而在"我知道这类工程该长什么样"**：结构 / 约定 /
+交付清单 / 前置算力 / 以及最要紧的一条 —— **怎么算生成成功**。写成一份 `SCAFFOLD.md`
+（规范 `ncc-scaffold/v1`，规则 S1~S8），Agent 每次贴着你当前的仓库生成，产出是当下正确的；
+模板压缩包的时效性则停在生成它的那一刻。`kind=scaffold` 的制品就是这份 md，不需要塞代码。
+
+```bash
+ncc scaffold spec                        # 规范总览：字段 / 规则 S1~S8 / 骨架模板（--json 给工具用）
+ncc scaffold init . --stack rust,cargo   # 生成 SCAFFOLD.md（栈能从目录认出来就自动填前置与验收）
+ncc scaffold verify . --run              # S1~S8 离线校验；--run 真跑「验收」段里的命令
+ncc scaffold fit . [--scan] [--remote]   # 这份脚手架要的算力，本机 / 集群满不满足
+ncc publish --kind scaffold --name X --file SCAFFOLD.md
+```
+
+| 规则 | 判据 |
+|---|---|
+| S1/S2 | `spec` 是 `ncc-scaffold/v1`；`name` 是 ascii slug、`description` 说得清 |
+| S3/S4 | `stack`（语言 / 运行时 / 框架）与 `outputs`（交付清单）都不能空 |
+| S5 | 有「目标结构」段，且里面有目录树代码块 |
+| S6 | 有「验收」段，且里面有**可执行命令** —— 只描述不验证的脚手架不算完成（`--run` 跑的就是这几条） |
+| S7 | 不许出现密钥 / 令牌 |
+| S8 | `requires` 每条都是合法算力需求（与 `ncc profile node fit` 同一套语法） |
+
+- **认栈不猜栈**：`Cargo.toml` / `package.json` / `go.mod` / `pyproject.toml` … 认得出就自动写
+  `requires` 与验收命令；认不出就要求 `--stack`，不编一个。
+- **适配同源**：`fit` 折成需求表达式后交给与算力画像**同一个求值器**；`--check` 不满足即退出码 1
+  （CI / 生成前的前置检查），`--remote` 走平台粗筛、`--strict` 在本机复核。
+- **端到端冒烟**：`bash scripts/scaffold-smoke.sh`（本地 + 真发一份 md 到节点再下回来比对字节）。
+  设计见 `ncc-platform/prd/ncc-spec-kit.md`，站内文档 `/doc/scaffold`。
+
+### `ncc hur spec-kit` —— 包的施工说明（`HUR.md`）
+
+包做完之后往往是**别人**（或另一个 Agent）接手。它要知道的不是"这个包做什么"（那是 README），
+而是"**改它要注意什么、改完怎么证明改对了**"——这份东西由清单推导、随包分发、可核对：
+
+```bash
+ncc hur spec-kit .            # 打印这份包的施工说明
+ncc hur spec-kit . --write    # 写进包目录（`ncc hur init` 已自动写一份）
+```
+
+- 内容：身份表（id / version / profile / 产物名）、**按 profile 的必填与禁令**、命令面、规则表 R1~R13。
+- **随包分发**：`HUR.md` 与 `SCAFFOLD.md` 都在根文件白名单里 —— 进 `hur.lock`、进产物，
+  被下载、被接手时规范知识还在现场。
+- **规则 R13 核对**：`id` / `version` / `profile` 变了要重新生成，否则 `ncc hur verify` 会点名
+  （一份说自己是 v0.1.0 的施工说明配 v0.2.0 的包，比没有更坏）。
 
 ### `ncc hur profile` 与数据快照包
 

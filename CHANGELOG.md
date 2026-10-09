@@ -14,6 +14,46 @@
 
 ## [未发布]
 
+### 新增 · spec kit —— `ncc scaffold`（一份 md 就是一件制品）与 `ncc hur spec-kit`（2026-10-09）
+
+用户提问（原话）：「是否可以有 scaffold.md 或者 hur.md，这个 md 用于定义一个 spec kit 协助 agent
+去生成 scaffold 或者 hur，当然一般情况下 scaffold 是不是只需要 md 就可以了，因为 vibe coding
+代码速度很快」—— 结论：**两个判断都成立，但原因不同**。
+
+- **`SCAFFOLD.md` 只需要 md，而且应该只有 md**：模板压缩包的时效性停在生成它的那一刻；一份 md 传的
+  是**判断**（这类工程该长什么样 / 哪些坑不要踩 / **怎么算生成成功**），Agent 每次贴着你当前的仓库
+  生成，产出是当下正确的。写代码越快，方向错了的代价越大。所以它是 `kind=scaffold` 的**制品本体**。
+- **`HUR.md` 是包自己的施工说明**（不是"格式说明"）：从清单推导、**随包分发**、可核对 ——
+  接手一份包的人（或 Agent）要知道的是"改这里注意什么、改完怎么证明改对了"。
+
+```bash
+ncc scaffold spec                        # 规范总览：字段 / 规则 S1~S8 / 骨架模板（--json 给工具用）
+ncc scaffold init . --stack rust,cargo   # 生成 SCAFFOLD.md（栈能从目录认出来就自动填前置与验收）
+ncc scaffold verify . [--run]            # S1~S8 离线；--run 真跑「验收」段里的命令
+ncc scaffold fit . [--scan|--remote] [--check]   # 要的算力本机 / 集群满不满足
+ncc hur spec-kit [--write]               # 打印 / 写入包的施工说明
+```
+
+- **规则**：`SCAFFOLD.md` 是 `S1~S8`（S6 是骨头：验收段里必须有**可执行命令**，全是 TODO 也算不过）；
+  `HUR.md` 由新的 **R13** 核对（`id` / `version` / `profile` 变了必须重新生成）。
+  至此 `.hur` 是 R1~R13、`.huf` 是 H1~H9、脚手架是 S1~S8（三套编号分开，不再混称 R1~R11/R12）。
+- **认栈不猜栈**：`Cargo.toml` → `rust,cargo` + `tool:cargo` + `cargo build`；`package.json` /
+  `tsconfig.json` / `go.mod` / `pyproject.toml` / `pom.xml` / `Gemfile` 同理。认不出来就问
+  （`--stack`），不编一个假的 —— 编错的代价是把 Java 脚手架生成进你的 Python 仓库。
+- **适配同源**：`requires` 折成需求表达式，交给与算力画像**同一个求值器**（`hur_core::need`）；
+  `fit --remote` 走平台粗筛、`--strict` 在本机复核（顺带把平台复核逻辑抽成
+  `compute::strict_refine`，两处共用）。`--check` 不满足即退出码 1。
+- **随包分发**：`HUR.md` 与 `SCAFFOLD.md` 进根文件白名单（进 `hur.lock`、进产物）；
+  `ncc hur init` 自动写 `HUR.md`，`--kind scaffold` 再写一份 `SCAFFOLD.md`。
+- **不顺带做**：不做模板归档、不让平台判适配、不发明新格式（两份都是 markdown）。
+- 新增端到端冒烟 `scripts/scaffold-smoke.sh`（58 项：本地 S1~S8 反例 + 真发一份 md 到节点再下回来比对字节）。
+  设计见 `ncc-platform/prd/ncc-spec-kit.md`，站内文档 `/doc/scaffold`。
+
+**顺带修掉一个真 bug**：段落切分时没跳过围栏代码块，于是「验收」里第一行 `# 注释`（它长得就像
+markdown 标题）把段落截断 —— S6 误报"没有可执行命令"、`--run` 什么都不跑。现在扫标题一律跳过围栏，
+且 S6 与 `--run` 共用同一份判据（`spec_kit::section` + `ACCEPTANCE_KEYS`）。
+
+
 ### 新增 · `ncc profile node` —— 算力画像（这台机器 / 这个集群能跑什么）（2026-10-09）
 
 用户提问（原话）：「增加一个 ncc 的任务节点的计算任务评估能力的评估，在 `ncc profile` 中体现，

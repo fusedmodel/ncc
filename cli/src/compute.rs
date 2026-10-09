@@ -329,201 +329,48 @@ pub fn task(id: &str) -> Option<&'static Task> {
     TASKS.iter().find(|t| t.id == id)
 }
 
-/// 一条需求。字段：`cpu` / `mem` / `disk` / `gpu` / `gpumem` / `tool:<名>` /
-/// `service:<名>` / `service`（个数）/ `tag:<标签>`。
-#[derive(Debug, Clone, PartialEq)]
-pub struct Need {
-    pub field: String,
-    pub op: String,
-    pub value: f64,
-    /// 原样保留（报错与展示时用原话，别让人看到被改写过的需求）
-    pub raw: String,
-}
+// 需求表达式的**判据**在 `hur_core::need`（脚手架的前置条件也要用它，不能有第二份实现）。
+// 这里只做一件事：把"这台机器的事实"喂给它。
+pub use hur_core::need::{evaluate, parse_need};
+// `Verdict` 在对外签名里出现（`evaluate` 的返回），显式引入免得到处写全路径
+pub use hur_core::need::Verdict;
+use hur_core::need::parse_one;
 
-/// 解析需求表达式：逗号分隔，空白的忽略。单位支持 `512M` / `2G` / `1T`（内存按 MB、磁盘按 GB）。
-///
-/// 语法故意很小：`字段 操作符 数值`，或 `tool:名`（存在性）。写错的表达**当场报错**，
-/// 不"猜一个意思继续跑" —— 猜错的代价是把任务派到跑不动的机器上。
-pub fn parse_need(expr: &str) -> Result<Vec<Need>> {
-    let mut out = Vec::new();
-    for raw in expr.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        out.push(parse_one(raw)?);
+impl hur_core::need::Facts for Profile {
+    fn number(&self, field: &str) -> f64 {
+        match field {
+            "cpu" => self.cpu.threads.max(self.cpu.cores) as f64,
+            "mem" => self.mem.total_mb as f64,
+            "disk" => self.main_disk().map(|d| d.free_gb as f64).unwrap_or(0.0),
+            "gpu" => self.gpu_count() as f64,
+            "gpumem" => self.gpu.iter().map(|g| g.mem_mb).max().unwrap_or(0) as f64,
+            "service" => self.services.len() as f64,
+            _ => 0.0,
+        }
     }
-    if out.is_empty() {
-        bail!("需求表达式是空的（例：cpu>=4,mem>=16G,tool:docker）");
-    }
-    Ok(out)
-}
 
-fn parse_one(raw: &str) -> Result<Need> {
-    // 存在性写法：tool:docker / tag:gpu / service:ncc-node
-    if let Some((k, v)) = raw.split_once(':') {
-        let k = k.trim().to_lowercase();
-        let v = v.trim();
-        if v.is_empty() {
-            bail!("需求「{raw}」少了名字（例：tool:docker）");
+    fn has(&self, kind: &str, name: &str) -> bool {
+        match kind {
+            "tool" => self.has_tool(name),
+            "service" => self.service(name).is_some(),
+            "tag" => self.tags.iter().any(|t| t == name),
+            _ => false,
         }
-        if !matches!(k.as_str(), "tool" | "service" | "tag") {
-            bail!("需求「{raw}」的字段不认识（只支持 tool: / service: / tag: 前缀，或 cpu>=N / mem>=2G 这类）");
-        }
-        return Ok(Need { field: format!("{k}:{v}"), op: ">=".into(), value: 1.0, raw: raw.to_string() });
     }
-    for op in [">=", "<=", ">", "<", "="] {
-        if let Some((f, v)) = raw.split_once(op) {
-            let field = f.trim().to_lowercase();
-            if !matches!(field.as_str(), "cpu" | "mem" | "disk" | "gpu" | "gpumem" | "service") {
-                bail!(
-                    "需求「{raw}」的字段「{field}」不认识（支持 cpu / mem / disk / gpu / gpumem / service，或 tool:名）"
-                );
+
+    fn describe(&self, field: &str, value: f64) -> String {
+        // 服务面/工具这类"存在性"字段不用数值描述，直接说"没有"更清楚
+        match field {
+            "cpu" => format!("{} 线程", value as i64),
+            _ => {
+                let unit = match field {
+                    "mem" | "gpumem" => "MB",
+                    "disk" => "GB",
+                    _ => "",
+                };
+                format!("{}{}", hur_core::need::fmt_num(value), unit)
             }
-            let value = parse_amount(v.trim(), &field)
-                .ok_or_else(|| anyhow!("需求「{raw}」的数值看不懂（例：2 或 16G）"))?;
-            return Ok(Need { field, op: op.to_string(), value, raw: raw.to_string() });
         }
-    }
-    bail!("需求「{raw}」看不懂（例：cpu>=4 / mem>=16G / disk>=100G / tool:docker）")
-}
-
-/// `2` / `2G` / `512M` / `1T` → 数值。内存单位统一成 MB，磁盘统一成 GB。
-fn parse_amount(s: &str, field: &str) -> Option<f64> {
-    let up = s.to_ascii_uppercase();
-    let (num, unit) = up
-        .strip_suffix('T')
-        .map(|n| (n, "T"))
-        .or_else(|| up.strip_suffix('G').map(|n| (n, "G")))
-        .or_else(|| up.strip_suffix('M').map(|n| (n, "M")))
-        .unwrap_or((up.as_str(), ""));
-    let n: f64 = num.trim().parse().ok()?;
-    if n < 0.0 {
-        return None;
-    }
-    // 内存与显存都按 MB 记，磁盘按 GB 记（与画像里的单位一致，免得换算散在四处）
-    let is_mem = matches!(field, "mem" | "gpumem");
-    let scale = match (unit, is_mem) {
-        ("T", true) => 1024.0 * 1024.0,
-        ("G", true) => 1024.0,
-        ("", true) => 1.0,
-        ("M", true) => 1.0,
-        ("T", false) => 1024.0,
-        ("G", false) => 1.0,
-        ("M", false) => 1.0 / 1024.0,
-        _ => 1.0,
-    };
-    Some(n * scale)
-}
-
-/// 一条需求的判定结果。
-#[derive(Debug, Clone)]
-pub struct Verdict {
-    pub need: String,
-    pub ok: bool,
-    /// 不满足时：现在的值（"这台机器现在是多少"）
-    pub actual: String,
-    /// 不满足时：差什么（"补什么才够"）
-    pub missing: String,
-}
-
-/// 评估一份画像对一组需求的满足情况。
-pub fn evaluate(p: &Profile, needs: &[Need]) -> Vec<Verdict> {
-    needs.iter().map(|n| check_one(p, n)).collect()
-}
-
-fn check_one(p: &Profile, n: &Need) -> Verdict {
-    let raw = n.raw.clone();
-    if let Some(name) = n.field.strip_prefix("tool:") {
-        return match tool_match(p, name) {
-            Some(t) => Verdict {
-                need: raw,
-                ok: true,
-                actual: format!("{} {}", t.name, t.version).trim().to_string(),
-                missing: String::new(),
-            },
-            None => Verdict {
-                need: raw,
-                ok: false,
-                actual: "未安装".into(),
-                missing: format!("装一个 {name}（或用带它的节点）"),
-            },
-        };
-    }
-    if let Some(name) = n.field.strip_prefix("tag:") {
-        let ok = p.tags.iter().any(|t| t == name);
-        return Verdict {
-            need: raw,
-            ok,
-            actual: p.tags.join(" "),
-            missing: if ok { String::new() } else { format!("需要标签 {name}") },
-        };
-    }
-    if let Some(name) = n.field.strip_prefix("service:") {
-        return match p.service(name) {
-            Some(s) => Verdict {
-                need: raw,
-                ok: true,
-                actual: format!("{}（{}）", s.base, s.auth),
-                missing: String::new(),
-            },
-            None => Verdict {
-                need: raw,
-                ok: false,
-                actual: "画像里没有这个服务面".into(),
-                missing: format!("确认本机能访问 {name}，再 `ncc profile node scan` 一次"),
-            },
-        };
-    }
-    let actual = match n.field.as_str() {
-        "cpu" => p.cpu.threads.max(p.cpu.cores) as f64,
-        "mem" => p.mem.total_mb as f64,
-        "disk" => p.main_disk().map(|d| d.free_gb as f64).unwrap_or(0.0),
-        "gpu" => p.gpu_count() as f64,
-        "gpumem" => p.gpu.iter().map(|g| g.mem_mb).max().unwrap_or(0) as f64,
-        "service" => p.services.len() as f64,
-        _ => 0.0,
-    };
-    let ok = compare(actual, &n.op, n.value);
-    let unit = match n.field.as_str() {
-        "mem" | "gpumem" => "MB",
-        "disk" => "GB",
-        _ => "",
-    };
-    Verdict {
-        need: raw,
-        ok,
-        actual: format!("{}{}", fmt_num(actual), unit),
-        missing: if ok {
-            String::new()
-        } else {
-            format!("需要 {} {} {}{}", n.field, n.op, fmt_num(n.value), unit)
-        },
-    }
-}
-
-/// `tool:docker|podman`：竖线表示"二者之一"（同一个需求里给两个选项）。
-fn tool_match<'a>(p: &'a Profile, name: &str) -> Option<&'a Tool> {
-    for alt in name.split('|').map(|s| s.trim()).filter(|s| !s.is_empty()) {
-        if let Some(t) = p.tool(alt) {
-            return Some(t);
-        }
-    }
-    None
-}
-
-fn compare(actual: f64, op: &str, want: f64) -> bool {
-    match op {
-        ">=" => actual >= want,
-        ">" => actual > want,
-        "<=" => actual <= want,
-        "<" => actual < want,
-        "=" => (actual - want).abs() < f64::EPSILON,
-        _ => false,
-    }
-}
-
-fn fmt_num(v: f64) -> String {
-    if (v.fract()).abs() < f64::EPSILON {
-        format!("{}", v as i64)
-    } else {
-        format!("{v}")
     }
 }
 
@@ -1758,46 +1605,8 @@ fn fit_cmd(cfg: &CliConfig, a: FitArgs) -> Result<()> {
     crate::capability::ensure(cfg, "compute")?;
     let mut v = fit_remote(cfg, &token, &expr, a.mine, a.strict)?;
 
-    // **服务端只粗筛**（宁可多给一个），判定权在本机：`--strict` 把候选的完整画像拉回来
-    // 用同一套 `evaluate` 复核，并给出"缺什么"。不拉回来也能用 —— 但那样看到的是服务端的
-    // 索引列，不是判定。
     if a.strict {
-        let nodes = v["nodes"].as_array().cloned().unwrap_or_default();
-        let mut kept: Vec<Value> = Vec::new();
-        for mut n in nodes {
-            let id = n["id"].as_str().unwrap_or("").to_string();
-            let got = get_remote(cfg, &token, &id)?;
-            let profile: Profile = match serde_json::from_value(got["facts"].clone()) {
-                Ok(p) => p,
-                Err(e) => {
-                    v["strictNote"] = json!(format!("{id} 的画像读不出来，未复核：{e}"));
-                    kept.push(n);
-                    continue;
-                }
-            };
-            let verdicts = evaluate(&profile, &needs);
-            n["verdicts"] = json!(verdicts
-                .iter()
-                .map(|x| json!({"need": x.need, "ok": x.ok, "actual": x.actual, "missing": x.missing}))
-                .collect::<Vec<_>>());
-            // 不满足的候选**也留下**（标 ok=false 并带"缺什么"）：调度最想知道的往往不是
-            // "谁行"，而是"我的机器差在哪"，把它们静默丢掉等于把答案扔了。
-            kept.push(n);
-        }
-        let matched = kept
-            .iter()
-            .filter(|n| {
-                n["verdicts"]
-                    .as_array()
-                    .map(|vs| vs.iter().all(|x| x["ok"].as_bool().unwrap_or(false)))
-                    .unwrap_or(false)
-            })
-            .count();
-        let total_listed = kept.len();
-        v["nodes"] = json!(kept);
-        v["matched"] = json!(matched);
-        v["listed"] = json!(total_listed);
-        v["strict"] = json!(true);
+        v = strict_refine(cfg, &token, v, &needs)?;
     }
 
     if a.json {
@@ -1842,6 +1651,52 @@ fn fit_cmd(cfg: &CliConfig, a: FitArgs) -> Result<()> {
         println!("  没有人满足：把需求放宽，或先让有能力的机器 `ncc profile node push`");
     }
     Ok(())
+}
+
+/// `--strict` 的本机复核：把候选的完整画像拉回来，用同一套 `evaluate` 重判。
+///
+/// 为什么判定权必须在本机：**服务端只粗筛**（宁可多给一个，它列的是索引列不是判定）。
+/// 不满足的候选**也留下**（标 ok=false 并带"缺什么"）—— 调度最想知道的往往不是"谁行"，
+/// 而是"我的机器差在哪"，把它们静默丢掉等于把答案扔了。
+///
+/// 谁在用：`ncc profile node fit --strict` 与 `ncc scaffold fit --remote --strict`
+/// （同一份需求、同一套判据，不该各写一遍）。
+pub fn strict_refine(cfg: &CliConfig, token: &str, mut v: Value, needs: &[hur_core::need::Need]) -> Result<Value> {
+    let nodes = v["nodes"].as_array().cloned().unwrap_or_default();
+    let mut kept: Vec<Value> = Vec::new();
+    for mut n in nodes {
+        let id = n["id"].as_str().unwrap_or("").to_string();
+        let got = get_remote(cfg, token, &id)?;
+        let profile: Profile = match serde_json::from_value(got["facts"].clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                v["strictNote"] = json!(format!("{id} 的画像读不出来，未复核：{e}"));
+                kept.push(n);
+                continue;
+            }
+        };
+        let verdicts = evaluate(&profile, needs);
+        n["verdicts"] = json!(verdicts
+            .iter()
+            .map(|x| json!({"need": x.need, "ok": x.ok, "actual": x.actual, "missing": x.missing}))
+            .collect::<Vec<_>>());
+        kept.push(n);
+    }
+    let matched = kept
+        .iter()
+        .filter(|n| {
+            n["verdicts"]
+                .as_array()
+                .map(|vs| vs.iter().all(|x| x["ok"].as_bool().unwrap_or(false)))
+                .unwrap_or(false)
+        })
+        .count();
+    let total_listed = kept.len();
+    v["nodes"] = json!(kept);
+    v["matched"] = json!(matched);
+    v["listed"] = json!(total_listed);
+    v["strict"] = json!(true);
+    Ok(v)
 }
 
 /// `--task` / `--need` → 一条需求表达式（档位在本地展开，平台只认表达式）。

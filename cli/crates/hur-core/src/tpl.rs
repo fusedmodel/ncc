@@ -458,7 +458,7 @@ __WHAT__
 ## 开发流程（前五步全程离线）
 
 ```bash
-ncc hur verify .        # 校验（R1~R12）：规范 / 入口 / 依赖 / 权限面 / 摘要
+ncc hur verify .        # 校验（R1~R13）：规范 / 入口 / 依赖 / 权限面 / 摘要
 ncc hur profile .       # 这份包“是什么 / 要什么 / 给什么 / 怎么接”（带体检）
 ncc hur build .         # 锁依赖 → hur.lock
 ncc hur pack .          # → dist/__ID__-__VERSION__.__PROFILE__.hur.gz + .sha256

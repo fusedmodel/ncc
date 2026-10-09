@@ -800,7 +800,11 @@ pub fn content_files_in(dir: &Path, dirs: &[&str]) -> Vec<PathBuf> {
             let p = e.path();
             if p.is_file() {
                 if let Some(n) = p.file_name().and_then(|s| s.to_str()) {
-                    if matches!(n, "README.md" | "LICENSE" | "LICENSE.md") {
+                    // `HUR.md` 也在白名单里：它是**包自己的施工说明**（spec kit），
+                    // 跟着包走才有意义 —— 包被下载、被另一个 Agent 接手时，规范知识必须还在现场。
+                    // `SCAFFOLD.md` 同理，而且更硬：`profile=scaffold` 的包**本体就是它**
+                    // （模板在 assets/ 里只是素材），不收进包等于发了一份空壳。
+                    if matches!(n, "README.md" | "LICENSE" | "LICENSE.md" | "HUR.md" | "SCAFFOLD.md") {
                         out.push(p);
                     }
                 }
@@ -1597,6 +1601,15 @@ pub fn validate(pkg: &HurPackage, dir: &Path, lock: Option<&HurLock>, allow_unlo
 
     // R12 profile：**profile 决定必填项**，不是"写了就放过"。
     out.extend(validate_profile(pkg, dir));
+
+    // R13 施工说明（HUR.md）：有就核对身份字段，没有只提示（老包没有它照样是合法包）
+    match crate::spec_kit::read_hur_md(dir) {
+        Some(text) => match crate::spec_kit::hur_md_check(&text, pkg) {
+            Some(i) => out.push(i),
+            None => out.push(crate::spec_kit::hur_md_missing_hint()),
+        },
+        None => out.push(crate::spec_kit::hur_md_missing_hint()),
+    }
 
     out
 }

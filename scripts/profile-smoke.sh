@@ -348,7 +348,9 @@ for k in agent harness repo skill mcp plugin app scaffold; do
   ( cd "${DEV}" && "${CLI}" hur init --kind "$k" --name "Dev $k" --dir "k-${k}" >/dev/null 2>&1 )
   OUT="$( cd "${DEV}/k-${k}" && "${CLI}" hur verify . 2>&1 )"
   contains "${k}：生成即通过校验" "校验通过" "${OUT}"
-  not_contains "${k}：没有错误也没有提醒" "[R" "${OUT}"
+  # 只有 `提示`（`[R13 提示] HUR.md 与清单一致`）可以出现 —— 生成器刚写完的施工说明必然一致；
+  # 错误与提醒一条都不许有。
+  not_contains "${k}：没有错误也没有提醒" "[R" "$(printf '%s' "${OUT}" | grep -v '\[R13 提示\]' || true)"
 done
 
 # 清单里的身份：kind 是粗分类，profile 才是权威 —— 两个都要写对

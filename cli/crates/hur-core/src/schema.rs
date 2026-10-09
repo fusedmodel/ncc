@@ -9,7 +9,7 @@
 //!    生成器、表单、校验器都可以从它出发。
 //! 3. **我们自己** —— `tpl.rs` 生成的清单必须过它（有测试兜着）。
 //!
-//! ⚠️ **这里不复制规则**：R1~R12 的权威实现永远在 [`crate::spec::validate`]。
+//! ⚠️ **这里不复制规则**：R1~R13 的权威实现永远在 [`crate::spec::validate`]。
 //! schema 只描述**形状**（字段名 / 类型 / 枚举 / 数据类必填项）与**profile 表**，
 //! 一条规则文案都不抄 —— 两份说法迟早会漂，而漂的那一天没人知道该信谁。
 //! 所以 schema 里带的是指针：`x-hur-profiles` 告诉你"这个 profile 要什么"，
@@ -58,7 +58,7 @@ pub fn json_schema() -> Value {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "$id": "https://ncc.ai/hur.schema.json",
         "title": "hur.json —— HUR 包清单",
-        "description": "包应该提供的内容（不是自述文件）。形状由本 schema 描述；能不能过、该不该红，由 `ncc hur verify` 判（R1~R12）。",
+        "description": "包应该提供的内容（不是自述文件）。形状由本 schema 描述；能不能过、该不该红，由 `ncc hur verify` 判（R1~R13）。",
         "type": "object",
         // 多写的字段不报错：老工具/新字段并存是常态，schema 不该比校验器更严
         "additionalProperties": true,
@@ -185,7 +185,7 @@ pub fn json_schema() -> Value {
         },
         "x-hur-checks": {
             "how": "ncc hur verify .",
-            "authority": "Rust 里的 spec::validate（R1~R12）就是唯一实现，本 schema 不复制规则文案",
+            "authority": "Rust 里的 spec::validate（R1~R13）就是唯一实现，本 schema 不复制规则文案",
         },
     })
 }

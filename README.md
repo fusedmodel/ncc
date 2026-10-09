@@ -343,6 +343,8 @@ works on it with no client change. Older servers without `/api/meta` are treated
 | `ncc hur match --profile kb-seed` | Read-only search: find packages by profile / integration host / capability |
 | `ncc hur data import --package <dir>` | Pour a **data snapshot package** into the node (kb-seed / mem-seed / ckpt-set / trace-set). Prints a plan by default; `--apply` actually writes |
 | `ncc huf <init\|build\|pack\|verify\|inspect\|ls\|unpack\|sign\|spec>` | **Resource packages** (`.huf`): docs / prompts / templates / assets — the sibling of `.hur`, **without** an entry (it never runs). Same container, same deterministic bytes and sidecar signature |
+| `ncc scaffold <spec\|init\|verify\|fit>` | **Scaffold spec** (`SCAFFOLD.md`, `kind=scaffold`): one markdown file **is** the artifact — structure, delivery list, prerequisite compute, and the acceptance commands that decide whether generation succeeded (rules S1–S8, offline) |
+| `ncc hur spec-kit [--write]` | Write a package's **construction notes** (`HUR.md`): derived from the manifest, shipped with the package, checked by rule R13 |
 | `ncc profile node <scan\|show\|tasks\|push\|fleet\|fit\|pack>` | **Compute profile** — what this machine or cluster can actually run (CPU / memory / disk / GPU / toolchain / reachable services). Collected locally, uploaded explicitly, packs into a `.huf` |
 | `ncc kb bundle --as-package <dir>` | Export a knowledge base as an immutable **snapshot package** (source / snapshotAt / privacy / license), signable & publishable |
 | `ncc mem export --as-package <dir>` | Memory snapshot (private by default — a memory that can be handed out is no longer a memory) |
@@ -773,6 +775,60 @@ ncc publish --kind huf --name "Onboarding" --file dist/<artifact>.huf.gz   # no 
 Enforced both ways: `ncc hur verify` will not accept a `.huf`, and `ncc huf verify` will not accept a
 `hur.json`. Content directories: `docs / assets / skills / kb / data`. End-to-end smoke:
 `bash scripts/huf-smoke.sh` (local toolchain + publish to a real node). Design: `ncc-platform/prd/ncc-huf.md`.
+
+### `ncc scaffold` — one markdown file *is* the artifact
+
+**A scaffold is worth "I know what this kind of project looks like"**, not "here are 40 files":
+structure, conventions, delivery list, prerequisite compute, and above all **what counts as
+success**. That judgement is one `SCAFFOLD.md` (spec `ncc-scaffold/v1`, rules S1–S8), so an agent
+generates **against your current repo** and the result is correct today — whereas a template archive
+freezes at the moment it was generated. A `kind=scaffold` artifact *is* this markdown file: no code
+has to be stuffed into it.
+
+```bash
+ncc scaffold spec                        # spec overview: fields / rules S1–S8 / skeleton (--json for tools)
+ncc scaffold init . --stack rust,cargo   # generate SCAFFOLD.md (stack detected from the directory)
+ncc scaffold verify . --run              # rules S1–S8 offline; --run executes the acceptance commands
+ncc scaffold fit . [--scan] [--remote]   # can this machine / cluster run this scaffold?
+ncc publish --kind scaffold --name X --file SCAFFOLD.md
+```
+
+| Rule | Criterion |
+|---|---|
+| S1/S2 | `spec` is `ncc-scaffold/v1`; `name` is an ascii slug, `description` is specific |
+| S3/S4 | `stack` (language / runtime / framework) and `outputs` (delivery list) are non-empty |
+| S5 | there is a "Target structure" section containing a tree code block |
+| S6 | there is an "Acceptance" section containing **executable commands** — description without verification is prose (`--run` executes exactly these) |
+| S7 | no secrets or tokens |
+| S8 | every `requires` entry is a valid requirement expression (same syntax as `ncc profile node fit`) |
+
+- **Stack detection, not stack guessing**: `Cargo.toml` / `package.json` / `go.mod` /
+  `pyproject.toml` … fill in `requires` and acceptance automatically; when detection fails it asks for
+  `--stack` instead of inventing one.
+- **Same evaluator as compute fit**: `fit` folds `requires` into a requirement expression and reuses it;
+  `--check` exits 1 when unsatisfied (CI / pre-generation gate), `--remote` uses the hosted coarse
+  filter and `--strict` re-checks locally.
+- **End-to-end smoke**: `bash scripts/scaffold-smoke.sh` (local plus a real publish of one markdown
+  file to a node and a byte-for-byte download back). Design: `ncc-platform/prd/ncc-spec-kit.md`,
+  site docs `/doc/scaffold`.
+
+### `ncc hur spec-kit` — the construction notes of a package (`HUR.md`)
+
+After a package exists, **someone else** (or another agent) takes it over. What they need is not "what
+does this package do" (that is the README) but "**what to watch out for when changing it, and how to
+prove the change is right**" — derived from the manifest, shipped with the package, checkable:
+
+```bash
+ncc hur spec-kit .            # print the package's construction notes
+ncc hur spec-kit . --write    # write them into the package directory (`ncc hur init` already does)
+```
+
+- Contents: identity table (id / version / profile / artifact name), **per-profile requirements and
+  prohibitions**, the command surface, and the rules R1–R13.
+- **Shipped with the package**: both `HUR.md` and `SCAFFOLD.md` are on the root-file allowlist — into
+  `hur.lock`, into the artifact, so the spec knowledge is on site when it is downloaded and handed over.
+- **Checked by rule R13**: when `id` / `version` / `profile` change, regenerate — otherwise
+  `ncc hur verify` names it (notes claiming v0.1.0 next to a v0.2.0 package are worse than none).
 
 ### `ncc hur profile` and data snapshot packages
 
