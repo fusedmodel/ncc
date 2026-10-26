@@ -235,12 +235,14 @@ works on it with no client change. Older servers without `/api/meta` are treated
 |---|---|
 | `ncc target list` / `use` / `add` / `rm` / `show` | Targets: which ncc instances am I connected to (cloud / intranet nodes) |
 | `ncc hub <cmd>` | Run a command against the cloud target (one-shot) |
-| `ncc register` | Create an account; auto-creates your personal namespace |
-| `ncc login` / `ncc logout` | Start / end a session |
-| `ncc me` | Show the signed-in user, plan and namespaces |
+| `ncc register [--org-invite <code>]` | Create an account; creates your own org by default, or joins the org when an invite code is given |
+| `ncc login` / `ncc logout` | Start / end a session (multi-org users are told to run `ncc org switch`) |
+| `ncc me` | Show the signed-in user, handle, plan, organizations and namespaces |
+| `ncc org list` | List the organizations you belong to, with role and default/current markers |
+| `ncc org switch <slug\|id>` | Switch the current organization (re-signs and saves the session token) |
 | `ncc ns list` | List the namespaces you own or belong to (organizations show a **plan** column) |
 | `ncc ns plans` | List the **organization plan** catalog (unavailable tiers are shown but cannot be picked) |
-| `ncc ns create --slug <slug> --name <name> [--plan free]` | Create an org namespace (`plan` defaults to `free`) |
+| `ncc ns create --slug <slug> --name <name> [--plan free]` | Create an extra org (`plan` defaults to `free`; the default org does not count against quota) |
 | `ncc publish` | Publish an artifact from a file upload or a BYO URL |
 | `ncc search [query]` | Search the catalog |
 | `ncc index publish <channel>` | Index an offering / artifact / need (platform first, then intranet nodes; failed nodes are reported one by one) |

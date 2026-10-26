@@ -228,12 +228,14 @@ ncc target use office && ncc services match "帮我订杭州的酒店"
 |---|---|
 | `ncc target list` / `use` / `add` / `rm` / `show` | 目标管理：我连着哪些 ncc（云端 / 内网节点）|
 | `ncc hub <命令>` | 把一条命令指到云端目标执行（一次性的）|
-| `ncc register` | 注册账号；自动创建个人命名空间 |
-| `ncc login` / `ncc logout` | 登录 / 登出 |
-| `ncc me` | 显示当前用户、套餐与命名空间 |
+| `ncc register [--org-invite <码>]` | 注册账号；默认创建自己的组织；带组织邀请码则加入该组织（不建自己的空间） |
+| `ncc login` / `ncc logout` | 登录 / 登出（多组织时提示用 `ncc org switch` 选择） |
+| `ncc me` | 显示当前用户、handle、套餐、组织与命名空间 |
+| `ncc org list` | 列出我所属的组织、角色、默认/当前组织 |
+| `ncc org switch <slug\|id>` | 切换当前组织（重签会话令牌并保存） |
 | `ncc ns list` | 列出你拥有或加入的命名空间（组织会多一列**计划**）|
 | `ncc ns plans` | 列出**组织计划**目录（含尚未开放的档：看得见，选不了）|
-| `ncc ns create --slug <标识> --name <名称> [--plan free]` | 创建组织命名空间（计划缺省 `free`）|
+| `ncc ns create --slug <标识> --name <名称> [--plan free]` | 创建额外组织（计划缺省 `free`；默认组织不计入额度）|
 | `ncc publish` | 通过上传文件或 BYO URL 发布制品 |
 | `ncc search [query]` | 目录检索 |
 | `ncc index publish <频道>` | 把一条服务 / 制品 / 需求登记进索引（先写平台，再推内网节点；节点失败会逐台报出来）|

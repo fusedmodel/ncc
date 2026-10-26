@@ -12,6 +12,18 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 「怎么用」看 `README.zh-CN.md` 与各组件 README；**本文件只回答「这一版比上一版多了什么」**。
 
+## [未发布]
+
+### 新增 · 组织命令与加入型注册（2026-10-26）
+
+配合平台的「组织 + 账号」改造：
+
+- `ncc org list`：列出所属组织、角色、默认/当前组织。
+- `ncc org switch <slug|id>`：切换当前组织；调用 `/api/auth/org/switch` 并把新会话令牌写回当前目标。
+- `ncc register --org-invite <码>`：用组织邀请码注册（加入组织，不建自己的命名空间）。
+- `ncc login` 多组织时提示用 `ncc org switch`；`ncc me` 增加 handle 与组织列表。
+- `ncc ns plans` 的额度文案改为「额外组织 n / m（默认组织不计入）」。
+
 ## [0.4.0] — 2026-10-09
 
 ### 改进 · `ncc help` 与参数报错中文化（clap 的英文模板换掉）（2026-10-09）

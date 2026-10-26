@@ -108,6 +108,9 @@ enum Cmd {
         /// 注册邀请码（服务端启用门禁时必需；也可用环境变量 NCC_INVITE_CODE）
         #[arg(long)]
         invite: Option<String>,
+        /// 组织邀请码：给了就加入该组织（不创建自己的组织）
+        #[arg(long)]
+        org_invite: Option<String>,
     },
     /// 登录
     Login {
@@ -123,6 +126,9 @@ enum Cmd {
     Logout,
     /// 当前用户与命名空间
     Me,
+    /// 组织：ncc org list | ncc org switch <slug|id>
+    #[command(subcommand)]
+    Org(OrgCmd),
     /// 命名空间与组织计划：ncc ns list | ns plans | ns create --slug … [--plan free]
     #[command(subcommand)]
     Ns(NsCmd),
@@ -734,6 +740,17 @@ enum RegistryCmd {
 }
 
 #[derive(Subcommand)]
+enum OrgCmd {
+    /// 列出我所属的组织、角色与当前组织
+    List,
+    /// 切换当前组织（重签会话令牌并保存）
+    Switch {
+        /// 组织 slug（`@aya` / `aya`）或 id（`NS-…`）
+        org: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum NsCmd {
     List,
     /// 列出组织计划目录（含尚未开放的档：看得见，选不了）
@@ -1166,7 +1183,15 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             password,
             name,
             invite,
-        } => cmd_register(cfg, email, password, name.as_deref(), invite.as_deref()),
+            org_invite,
+        } => cmd_register(
+            cfg,
+            &email,
+            &password,
+            name.as_deref(),
+            invite.as_deref(),
+            org_invite.as_deref(),
+        ),
         Cmd::Login {
             email,
             password,
@@ -1179,6 +1204,7 @@ fn run(cfg: &mut CliConfig, cmd: &Cmd) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Me => cmd_me(cfg),
+        Cmd::Org(o) => cmd_org(cfg, o),
         Cmd::Ns(n) => cmd_ns(cfg, n),
         Cmd::Publish(a) => cmd_publish(cfg, a),
         Cmd::Search(a) => cmd_search(cfg, a),
@@ -1529,12 +1555,19 @@ fn cmd_register(
     password: &str,
     name: Option<&str>,
     invite: Option<&str>,
+    org_invite: Option<&str>,
 ) -> anyhow::Result<()> {
     // 邀请码：--invite 优先，其次环境变量 NCC_INVITE_CODE（服务端未启用门禁时可留空）
     let invite = invite
         .map(|s| s.to_string())
         .or_else(|| std::env::var("NCC_INVITE_CODE").ok());
-    let body = json!({ "email": email, "password": password, "name": name, "inviteCode": invite });
+    let body = json!({
+        "email": email,
+        "password": password,
+        "name": name,
+        "inviteCode": invite,
+        "orgInviteCode": org_invite,
+    });
     let data = api::post_json(cfg, "/api/auth/register", None, &body)?;
     let token = data["token"].as_str().context("响应缺少 token")?;
     let u = &data["user"];
@@ -1609,6 +1642,9 @@ fn cmd_login(
         u["name"].as_str().unwrap_or(""),
     )?;
     println!("✅ 登录成功：{}", u["email"].as_str().unwrap_or(email));
+    if data["needsOrgSelection"].as_bool().unwrap_or(false) {
+        println!("   你属于多个组织，当前按主组织工作；用 `ncc org list` 查看、`ncc org switch <slug|id>` 切换。");
+    }
     Ok(())
 }
 
@@ -1623,6 +1659,36 @@ fn cmd_me(cfg: &CliConfig) -> anyhow::Result<()> {
         u["id"].as_str().unwrap_or("")
     );
     println!("计划: {}", u["plan"].as_str().unwrap_or("free"));
+    if let Some(h) = u["handle"].as_str() {
+        if !h.is_empty() {
+            println!("Handle: {h}");
+        }
+    }
+    if let Some(orgs) = data["orgs"].as_array() {
+        if !orgs.is_empty() {
+            println!("组织:");
+            for o in orgs {
+                let mut marks = Vec::new();
+                if o["primary"].as_bool().unwrap_or(false) {
+                    marks.push("默认");
+                }
+                if o["active"].as_bool().unwrap_or(false) {
+                    marks.push("当前");
+                }
+                println!(
+                    "  {}  {}  {}{}",
+                    o["slug"].as_str().unwrap_or(""),
+                    o["role"].as_str().unwrap_or("member"),
+                    o["name"].as_str().unwrap_or(""),
+                    if marks.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  [{}]", marks.join(" / "))
+                    }
+                );
+            }
+        }
+    }
     println!("Namespaces:");
     if let Some(ns) = data["namespaces"].as_array() {
         for n in ns {
@@ -1642,6 +1708,67 @@ fn cmd_me(cfg: &CliConfig) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/* ---------------- 组织 ---------------- */
+fn cmd_org(cfg: &mut CliConfig, o: &OrgCmd) -> anyhow::Result<()> {
+    let token = config::require_token(cfg)?;
+    match o {
+        OrgCmd::List => {
+            let data = api::get(cfg, "/api/auth/me", Some(&token))?;
+            let orgs = data["orgs"].as_array().cloned().unwrap_or_default();
+            if orgs.is_empty() {
+                println!("（没有组织）");
+                return Ok(());
+            }
+            for o in &orgs {
+                let mut marks = Vec::new();
+                if o["primary"].as_bool().unwrap_or(false) {
+                    marks.push("默认");
+                }
+                if o["active"].as_bool().unwrap_or(false) {
+                    marks.push("当前");
+                }
+                println!(
+                    "{}  {}\t{}\t{}{}",
+                    o["slug"].as_str().unwrap_or(""),
+                    o["role"].as_str().unwrap_or("member"),
+                    o["name"].as_str().unwrap_or(""),
+                    o["plan"].as_str().unwrap_or("free"),
+                    if marks.is_empty() {
+                        String::new()
+                    } else {
+                        format!("\t[{}]", marks.join(" / "))
+                    }
+                );
+            }
+            println!("\n切换：ncc org switch <slug|id>");
+            Ok(())
+        }
+        OrgCmd::Switch { org } => {
+            let body = if org.starts_with("NS-") {
+                json!({ "orgId": org })
+            } else {
+                json!({ "slug": org })
+            };
+            let data = api::post_json(cfg, "/api/auth/org/switch", Some(&token), &body)?;
+            let new_token = data["token"].as_str().context("响应缺少 token")?;
+            let (email, name) = {
+                let t = cfg.target();
+                (
+                    t.email.clone().unwrap_or_default(),
+                    t.name.clone().unwrap_or_default(),
+                )
+            };
+            save_session(cfg, new_token, &email, &name)?;
+            println!(
+                "✅ 已切换到 {} ({})",
+                data["activeOrg"]["slug"].as_str().unwrap_or(org),
+                data["activeOrg"]["name"].as_str().unwrap_or("")
+            );
+            Ok(())
+        }
+    }
 }
 
 /* ---------------- 命名空间 ---------------- */
@@ -1706,7 +1833,7 @@ fn cmd_ns(cfg: &CliConfig, n: &NsCmd) -> anyhow::Result<()> {
             }
             if let Some(used) = data["used"].as_i64() {
                 println!(
-                    "已拥有 {} / {} 个组织（额度按所有者算）",
+                    "额外组织 {} / {}（默认组织不计入；额度按所有者算）",
                     used,
                     data["quota"].as_i64().unwrap_or(0)
                 );
