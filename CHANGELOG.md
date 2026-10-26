@@ -12,7 +12,7 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 「怎么用」看 `README.zh-CN.md` 与各组件 README；**本文件只回答「这一版比上一版多了什么」**。
 
-## [未发布]
+## [0.5.0] — 2026-10-26
 
 ### 新增 · 组织命令与加入型注册（2026-10-26）
 
